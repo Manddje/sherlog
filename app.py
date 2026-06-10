@@ -155,7 +155,11 @@ class UploadError(Exception):
 async def save_uploads(files: List[UploadFile], input_dir: Path) -> int:
     """Validate + store uploads into input_dir. Returns count of .log files staged.
 
-    Raises UploadError on bad extension, size overrun or unsafe zip.
+    Files with a non-.log/.zip extension are skipped silently — this lets users
+    pick a whole folder (webkitdirectory), which also yields unrelated files;
+    only logs are kept. If nothing usable is staged the caller reports it.
+
+    Raises UploadError on size overrun or unsafe zip.
     """
     total = 0
     log_count = 0
@@ -166,7 +170,7 @@ async def save_uploads(files: List[UploadFile], input_dir: Path) -> int:
         name = up.filename or ""
         ext = Path(name).suffix.lower()
         if ext not in ALLOWED_EXTENSIONS:
-            raise UploadError(400, f"Disallowed file type: {name!r} (only .log or .zip).")
+            continue  # skip non-log files (e.g. extras from a folder selection)
 
         dest = tmp_dir / f"{uuid.uuid4().hex}{ext}"
         with dest.open("wb") as fh:
@@ -260,7 +264,7 @@ class BasicAuthMiddleware(BaseHTTPMiddleware):
 
         return Response(
             "Authentication required.", status_code=401,
-            headers={"WWW-Authenticate": 'Basic realm="IME Log Analyzer"'},
+            headers={"WWW-Authenticate": 'Basic realm="Sherlog"'},
         )
 
 
@@ -310,7 +314,7 @@ async def lifespan(app: FastAPI):
         task.cancel()
 
 
-app = FastAPI(title="IME Log Analyzer", lifespan=lifespan)
+app = FastAPI(title="Sherlog", lifespan=lifespan)
 # Order matters: last added runs outermost. Auth must gate before anything,
 # and security headers should be applied to every response (incl. 401s).
 app.add_middleware(BasicAuthMiddleware)
@@ -382,7 +386,7 @@ _LOGO = ('<span class="dot"><svg width="15" height="15" viewBox="0 0 24 24" '
          '</svg></span>')
 
 NAV = ("""<header><nav class="nav">
-  <a class="brand" href="/">%(logo)s IME&nbsp;Analyzer</a>
+  <a class="brand" href="/">%(logo)s Sherlog</a>
   <span>
     <a class="navlink" href="https://github.com/petripaavola/Get-IntuneManagementExtensionDiagnostics" target="_blank" rel="noopener">Engine</a>
     <a class="navlink" href="/health">Status</a>
@@ -390,14 +394,14 @@ NAV = ("""<header><nav class="nav">
 </nav></header>""" % {"logo": _LOGO})
 
 FOOTER = ("""<footer>
-  <span>IME Log Analyzer &middot; public tool, no login</span>
+  <span>Sherlog &middot; sherlog.nl &middot; public, no login</span>
   <span>Timeline engine by <a href="https://github.com/petripaavola/Get-IntuneManagementExtensionDiagnostics" target="_blank" rel="noopener">Petri Paavola</a></span>
 </footer>""")
 
 UPLOAD_PAGE = """<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>IME Log Analyzer</title><style>%(css)s</style></head>
+<title>Sherlog &mdash; IME log analyzer</title><style>%(css)s</style></head>
 <body>
   %(nav)s
   <section class="hero">
@@ -409,11 +413,19 @@ UPLOAD_PAGE = """<!doctype html>
     <div class="card">
       <form id="form" action="/analyze" method="post" enctype="multipart/form-data">
         <div class="drop" id="drop">
-          <strong>Drag &amp; drop</strong> a <code>.zip</code> or one or more
-          <code>.log</code> files here, or <u>click to choose</u>.
-          <input id="input" name="files" type="file" multiple
-                 accept=".log,.zip" style="display:none">
+          <strong>Drag &amp; drop</strong> a <code>.zip</code>, one or more
+          <code>.log</code> files, <em>or a whole folder</em> here, or
+          <a href="#" id="pickfiles">choose files</a> &middot;
+          <a href="#" id="pickdir">choose a folder</a>.
         </div>
+        <!-- Kept OUTSIDE #drop: a hidden input fires a click that bubbles, and
+             if it bubbled to #drop it would re-open the file picker.
+             #input is the only field that submits; #dirinput just opens the
+             folder dialog and its files are transferred into #input. -->
+        <input id="input" name="files" type="file" multiple
+               accept=".log,.zip" style="display:none">
+        <input id="dirinput" type="file" multiple
+               webkitdirectory style="display:none">
         <ul id="files"></ul>
         <div class="row">
           <p class="limits">
@@ -428,25 +440,67 @@ UPLOAD_PAGE = """<!doctype html>
   %(footer)s
 <script>
   const drop = document.getElementById('drop');
-  const input = document.getElementById('input');
+  const input = document.getElementById('input');      // the field that submits
+  const dirinput = document.getElementById('dirinput'); // folder dialog trigger
   const list = document.getElementById('files');
   const submit = document.getElementById('submit');
+  const LOGRE = /\.(log|zip)$/i;
+
+  // Assign a list of File objects to the (submitting) input via DataTransfer,
+  // keeping only .log/.zip. Used by the folder dialog and folder drag-drop.
+  function setFiles(files) {
+    const dt = new DataTransfer();
+    files.filter(f => LOGRE.test(f.name)).forEach(f => dt.items.add(f));
+    input.files = dt.files;
+    refresh();
+  }
   function refresh() {
     list.innerHTML = '';
     for (const f of input.files) {
       const li = document.createElement('li');
-      li.textContent = f.name + ' (' + (f.size/1048576).toFixed(2) + ' MB)';
+      li.textContent = (f.webkitRelativePath || f.name) +
+                       ' (' + (f.size/1048576).toFixed(2) + ' MB)';
       list.appendChild(li);
     }
     submit.disabled = input.files.length === 0;
   }
+
+  // Recurse a dropped directory entry, collecting all files.
+  const readBatch = r => new Promise(res => r.readEntries(res, () => res([])));
+  async function walk(entry, out) {
+    if (entry.isFile) {
+      out.push(await new Promise((res, rej) => entry.file(res, rej)));
+    } else if (entry.isDirectory) {
+      const reader = entry.createReader();
+      let batch;
+      do { batch = await readBatch(reader); for (const e of batch) await walk(e, out); }
+      while (batch.length);
+    }
+  }
+
+  function pick(el, ev) { if (ev) { ev.preventDefault(); ev.stopPropagation(); } el.click(); }
+  document.getElementById('pickfiles').addEventListener('click', ev => pick(input, ev));
+  document.getElementById('pickdir').addEventListener('click', ev => pick(dirinput, ev));
   drop.addEventListener('click', () => input.click());
-  input.addEventListener('change', refresh);
+  input.addEventListener('change', refresh);                       // native file picker
+  dirinput.addEventListener('change', () => setFiles([...dirinput.files])); // folder picker
+
   ['dragenter','dragover'].forEach(e => drop.addEventListener(e, ev => {
     ev.preventDefault(); drop.classList.add('hl'); }));
   ['dragleave','drop'].forEach(e => drop.addEventListener(e, ev => {
     ev.preventDefault(); drop.classList.remove('hl'); }));
-  drop.addEventListener('drop', ev => { input.files = ev.dataTransfer.files; refresh(); });
+  drop.addEventListener('drop', async ev => {
+    ev.preventDefault();
+    const items = ev.dataTransfer.items;
+    const out = [];
+    if (items && items.length && items[0].webkitGetAsEntry) {
+      const entries = [...items].map(i => i.webkitGetAsEntry()).filter(Boolean);
+      for (const e of entries) await walk(e, out);   // handles dropped folders
+    } else {
+      out.push(...ev.dataTransfer.files);
+    }
+    setFiles(out);
+  });
 </script>
 </body></html>"""
 
@@ -469,7 +523,7 @@ BUSY_PAGE = """<!doctype html>
 REPORT_PAGE = """<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>IME timeline report</title>
+<title>Sherlog &mdash; timeline report</title>
 <style>%(css)s
   html,body{height:100%%}
   .topbar{display:flex;align-items:center;justify-content:space-between;
@@ -477,7 +531,7 @@ REPORT_PAGE = """<!doctype html>
   iframe{border:0;width:100%%;height:calc(100vh - 3.4rem);display:block}
 </style></head><body>
   <div class="topbar">
-    <a class="brand" href="/">%(logo)s IME&nbsp;Analyzer</a>
+    <a class="brand" href="/">%(logo)s Sherlog</a>
     <a class="btn btn-ghost" href="/">New analysis</a>
   </div>
   <iframe src="/result/%(job)s/report"

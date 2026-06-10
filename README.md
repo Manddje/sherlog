@@ -1,7 +1,8 @@
-# IME Log Analyzer
+# Sherlog
 
-Webapplicatie die Microsoft Intune Management Extension (IME) logbestanden
-analyseert en het resultaat als HTML-timelinerapport in de browser toont.
+Webapplicatie ([sherlog.nl](https://sherlog.nl)) die Microsoft Intune Management
+Extension (IME) logbestanden analyseert en het resultaat als
+HTML-timelinerapport in de browser toont.
 
 Je uploadt logs (een `.zip` of losse `.log`-bestanden, bijvoorbeeld uit
 `C:\ProgramData\Microsoft\IntuneManagementExtension\Logs` of een Intune
@@ -75,8 +76,8 @@ Stap voor stap:
    `APP_USER`/`APP_PASSWORD` leeg. Optioneel afstellen:
    `MAX_UPLOAD_MB`, `JOB_RETENTION_HOURS`, `SCRIPT_TIMEOUT_SECONDS`,
    `JOB_CONCURRENCY`. Wil je toch een wachtwoord, zet dan beide auth-vars.
-5. **Domein + HTTPS.** Wijs een domein toe; de Coolify-proxy (Traefik) regelt
-   automatisch HTTPS via Let's Encrypt. Forceer HTTPS-redirect.
+5. **Domein + HTTPS.** Wijs het domein `sherlog.nl` toe; de Coolify-proxy
+   (Traefik) regelt automatisch HTTPS via Let's Encrypt. Forceer HTTPS-redirect.
 6. **Healthcheck.** Configureer het healthcheck-pad op `/health` (poort `8080`,
    geen auth). Dit endpoint geeft `200` terug en controleert of `pwsh`
    beschikbaar is; ontbreekt `pwsh`, dan `503`.
