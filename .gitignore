@@ -1,0 +1,11 @@
+# Test/run artifacts
+/out/
+/data/
+.pytest_cache/
+*_Intune_Logs_Report.html
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/

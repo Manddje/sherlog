@@ -1,0 +1,22 @@
+# Dockerfile.test — minimal image to prove the IME analyzer runs headless on Linux.
+# Not the production image; only the script, testdata and wrapper are included.
+#
+# Build:  docker build -f Dockerfile.test -t ime-analyzer-test .
+# Run:    docker run --rm ime-analyzer-test
+#         (writes report to /out inside the container and prints the timeline)
+#
+# To get the report out:
+#   docker run --rm -v "$PWD/out:/out" ime-analyzer-test \
+#       scripts/run-analysis.sh /testdata /out
+FROM mcr.microsoft.com/powershell:lts-ubuntu-22.04
+
+WORKDIR /app
+
+COPY Get-IntuneManagementExtensionDiagnostics.ps1 /app/
+COPY scripts/run-analysis.sh /app/scripts/
+COPY testdata/ /testdata/
+
+RUN chmod +x /app/scripts/run-analysis.sh && mkdir -p /out
+
+# Default command: analyze the bundled testdata into /out.
+CMD ["scripts/run-analysis.sh", "/testdata", "/out"]

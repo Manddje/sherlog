@@ -1,0 +1,27 @@
+# Keep the build context (and image) free of state, tests and local cruft.
+# The Dockerfile copies only the files it needs, but this also speeds builds
+# and guarantees no sensitive logs leak into the image.
+
+# Job state / generated reports
+/data/
+/out/
+*_Intune_Logs_Report.html
+
+# Sensitive sample/anonymised logs — must never enter the image
+/testdata/
+
+# Tests (not needed at runtime)
+/tests/
+Dockerfile.test
+.pytest_cache/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# VCS / editor / docs
+.git/
+.gitignore
+*.md

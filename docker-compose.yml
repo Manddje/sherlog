@@ -1,0 +1,21 @@
+# Local testing for the IME Log Analyzer.
+#
+#   docker compose up --build
+#   open http://localhost:8080  (user/pass below if auth is enabled)
+services:
+  ime-analyzer:
+    build: .
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./data:/data
+    environment:
+      # Public tool: no login. Leave APP_USER/APP_PASSWORD unset = auth disabled.
+      # To put it behind basic auth instead, set both (see README).
+      # APP_USER: ""
+      # APP_PASSWORD: ""
+      MAX_UPLOAD_MB: "100"
+      JOB_RETENTION_HOURS: "24"
+      SCRIPT_TIMEOUT_SECONDS: "300"
+      JOB_CONCURRENCY: "2"
+    restart: unless-stopped
