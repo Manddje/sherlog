@@ -109,6 +109,7 @@ def test_result_pages_record_history(client):
     assert r.status_code == 200
     assert "sherlog.history" in r.text
     assert '"tool": "logs"' in r.text
+    assert '"a.log"' in r.text  # original upload name, not the staged path
     job_id = r.url.path.split("/")[2]
     assert f'"id": "{job_id}"' in r.text
 
@@ -143,6 +144,8 @@ def test_full_flow_zip_produces_report(client):
     wrapper = client.get(location).text
     assert 'class="summary"' in wrapper
     assert "Analysis summary" in wrapper
+    # History records the original upload name, not the staged log paths.
+    assert '"logs.zip"' in wrapper
 
 
 def test_oversized_upload_rejected(client):
@@ -598,6 +601,7 @@ def test_diag_full_flow(client):
     assert "MpSupportFiles.cab" in page.text        # listed …
     assert 'class="file disabled"' in page.text     # … but not clickable
     assert '"tool": "diag"' in page.text            # history entry
+    assert '"IntuneDiag-TESTPC-01.zip"' in page.text  # original upload name
 
     # Dashboard model on disk: ok/bad/warn statuses derived from the package.
     import app as app_module

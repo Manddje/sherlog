@@ -725,7 +725,10 @@ async def run_job(job_id: str, input_dir: Path, output_dir: Path,
     """
     if set_state is None:
         def set_state(**fields) -> None:
-            write_status(job_id, **fields)
+            # Merge, don't replace: the upload route stores metadata (the
+            # original upload names) in job.json that must survive state
+            # transitions.
+            update_status(job_id, **fields)
     set_state(state="queued")
     async with _job_sem:  # wait here if we are at the concurrency cap
         await _run_job_locked(job_id, input_dir, output_dir, set_state)
@@ -1187,6 +1190,17 @@ HISTORY_SECTION = """<section class="card recent" id="recent" hidden>
   }
 })();
 </script>"""
+
+
+def upload_names(status: Optional[dict], job_id: str) -> List[str]:
+    """Original upload file names for the browser-side history list.
+
+    Jobs created before this field existed fall back to the staged log paths.
+    """
+    names = (status or {}).get("uploads")
+    if isinstance(names, list) and names:
+        return [str(n) for n in names]
+    return list_input_logs(job_id)
 
 
 def history_record_js(job_id: str, tool: str, state: str, files: List[str]) -> str:
@@ -2365,8 +2379,10 @@ def _content_length_error(request: Request) -> Optional[HTMLResponse]:
 async def stage_upload(request: Request):
     """Validate + stage an upload into a fresh job dir.
 
-    Returns (job_id, input_dir, output_dir) on success, or an HTMLResponse error
-    to return to the client. Shared by /analyze (timeline) and /cmtrace-view.
+    Returns (job_id, input_dir, output_dir, upload_names) on success, or an
+    HTMLResponse error to return to the client. Shared by /analyze (timeline)
+    and /cmtrace-view. `upload_names` are the original (client-side) file
+    names, kept for the browser-side history list.
     """
     err = _content_length_error(request)
     if err is not None:
@@ -2396,7 +2412,8 @@ async def stage_upload(request: Request):
         shutil.rmtree(base, ignore_errors=True)
         return HTMLResponse("No .log files found in the upload.", status_code=400)
 
-    return job_id, input_dir, output_dir
+    names = [Path(f.filename or "").name for f in files if f.filename]
+    return job_id, input_dir, output_dir, names
 
 
 @app.post("/analyze")
@@ -2404,8 +2421,10 @@ async def analyze(request: Request) -> Response:
     staged = await stage_upload(request)
     if isinstance(staged, Response):
         return staged
-    job_id, input_dir, output_dir = staged
+    job_id, input_dir, output_dir, names = staged
 
+    # Stored before the job task starts; run_job merges its state into this.
+    write_status(job_id, state="queued", uploads=names[:5])
     asyncio.create_task(run_job(job_id, input_dir, output_dir))
     return RedirectResponse(url=f"/result/{job_id}", status_code=303)
 
@@ -2416,10 +2435,10 @@ async def cmtrace_view_upload(request: Request) -> Response:
     staged = await stage_upload(request)
     if isinstance(staged, Response):
         return staged
-    job_id, _input_dir, _output_dir = staged
+    job_id, _input_dir, _output_dir, names = staged
 
     # No subprocess; mark the job as logs-only so the cmtrace routes serve it.
-    write_status(job_id, state="logs")
+    write_status(job_id, state="logs", uploads=names[:5])
     return RedirectResponse(url=f"/result/{job_id}/cmtrace", status_code=303)
 
 
@@ -2463,6 +2482,7 @@ async def diagnostics_analyze(request: Request) -> Response:
 
     ime_dir = find_ime_log_dir(input_dir)
     write_status(job_id, kind="diag", state="ready",
+                 uploads=[Path(files[0].filename or "").name],
                  skipped=skipped[:_MAX_SKIPPED_LISTED],
                  analysis={"state": "queued" if ime_dir else "none"})
     if ime_dir is not None:
@@ -2491,7 +2511,7 @@ async def result(job_id: str) -> Response:
         return HTMLResponse(BUSY_PAGE % {
             "css": PAGE_CSS, "nav": NAV, "footer": FOOTER, "job": job_id,
             "history": history_record_js(job_id, "timeline", "busy",
-                                         list_input_logs(job_id)),
+                                         upload_names(status, job_id)),
         })
 
     if state == "done":
@@ -2500,7 +2520,7 @@ async def result(job_id: str) -> Response:
             "css": PAGE_CSS, "logo": _LOGO, "job": job_id,
             "summary": render_summary_panel(read_summary(job_id)),
             "history": history_record_js(job_id, "timeline", "done",
-                                         list_input_logs(job_id)),
+                                         upload_names(status, job_id)),
         })
 
     # failed
@@ -2511,7 +2531,7 @@ async def result(job_id: str) -> Response:
             "stderr": html_escape(status.get("stderr", "")) or "(empty)",
             "stdout": html_escape(status.get("stdout", "")) or "(empty)",
             "history": history_record_js(job_id, "timeline", "failed",
-                                         list_input_logs(job_id)),
+                                         upload_names(status, job_id)),
         },
         status_code=500,
     )
@@ -2630,7 +2650,8 @@ async def cmtrace(job_id: str) -> Response:
         "css": PAGE_CSS, "logo": _LOGO, "job": job_id, "timeline": timeline,
         "tree": render_log_tree(logs), "first": quote(logs[0]),
         "firstjson": json.dumps(logs[0]), "jobjson": json.dumps(job_id),
-        "history": history_record_js(job_id, tool, job_state, logs),
+        "history": history_record_js(job_id, tool, job_state,
+                                     upload_names(status, job_id)),
     })
 
 
@@ -2681,7 +2702,8 @@ def render_diag_page(job_id: str, status: dict) -> HTMLResponse:
         "firstsrc": firstsrc,
         "jobjson": json.dumps(job_id), "firstjson": json.dumps(first),
         "analysisjson": json.dumps(analysis.get("state", "none")),
-        "history": history_record_js(job_id, "diag", hist_state, files),
+        "history": history_record_js(job_id, "diag", hist_state,
+                                     upload_names(status, job_id)),
     })
 
 
@@ -2713,7 +2735,7 @@ async def diag_timeline(job_id: str) -> Response:
         "css": PAGE_CSS, "logo": _LOGO, "job": job_id,
         "summary": render_summary_panel(read_summary(job_id)),
         "history": history_record_js(job_id, "diag", "done",
-                                     list_input_logs(job_id)),
+                                     upload_names(status, job_id)),
     })
 
 
