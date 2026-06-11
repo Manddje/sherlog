@@ -699,8 +699,6 @@ NAV = ("""<header><nav class="nav">
   <span>
     <a class="navlink" href="/timeline">Timeline</a>
     <a class="navlink" href="/cmtrace">CMTrace</a>
-    <a class="navlink" href="https://github.com/petripaavola/Get-IntuneManagementExtensionDiagnostics" target="_blank" rel="noopener">Engine</a>
-    <a class="navlink" href="/health">Status</a>
   </span>
 </nav></header>""" % {"logo": _LOGO})
 
