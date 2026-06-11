@@ -803,6 +803,11 @@ _CMTRACE_CSS = """
   tr.err{background:#fef2f2}
   tr.err td.msg{color:#b91c1c;font-weight:600}
   tr.hide{display:none}
+  .legend{display:flex;gap:.6rem;align-items:center;color:#6b7280;white-space:nowrap}
+  .legend .sw{display:inline-block;width:.8rem;height:.8rem;border-radius:3px;
+    margin-right:.25rem;vertical-align:-1px;border:1px solid rgba(0,0,0,.08)}
+  .sw.w{background:#fffbeb;border-color:#fde68a}
+  .sw.e{background:#fef2f2;border-color:#fecaca}
 """
 
 
@@ -880,6 +885,14 @@ def render_cmtrace_view(filename: str, records: List[dict], truncated: bool) -> 
   <div class="bar">
     <input id="q" type="search" placeholder="Filter text…" autocomplete="off">
     %(comp)s
+    <select id="sev">
+      <option value="">All severities</option>
+      <option value="we">Warnings + errors</option>
+      <option value="e">Errors</option>
+      <option value="w">Warnings</option>
+    </select>
+    <span class="legend"><span><span class="sw w"></span>Warning</span>
+      <span><span class="sw e"></span>Error</span></span>
     <span class="count" id="count"></span>
   </div>
   %(note)s
@@ -889,14 +902,22 @@ def render_cmtrace_view(filename: str, records: List[dict], truncated: bool) -> 
 <script>
   const q = document.getElementById('q');
   const comp = document.getElementById('comp');
+  const sev = document.getElementById('sev');
   const count = document.getElementById('count');
   const rows = [...document.querySelectorAll('#body tr')];
+  function sevOk(tr, s) {
+    if (!s) return true;
+    const e = tr.classList.contains('err'), w = tr.classList.contains('warn');
+    return (s === 'e' && e) || (s === 'w' && w) || (s === 'we' && (e || w));
+  }
   function apply() {
     const needle = q.value.toLowerCase();
     const c = comp ? comp.value : '';
+    const s = sev.value;
     let shown = 0;
     for (const tr of rows) {
       const ok = (!c || tr.dataset.c === c) &&
+                 sevOk(tr, s) &&
                  (!needle || tr.textContent.toLowerCase().includes(needle));
       tr.classList.toggle('hide', !ok);
       if (ok) shown++;
@@ -905,6 +926,7 @@ def render_cmtrace_view(filename: str, records: List[dict], truncated: bool) -> 
   }
   q.addEventListener('input', apply);
   if (comp) comp.addEventListener('change', apply);
+  sev.addEventListener('change', apply);
   apply();
 </script>
 </body></html>""" % {

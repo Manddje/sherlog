@@ -224,6 +224,28 @@ def test_render_view_plain_vs_structured():
     assert 'class="warn"' in html2
 
 
+def test_cmtrace_severity_filter_and_legend():
+    import app as app_module
+    records, _ = app_module.parse_cmtrace(
+        '<![LOG[info]LOG]!><time="1" date="2" component="C" context="" '
+        'type="1" thread="3" file="">\n'
+        '<![LOG[warn]LOG]!><time="1" date="2" component="C" context="" '
+        'type="2" thread="3" file="">\n'
+        '<![LOG[err]LOG]!><time="1" date="2" component="C" context="" '
+        'type="3" thread="3" file="">'
+    )
+    html = app_module.render_cmtrace_view("ime.log", records, False)
+    assert 'id="sev"' in html                  # severity dropdown
+    assert 'class="legend"' in html            # colour legend in the bar
+    assert '<tr class="warn"' in html
+    assert '<tr class="err"' in html
+
+    # Plain (non-CMTrace) view keeps the severity filter too.
+    plain, _ = app_module.parse_cmtrace("ERROR: boom\nall good\n")
+    html2 = app_module.render_cmtrace_view("cmd.log", plain, False)
+    assert 'id="sev"' in html2
+
+
 def test_zip_slip_rejected(client):
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w") as zf:
