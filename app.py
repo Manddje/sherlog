@@ -1304,6 +1304,7 @@ UPLOAD_PAGE = """<!doctype html>
         </div>
       </form>
     </div>
+    %(extra)s
     %(recent)s
   </main>
   %(footer)s
@@ -2297,13 +2298,14 @@ def render_upload_page(*, title: str, heading: str, intro: str,
                        pattern: str = r"\.(log|zip)$",
                        badges: str = '<span class="badge">.log</span>'
                                      '<span class="badge">.zip</span>',
-                       droptext: str = _DEFAULT_DROPTEXT) -> HTMLResponse:
+                       droptext: str = _DEFAULT_DROPTEXT,
+                       extra: str = "") -> HTMLResponse:
     return HTMLResponse(UPLOAD_PAGE % {
         "css": PAGE_CSS, "nav": NAV, "footer": FOOTER, "max": MAX_UPLOAD_MB,
         "title": title, "heading": heading, "intro": intro,
         "action": action, "button": button, "recent": HISTORY_SECTION,
         "accept": accept, "patternjson": json.dumps(pattern),
-        "badges": badges, "droptext": droptext,
+        "badges": badges, "droptext": droptext, "extra": extra,
     })
 
 
@@ -2331,6 +2333,30 @@ async def cmtrace_upload_page() -> HTMLResponse:
     )
 
 
+# The collector script users run (elevated) on the device to produce the
+# package this tool analyzes; shipped in the repo root so it can be shown
+# and downloaded from the upload page.
+COLLECT_SCRIPT = APP_DIR / "Collect-IntuneDiagnostics.ps1"
+
+
+def render_collect_script_panel() -> str:
+    if not COLLECT_SCRIPT.is_file():
+        return ""
+    text = COLLECT_SCRIPT.read_text(encoding="utf-8", errors="replace")
+    return f"""<section class="card recent">
+  <h2>Don't have a package yet?</h2>
+  <p class="limits">Run <code>Collect-IntuneDiagnostics.ps1</code> in an
+    <strong>elevated</strong> PowerShell on the device. It collects MDM logs,
+    event logs, registry exports, identity/network info and the IME logs, and
+    writes <code>IntuneDiag-&lt;device&gt;-&lt;timestamp&gt;.zip</code> to
+    <code>C:\\Temp</code>. Upload that zip above.</p>
+  <p><a class="btn btn-ghost" href="/collect-script" download>
+    Download Collect-IntuneDiagnostics.ps1</a></p>
+  <details><summary>View script source</summary>
+    <pre style="max-height:24rem">{html_escape(text)}</pre></details>
+</section>"""
+
+
 @app.get("/diagnostics", response_class=HTMLResponse)
 async def diagnostics_upload_page() -> HTMLResponse:
     return render_upload_page(
@@ -2347,6 +2373,20 @@ async def diagnostics_upload_page() -> HTMLResponse:
         badges='<span class="badge">.zip</span>',
         droptext=("<strong>Drag &amp; drop</strong> the "
                   "<code>IntuneDiag-*.zip</code> here, or"),
+        extra=render_collect_script_panel(),
+    )
+
+
+@app.get("/collect-script")
+async def collect_script_download() -> Response:
+    """Serve the collector script as a download (it ships with the app)."""
+    if not COLLECT_SCRIPT.is_file():
+        return HTMLResponse("Script not available.", status_code=404)
+    return Response(
+        COLLECT_SCRIPT.read_bytes(),
+        media_type="text/plain; charset=utf-8",
+        headers={"Content-Disposition":
+                 'attachment; filename="Collect-IntuneDiagnostics.ps1"'},
     )
 
 

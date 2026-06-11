@@ -534,6 +534,19 @@ def test_diagnostics_upload_page(client):
     assert "Max total upload" in r.text
 
 
+def test_collect_script_shown_and_downloadable(client):
+    page = client.get("/diagnostics")
+    assert "Download Collect-IntuneDiagnostics.ps1" in page.text
+    assert "View script source" in page.text
+    assert "elevated" in page.text
+
+    r = client.get("/collect-script")
+    assert r.status_code == 200
+    assert "attachment" in r.headers["content-disposition"]
+    assert "Collect-IntuneDiagnostics.ps1" in r.headers["content-disposition"]
+    assert "mdmdiagnosticstool" in r.text  # actual script content served
+
+
 def test_landing_and_nav_show_diagnostics(client):
     r = client.get("/")
     assert "Diagnostics Package" in r.text
