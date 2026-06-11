@@ -487,6 +487,23 @@ PAGE_CSS = """
   @media (max-width:640px){ .cards{ grid-template-columns:1fr; } }
   .card h2{ margin:0 0 .4rem; font-size:1.25rem; }
   .card .desc{ color:var(--muted); margin:0 0 1.25rem; }
+  .recent{ margin-top:1.25rem; }
+  .recent h2{ margin:0 0 .5rem; font-size:1.1rem; }
+  .recent ul{ list-style:none; margin:0; padding:0; }
+  .recent li{ display:flex; align-items:center; gap:.7rem; padding:.5rem .2rem;
+    border-bottom:1px solid var(--border); font-size:.92rem; }
+  .recent li:last-child{ border-bottom:0; }
+  .recent .files{ flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis;
+    white-space:nowrap; }
+  .recent .when{ color:var(--muted); white-space:nowrap; font-size:.85rem; }
+  .recent .state{ font-size:.72rem; font-weight:600; padding:.18rem .55rem;
+    border-radius:999px; border:1px solid var(--border); background:var(--surface);
+    color:var(--muted); white-space:nowrap; }
+  .recent .state.done{ background:#ecfdf5; border-color:#a7f3d0; color:#047857; }
+  .recent .state.failed{ background:#fef2f2; border-color:#fecaca; color:#b91c1c; }
+  .recent .rm{ border:0; background:none; color:var(--muted); cursor:pointer;
+    font-size:1rem; padding:.1rem .3rem; }
+  .recent .rm:hover{ color:var(--fg); }
 """
 
 _LOGO = ('<span class="dot"><svg width="15" height="15" viewBox="0 0 24 24" '
@@ -507,6 +524,92 @@ NAV = ("""<header><nav class="nav">
 FOOTER = ("""<footer>
   <span>Sherlog &middot; sherlog.nl</span>
 </footer>""")
+
+# Browser-side job history. The list lives only in the visitor's own
+# localStorage (key sherlog.history) — the server keeps no per-user state and
+# sets no cookies. Result pages upsert an entry (history_record_js); this
+# section renders the list and silently prunes jobs the server has deleted.
+HISTORY_SECTION = """<section class="card recent" id="recent" hidden>
+  <h2>Recent uploads</h2>
+  <ul id="recent-list"></ul>
+</section>
+<script>
+(function () {
+  const KEY = 'sherlog.history';
+  let hist;
+  try { hist = JSON.parse(localStorage.getItem(KEY)) || []; } catch (e) { hist = []; }
+  if (!Array.isArray(hist) || hist.length === 0) return;
+  const section = document.getElementById('recent');
+  const list = document.getElementById('recent-list');
+  const save = () => localStorage.setItem(KEY, JSON.stringify(hist));
+  function ago(ts) {
+    const m = Math.max(1, Math.round((Date.now() - ts) / 60000));
+    if (m < 60) return m + ' min ago';
+    const h = Math.round(m / 60);
+    if (h < 48) return h + ' h ago';
+    return Math.round(h / 24) + ' d ago';
+  }
+  function drop(id, li) {
+    hist = hist.filter(e => e.id !== id);
+    save();
+    li.remove();
+    if (!list.children.length) section.hidden = true;
+  }
+  for (const e of hist) {
+    const li = document.createElement('li');
+    const badge = document.createElement('span');
+    badge.className = 'state' + (e.state === 'done' ? ' done'
+                               : e.state === 'failed' ? ' failed' : '');
+    badge.textContent = (e.tool === 'logs' ? 'CMTrace' : 'Timeline') +
+                        (e.state === 'busy' ? ' \\u2026'
+                       : e.state === 'failed' ? ' failed' : '');
+    const a = document.createElement('a');
+    a.className = 'files';
+    a.href = e.tool === 'logs' ? '/result/' + e.id + '/cmtrace'
+                               : '/result/' + e.id;
+    // File names come from uploads (untrusted) — textContent only, never HTML.
+    a.textContent = (e.files && e.files.length)
+      ? e.files.join(', ') : 'job ' + String(e.id).slice(0, 8);
+    const when = document.createElement('span');
+    when.className = 'when';
+    when.textContent = ago(e.ts || Date.now());
+    const rm = document.createElement('button');
+    rm.className = 'rm';
+    rm.textContent = '\\u00d7';
+    rm.title = 'Remove from history';
+    rm.addEventListener('click', () => drop(e.id, li));
+    li.append(badge, a, when, rm);
+    list.appendChild(li);
+    section.hidden = false;
+    // Prune entries whose job the server already cleaned up (retention).
+    fetch('/result/' + encodeURIComponent(e.id), { method: 'HEAD' })
+      .then(r => { if (r.status === 404) drop(e.id, li); })
+      .catch(() => {});
+  }
+})();
+</script>"""
+
+
+def history_record_js(job_id: str, tool: str, state: str, files: List[str]) -> str:
+    """Inline script that upserts this job into the browser's own history
+    (localStorage); the server keeps no per-user state. Keeps the original
+    timestamp on update so a busy->done transition doesn't bump the order."""
+    entry = json.dumps({"id": job_id, "tool": tool, "state": state,
+                        "files": files[:5]})
+    return ("""<script>
+(function () {
+  const KEY = 'sherlog.history';
+  const e = """ + entry + """;
+  let h;
+  try { h = JSON.parse(localStorage.getItem(KEY)) || []; } catch (_) { h = []; }
+  if (!Array.isArray(h)) h = [];
+  const old = h.find(x => x && x.id === e.id);
+  e.ts = (old && old.ts) ? old.ts : Date.now();
+  h = h.filter(x => x && x.id !== e.id);
+  h.unshift(e);
+  localStorage.setItem(KEY, JSON.stringify(h.slice(0, 20)));
+})();
+</script>""")
 
 LANDING_PAGE = """<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
@@ -535,6 +638,7 @@ LANDING_PAGE = """<!doctype html>
         <a class="btn btn-ghost" href="/cmtrace">Open CMTrace Viewer</a>
       </div>
     </div>
+    %(recent)s
   </main>
   %(footer)s
 </body></html>"""
@@ -576,6 +680,7 @@ UPLOAD_PAGE = """<!doctype html>
         </div>
       </form>
     </div>
+    %(recent)s
   </main>
   %(footer)s
 <script>
@@ -659,6 +764,7 @@ BUSY_PAGE = """<!doctype html>
   </section>
   <main class="wrap center"><p class="limits">Job %(job)s</p></main>
   %(footer)s
+  %(history)s
 </body></html>"""
 
 REPORT_PAGE = """<!doctype html>
@@ -680,6 +786,7 @@ REPORT_PAGE = """<!doctype html>
   </div>
   <iframe src="/result/%(job)s/report"
           sandbox="allow-scripts allow-popups allow-popups-to-escape-sandbox"></iframe>
+  %(history)s
 </body></html>"""
 
 CMTRACE_PAGE = """<!doctype html>
@@ -734,6 +841,7 @@ CMTRACE_PAGE = """<!doctype html>
   // Highlight the file the iframe already loaded (server's first/default).
   (files.find(f => f.dataset.file === first) || files[0])?.classList.add('active');
 </script>
+  %(history)s
 </body></html>"""
 
 ERROR_PAGE = """<!doctype html>
@@ -754,6 +862,7 @@ ERROR_PAGE = """<!doctype html>
     </div>
   </main>
   %(footer)s
+  %(history)s
 </body></html>"""
 
 
@@ -1133,7 +1242,7 @@ def render_cmtrace_view(filename: str, records: List[dict], truncated: bool) -> 
 @app.get("/", response_class=HTMLResponse)
 async def index() -> HTMLResponse:
     return HTMLResponse(LANDING_PAGE % {
-        "css": PAGE_CSS, "nav": NAV, "footer": FOOTER,
+        "css": PAGE_CSS, "nav": NAV, "footer": FOOTER, "recent": HISTORY_SECTION,
     })
 
 
@@ -1142,7 +1251,7 @@ def render_upload_page(*, title: str, heading: str, intro: str,
     return HTMLResponse(UPLOAD_PAGE % {
         "css": PAGE_CSS, "nav": NAV, "footer": FOOTER, "max": MAX_UPLOAD_MB,
         "title": title, "heading": heading, "intro": intro,
-        "action": action, "button": button,
+        "action": action, "button": button, "recent": HISTORY_SECTION,
     })
 
 
@@ -1264,11 +1373,17 @@ async def result(job_id: str) -> Response:
     if state in ("running", "queued"):
         return HTMLResponse(BUSY_PAGE % {
             "css": PAGE_CSS, "nav": NAV, "footer": FOOTER, "job": job_id,
+            "history": history_record_js(job_id, "timeline", "busy",
+                                         list_input_logs(job_id)),
         })
 
     if state == "done":
         # Wrap the (untrusted) report in a sandboxed iframe — see /report below.
-        return HTMLResponse(REPORT_PAGE % {"css": PAGE_CSS, "logo": _LOGO, "job": job_id})
+        return HTMLResponse(REPORT_PAGE % {
+            "css": PAGE_CSS, "logo": _LOGO, "job": job_id,
+            "history": history_record_js(job_id, "timeline", "done",
+                                         list_input_logs(job_id)),
+        })
 
     # failed
     return HTMLResponse(
@@ -1277,6 +1392,8 @@ async def result(job_id: str) -> Response:
             "exit": html_escape(str(status.get("exitcode"))),
             "stderr": html_escape(status.get("stderr", "")) or "(empty)",
             "stdout": html_escape(status.get("stdout", "")) or "(empty)",
+            "history": history_record_js(job_id, "timeline", "failed",
+                                         list_input_logs(job_id)),
         },
         status_code=500,
     )
@@ -1357,10 +1474,15 @@ async def cmtrace(job_id: str) -> Response:
     timeline = (f'<a class="btn btn-ghost" href="/result/{job_id}">&larr; Timeline</a>'
                 if status.get("state") == "done" else "")
 
+    # A logs-only job is its own history entry; a finished timeline job viewed
+    # here keeps its existing "timeline" entry (same id, just an update).
+    job_state = status.get("state", "logs")
+    tool = "logs" if job_state == "logs" else "timeline"
     return HTMLResponse(CMTRACE_PAGE % {
         "css": PAGE_CSS, "logo": _LOGO, "job": job_id, "timeline": timeline,
         "tree": render_log_tree(logs), "first": quote(logs[0]),
         "firstjson": json.dumps(logs[0]), "jobjson": json.dumps(job_id),
+        "history": history_record_js(job_id, tool, job_state, logs),
     })
 
 

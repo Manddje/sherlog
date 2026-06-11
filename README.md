@@ -27,6 +27,11 @@ Bereikbaar als eigen tool via de uploadpagina `/cmtrace` (geen analyse nodig) é
 via "Raw logs (CMTrace)" op de rapportpagina. De (untrusted) loginhoud wordt in
 een sandboxed iframe geserveerd.
 
+**Recente uploads** worden alleen in je eigen browser bewaard (localStorage) —
+niet op de server, geen cookies of login. De lijst staat op de homepage en de
+uploadpagina's; jobs die de server heeft opgeruimd (na `JOB_RETENTION_HOURS`)
+verdwijnen er automatisch uit.
+
 ## Credits
 
 Het analysescript `Get-IntuneManagementExtensionDiagnostics.ps1` is gemaakt door

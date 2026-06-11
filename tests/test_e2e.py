@@ -89,6 +89,30 @@ def test_upload_pages_show_limits(client, path, action):
     assert "formaction" not in r.text  # single submit button per tool
 
 
+def test_history_section_on_upload_pages(client):
+    for path in ("/", "/timeline", "/cmtrace"):
+        r = client.get(path)
+        assert r.status_code == 200
+        assert 'id="recent"' in r.text       # browser-side history list
+        assert "sherlog.history" in r.text   # localStorage key
+
+
+def test_result_pages_record_history(client):
+    # Logs-only flow: CMTRACE_PAGE embeds a history-record snippet.
+    r = client.post(
+        "/cmtrace-view",
+        files={"files": ("a.log", b"<![LOG[hi]LOG]!><time=\"1\" date=\"2\" "
+                                  b"component=\"C\" context=\"\" type=\"1\" "
+                                  b"thread=\"3\" file=\"\">", "text/plain")},
+        follow_redirects=True,
+    )
+    assert r.status_code == 200
+    assert "sherlog.history" in r.text
+    assert '"tool": "logs"' in r.text
+    job_id = r.url.path.split("/")[2]
+    assert f'"id": "{job_id}"' in r.text
+
+
 def test_full_flow_zip_produces_report(client):
     data = _zip_of_testdata()
     r = client.post(
