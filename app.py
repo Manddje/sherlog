@@ -2340,9 +2340,10 @@ COLLECT_SCRIPT = APP_DIR / "Collect-IntuneDiagnostics.ps1"
 
 
 def render_collect_script_panel() -> str:
-    if not COLLECT_SCRIPT.is_file():
+    try:
+        text = COLLECT_SCRIPT.read_text(encoding="utf-8", errors="replace")
+    except OSError:  # missing or unreadable: hide the panel, don't break upload
         return ""
-    text = COLLECT_SCRIPT.read_text(encoding="utf-8", errors="replace")
     return f"""<section class="card recent">
   <h2>Don't have a package yet?</h2>
   <p class="limits">Run <code>Collect-IntuneDiagnostics.ps1</code> in an
@@ -2380,10 +2381,12 @@ async def diagnostics_upload_page() -> HTMLResponse:
 @app.get("/collect-script")
 async def collect_script_download() -> Response:
     """Serve the collector script as a download (it ships with the app)."""
-    if not COLLECT_SCRIPT.is_file():
+    try:
+        data = COLLECT_SCRIPT.read_bytes()
+    except OSError:
         return HTMLResponse("Script not available.", status_code=404)
     return Response(
-        COLLECT_SCRIPT.read_bytes(),
+        data,
         media_type="text/plain; charset=utf-8",
         headers={"Content-Disposition":
                  'attachment; filename="Collect-IntuneDiagnostics.ps1"'},

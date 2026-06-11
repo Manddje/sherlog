@@ -27,12 +27,15 @@ RUN grep -viE '^(httpx|pytest|# Test)' requirements.txt > /tmp/req.txt \
     && pip3 install --no-cache-dir -r /tmp/req.txt \
     && rm /tmp/req.txt
 
-# Application code: the analysis script, web app and headless wrapper.
+# Application code: the analysis script, the collector script (shown and
+# downloadable on /diagnostics), web app and headless wrapper.
 COPY Get-IntuneManagementExtensionDiagnostics.ps1 /app/
+COPY Collect-IntuneDiagnostics.ps1 /app/
 COPY app.py /app/
 COPY scripts/ /app/scripts/
 
-RUN chmod +x /app/scripts/run-analysis.sh
+RUN chmod +x /app/scripts/run-analysis.sh \
+    && chmod 0644 /app/Collect-IntuneDiagnostics.ps1
 
 # Non-root runtime user; /data is the job state directory and must be writable.
 RUN useradd --create-home --uid 10001 appuser \
