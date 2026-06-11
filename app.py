@@ -505,8 +505,7 @@ NAV = ("""<header><nav class="nav">
 </nav></header>""" % {"logo": _LOGO})
 
 FOOTER = ("""<footer>
-  <span>Sherlog &middot; sherlog.nl &middot; public, no login</span>
-  <span>Timeline engine by <a href="https://github.com/petripaavola/Get-IntuneManagementExtensionDiagnostics" target="_blank" rel="noopener">Petri Paavola</a></span>
+  <span>Sherlog &middot; sherlog.nl</span>
 </footer>""")
 
 LANDING_PAGE = """<!doctype html>
@@ -808,6 +807,23 @@ _CMTRACE_CSS = """
     margin-right:.25rem;vertical-align:-1px;border:1px solid rgba(0,0,0,.08)}
   .sw.w{background:#fffbeb;border-color:#fde68a}
   .sw.e{background:#fef2f2;border-color:#fecaca}
+  #body tr{cursor:pointer}
+  tr.sel,tr.sel.warn,tr.sel.err{background:#e0e7ff}
+  #detail{position:fixed;bottom:0;left:0;right:0;max-height:45%;overflow:auto;
+    background:#fff;border-top:2px solid #d1d5db;
+    box-shadow:0 -6px 16px rgba(0,0,0,.1);padding:.6rem 1rem;z-index:3}
+  .d-bar{display:flex;justify-content:space-between;align-items:center;gap:.5rem}
+  #d-close{font:inherit;border:1px solid #d1d5db;background:#f9fafb;
+    border-radius:6px;cursor:pointer;padding:.05rem .55rem}
+  #d-close:hover{background:#f3f4f6}
+  #d-msg{margin:.45rem 0;white-space:pre-wrap;word-break:break-word}
+  .d-meta{color:#6b7280;margin-bottom:.4rem}
+  .sev{font-weight:600;padding:.1rem .55rem;border-radius:999px}
+  .sev.e{background:#fef2f2;color:#b91c1c}
+  .sev.w{background:#fffbeb;color:#92400e}
+  .sev.i{background:#eff6ff;color:#1d4ed8}
+  #d-explain .code{margin:.35rem 0;padding:.45rem .6rem;background:#eff6ff;
+    border-left:3px solid #2563eb;border-radius:0 6px 6px 0}
 """
 
 
@@ -831,6 +847,113 @@ def _plain_class(text: str) -> str:
     if _PLAIN_WARN.search(text):
         return "warn"
     return ""
+
+
+# Plain-language explanations for error codes commonly seen in IME logs, shown
+# in the detail panel when a clicked entry contains one. Hex keys are uppercase
+# `0x`-form; bare decimal keys are MSI exit codes (matched only in an
+# "exit/error code N" context to avoid false positives). Sources: Microsoft
+# Learn — Intune app installation error reference & application installation
+# common error codes reference.
+ERROR_CODES: dict[str, str] = {
+    # Intune Win32 / IME (0x87D1xxxx, 0x87D5xxxx)
+    "0x87D1041C": "The app installed successfully, but the detection rules did "
+                  "not find it afterwards (or the user uninstalled it). Check "
+                  "the app's detection rule: file path, MSI product code or "
+                  "registry key.",
+    "0x87D5501C": "Download failed: the downloaded file could not be found. "
+                  "The content was removed or corrupted before installation.",
+    "0x87D5501D": "Download failed because of an input/output error. Intune "
+                  "retries automatically.",
+    "0x87D5501E": "Download failed because it took too long (more than 8 "
+                  "hours). Intune cancels and retries the download.",
+    "0x87D5501F": "The downloaded app could not be validated: the file hash "
+                  "does not match the policy. Often a corrupted download or "
+                  "an SSL-inspecting proxy.",
+    "0x87D55078": "Download failed because of an Intune service error. "
+                  "Retried automatically.",
+    "0x87D55079": "Download failed because of a network error (generic HTTP "
+                  "failure). Retried automatically.",
+    "0x87D5507A": "Download failed: the app no longer exists or is no longer "
+                  "assigned to this device (assignment removed while the "
+                  "policy was applying).",
+    # Windows installer / general Windows (0x800700xx = Win32 error as HRESULT)
+    "0x80004005": "Unspecified error. Check the surrounding log lines and the "
+                  "app's own install log for the real cause.",
+    "0x8000FFFF": "Catastrophic failure — an unexpected error during "
+                  "installation. Check the installation logs.",
+    "0x80040154": "Class not registered: a required COM component or DLL is "
+                  "not registered on the device.",
+    "0x80070002": "The system cannot find the file specified — an expected "
+                  "file or path is missing.",
+    "0x80070003": "The system cannot find the path specified.",
+    "0x80070005": "Access denied. The installing process lacks permission "
+                  "(NTFS rights, antivirus blocking, or admin rights needed).",
+    "0x8007000E": "Not enough memory to complete the operation.",
+    "0x80070020": "The file is in use by another process (sharing violation).",
+    "0x80070057": "Invalid parameter — often a malformed install command line.",
+    "0x800700C1": "Not a valid Win32 application — usually a corrupt download "
+                  "or a wrong-architecture (x86/x64/ARM64) binary.",
+    "0x80070490": "Element not found — a required registry key, setting or "
+                  "component is missing.",
+    "0x800705B4": "The operation timed out.",
+    "0x80070643": "Fatal error during installation (MSI 1603). The installer "
+                  "itself failed; check the application's own install log.",
+    "0x80070652": "Another installation is already in progress (MSI 1618). "
+                  "Wait for it to finish and retry.",
+    "0x80070BC2": "The installation succeeded but a restart is required to "
+                  "complete it (MSI 3010).",
+    "0x80091007": "The hash value is not correct: downloaded content does not "
+                  "match the expected hash. Often caused by a proxy or "
+                  "security software modifying the file.",
+    "0xC0000142": "A DLL failed to initialize and the process terminated "
+                  "abnormally — often a broken dependency.",
+    # MSIX / Store packages
+    "0x80073CF3": "The package conflicts with an installed package, a "
+                  "dependency is missing, or the processor architecture does "
+                  "not match.",
+    "0x80073CFB": "The package is already installed and reinstalling a "
+                  "non-identical (rebuilt/re-signed) version is blocked. "
+                  "Increment the package version.",
+    # Network / WinHTTP
+    "0x80072EE2": "The network request timed out while contacting the server.",
+    "0x80072EE7": "The server name could not be resolved — DNS failure or "
+                  "proxy issue.",
+    "0x80072EFD": "Could not connect to the server (firewall, proxy or "
+                  "network outage).",
+    "0x80072EFE": "The connection to the server was closed unexpectedly.",
+    "0x80072F8F": "TLS/SSL security error — often a wrong system clock or an "
+                  "SSL-inspecting proxy presenting an untrusted certificate.",
+    # HTTP status wrapped as HRESULT (0x80190xxx, last hex digits = status)
+    "0x80190190": "HTTP 400 Bad Request — the service rejected the request.",
+    "0x80190191": "HTTP 401 Unauthorized — authentication failed or the "
+                  "token expired.",
+    "0x80190193": "HTTP 403 Forbidden — the device or user may not access "
+                  "the resource.",
+    "0x80190194": "HTTP 404 Not Found — the requested content is missing "
+                  "(often an expired download link).",
+    "0x801901F4": "HTTP 500 Internal Server Error — a service-side failure, "
+                  "usually transient.",
+    "0x801901F7": "HTTP 503 Service Unavailable — the service is temporarily "
+                  "overloaded; retried later.",
+    # .NET
+    "0x80131500": "A .NET exception occurred in the agent or installer; see "
+                  "the surrounding log lines for the stack trace.",
+    # Bare MSI exit codes (matched as "exit code N" / "error code N")
+    "1602": "MSI: the user cancelled the installation.",
+    "1603": "MSI: fatal error during installation. Check the application's "
+            "own install log for the real cause.",
+    "1605": "MSI: the product is not installed — often an uninstall or "
+            "upgrade of something already removed.",
+    "1618": "MSI: another installation is already in progress.",
+    "1633": "MSI: the package is not supported by this processor type "
+            "(architecture mismatch).",
+    "1638": "MSI: another version of this product is already installed.",
+    "1641": "MSI: installation succeeded and a restart has been initiated.",
+    "1642": "MSI: the upgrade patch does not match the installed program "
+            "(missing or different version).",
+    "3010": "MSI: installation succeeded but a restart is required.",
+}
 
 
 def render_cmtrace_view(filename: str, records: List[dict], truncated: bool) -> str:
@@ -899,6 +1022,13 @@ def render_cmtrace_view(filename: str, records: List[dict], truncated: bool) -> 
   <table><thead><tr>%(head)s</tr></thead><tbody id="body">
   %(rows)s
   </tbody></table>
+  <div id="detail" hidden>
+    <div class="d-bar"><span id="d-sev" class="sev"></span>
+      <button id="d-close" title="Close (Esc)">&times;</button></div>
+    <pre id="d-msg"></pre>
+    <div id="d-meta" class="d-meta"></div>
+    <div id="d-explain"></div>
+  </div>
 <script>
   const q = document.getElementById('q');
   const comp = document.getElementById('comp');
@@ -928,10 +1058,73 @@ def render_cmtrace_view(filename: str, records: List[dict], truncated: bool) -> 
   if (comp) comp.addEventListener('change', apply);
   sev.addEventListener('change', apply);
   apply();
+
+  // Detail panel: click a row to read the full message, with plain-language
+  // explanations for known error codes (hex, signed decimal, or MSI exit).
+  const CODES = %(codes)s;
+  const detail = document.getElementById('detail');
+  const dMsg = document.getElementById('d-msg');
+  const dMeta = document.getElementById('d-meta');
+  const dSev = document.getElementById('d-sev');
+  const dExplain = document.getElementById('d-explain');
+  function findCodes(text) {
+    const found = new Map();
+    for (const m of text.matchAll(/0x[0-9A-Fa-f]{8}/g)) {
+      const k = '0x' + m[0].slice(2).toUpperCase();
+      if (CODES[k]) found.set(k, CODES[k]);
+    }
+    // IME often logs HRESULTs as signed decimals (-2016345060 = 0x87D1041C).
+    for (const m of text.matchAll(/-2\\d{9}/g)) {
+      const k = '0x' + (Number(m[0]) >>> 0).toString(16).toUpperCase();
+      if (CODES[k]) found.set(k + ' (' + m[0] + ')', CODES[k]);
+    }
+    for (const m of text.matchAll(/\\b(?:exit|error)\\s*code[:\\s]+(\\d{3,4})\\b/gi)) {
+      if (CODES[m[1]]) found.set(m[1], CODES[m[1]]);
+    }
+    return found;
+  }
+  function showDetail(tr) {
+    rows.forEach(r => r.classList.toggle('sel', r === tr));
+    const msg = tr.querySelector('td.msg').textContent;
+    dMsg.textContent = msg;
+    const isErr = tr.classList.contains('err'), isWarn = tr.classList.contains('warn');
+    dSev.textContent = isErr ? 'Error' : isWarn ? 'Warning' : 'Info';
+    dSev.className = 'sev ' + (isErr ? 'e' : isWarn ? 'w' : 'i');
+    const meta = [];
+    for (const [cls, label] of [['c', 'Component'], ['t', 'Time'], ['th', 'Thread']]) {
+      const td = tr.querySelector('td.' + cls);
+      if (td && td.textContent) meta.push(label + ': ' + td.textContent);
+    }
+    const ln = tr.querySelector('td.ln');
+    if (ln) meta.push('Line ' + ln.textContent);
+    dMeta.textContent = meta.join('  \\u00b7  ');
+    dExplain.innerHTML = '';
+    for (const [code, expl] of findCodes(msg)) {
+      const div = document.createElement('div');
+      div.className = 'code';
+      const b = document.createElement('strong');
+      b.textContent = code;
+      div.appendChild(b);
+      div.appendChild(document.createTextNode(' \\u2014 ' + expl));
+      dExplain.appendChild(div);
+    }
+    detail.hidden = false;
+  }
+  function closeDetail() {
+    detail.hidden = true;
+    rows.forEach(r => r.classList.remove('sel'));
+  }
+  document.getElementById('body').addEventListener('click', ev => {
+    const tr = ev.target.closest('tr');
+    if (tr) showDetail(tr);
+  });
+  document.getElementById('d-close').addEventListener('click', closeDetail);
+  document.addEventListener('keydown', ev => { if (ev.key === 'Escape') closeDetail(); });
 </script>
 </body></html>""" % {
         "file": html_escape(filename), "css": _CMTRACE_CSS, "comp": comp_sel,
         "head": head, "note": note, "rows": "\n".join(rows),
+        "codes": json.dumps(ERROR_CODES),
     }
 
 

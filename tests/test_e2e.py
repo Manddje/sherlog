@@ -212,7 +212,7 @@ def test_render_view_plain_vs_structured():
     plain, _ = app_module.parse_cmtrace("ERROR: boom\nall good\n")
     html = app_module.render_cmtrace_view("cmd.log", plain, False)
     assert 'class="ln"' in html       # line-number column for plain logs
-    assert "Component" not in html    # structured columns hidden
+    assert "<th>Component" not in html and '<th class="c">' not in html  # structured columns hidden
     assert 'class="err"' in html      # ERROR line coloured
 
     struct, _ = app_module.parse_cmtrace(
@@ -244,6 +244,27 @@ def test_cmtrace_severity_filter_and_legend():
     plain, _ = app_module.parse_cmtrace("ERROR: boom\nall good\n")
     html2 = app_module.render_cmtrace_view("cmd.log", plain, False)
     assert 'id="sev"' in html2
+
+
+def test_cmtrace_detail_panel():
+    import app as app_module
+    # Core error codes ship with a plain-language explanation.
+    assert "0x87D1041C" in app_module.ERROR_CODES
+    assert "0x80070643" in app_module.ERROR_CODES
+
+    records, _ = app_module.parse_cmtrace(
+        '<![LOG[Install failed with 0x87D1041C]LOG]!><time="1" date="2" '
+        'component="C" context="" type="3" thread="3" file="">'
+    )
+    html = app_module.render_cmtrace_view("ime.log", records, False)
+    assert 'id="detail"' in html              # click-to-read panel
+    assert 'id="d-explain"' in html
+    assert "0x87D1041C" in html               # codes JSON embedded for lookup
+
+    # Plain view gets the panel too.
+    plain, _ = app_module.parse_cmtrace("exit code 1603\n")
+    html2 = app_module.render_cmtrace_view("cmd.log", plain, False)
+    assert 'id="detail"' in html2
 
 
 def test_zip_slip_rejected(client):
