@@ -973,6 +973,41 @@ class BasicAuthMiddleware(BaseHTTPMiddleware):
 
 # --- Background cleanup ------------------------------------------------------
 
+def fail_interrupted_jobs() -> int:
+    """Mark jobs left queued/running by a previous process as failed.
+
+    Analysis tasks live in this process only; after a restart (deploy,
+    crash) any job still queued/running can never finish, and its result
+    page would poll forever.
+    """
+    if not JOBS_DIR.is_dir():
+        return 0
+    msg = ("The analysis was interrupted by an app restart. "
+           "Please upload again.")
+    failed = 0
+    for child in JOBS_DIR.iterdir():
+        if not child.is_dir():
+            continue
+        status = read_status(child.name)
+        if not status:
+            continue
+        if status.get("kind") == "diag":
+            analysis = status.get("analysis") or {}
+            if analysis.get("state") in ("queued", "running"):
+                update_status(child.name, analysis={
+                    "state": "failed", "exitcode": None,
+                    "stdout": "", "stderr": msg,
+                })
+                failed += 1
+        elif status.get("state") in ("queued", "running"):
+            update_status(child.name, state="failed", exitcode=None,
+                          stdout="", stderr=msg)
+            failed += 1
+    if failed:
+        log.warning("marked %d interrupted job(s) as failed", failed)
+    return failed
+
+
 def cleanup_old_jobs() -> int:
     if not JOBS_DIR.is_dir():
         return 0
@@ -1006,6 +1041,7 @@ async def cleanup_loop() -> None:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     JOBS_DIR.mkdir(parents=True, exist_ok=True)
+    fail_interrupted_jobs()
     if not AUTH_ENABLED:
         log.warning("AUTH DISABLED: APP_USER/APP_PASSWORD not both set. App is OPEN.")
     else:

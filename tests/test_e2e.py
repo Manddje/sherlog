@@ -661,6 +661,28 @@ def test_diag_full_flow(client):
     assert "Win32App" in report.text
 
 
+def test_interrupted_jobs_marked_failed(client):
+    # Simulate jobs left behind by a previous process: a timeline job stuck
+    # on "running" and a diag job whose analysis is stuck on "queued".
+    import app as app_module
+    t_job, d_job = "deadbeef" * 4, "cafebabe" * 4
+    for j in (t_job, d_job):
+        (app_module.job_dir(j) / "input").mkdir(parents=True)
+    app_module.write_status(t_job, state="running")
+    app_module.write_status(d_job, kind="diag", state="ready",
+                            analysis={"state": "queued"})
+
+    assert app_module.fail_interrupted_jobs() == 2
+    assert app_module.read_status(t_job)["state"] == "failed"
+    diag = app_module.read_status(d_job)
+    assert diag["state"] == "ready"  # package stays browsable
+    assert diag["analysis"]["state"] == "failed"
+    assert "restart" in diag["analysis"]["stderr"]
+
+    # Idempotent: done/failed/none states are left alone.
+    assert app_module.fail_interrupted_jobs() == 0
+
+
 def test_read_text_tolerant_encodings(tmp_path):
     import app as app_module
     import codecs
