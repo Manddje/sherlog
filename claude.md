@@ -41,6 +41,13 @@ Deployment-doel: **Coolify** (self-hosted PaaS), build via Dockerfile in de repo
 - Healthcheck-endpoint op `GET /health` (geen auth) dat 200 teruggeeft en
   controleert of `pwsh` beschikbaar is
 - Geen externe services (geen database, geen Redis) in v1 — bestandssysteem is de state
+- **CMTrace-viewer**: naast het timeline-rapport kan de gebruiker de ruwe
+  geüploade `.log`-bestanden bekijken in een web-CMTrace-tabel (kolommen tekst,
+  component, datum/tijd, thread; rijen gekleurd op `type` — geel=warning,
+  rood=error; tekst-/componentfilter). Loginhoud is untrusted en wordt daarom in
+  een sandboxed iframe (`Content-Security-Policy: sandbox`) geserveerd, net als het
+  rapport. Bestandskeuze via membership-check (geen path traversal). Rendering
+  gecapt op `CMTRACE_MAX_LINES` (default 50000) regels.
 
 ## Wijzigingen aan het originele script
 
@@ -68,6 +75,7 @@ Deployment-doel: **Coolify** (self-hosted PaaS), build via Dockerfile in de repo
   - `MAX_UPLOAD_MB` (default 100)
   - `JOB_RETENTION_HOURS` (default 24)
   - `SCRIPT_TIMEOUT_SECONDS` (default 300)
+  - `CMTRACE_MAX_LINES` (default 50000)
 - Logging naar stdout (Coolify/Docker vangt dit op)
 - Commit per afgeronde fase met duidelijke commit message
 

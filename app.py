@@ -15,6 +15,7 @@ Configuration (env, with safe defaults):
   SCRIPT_TIMEOUT_SECONDS  default 300
   APP_USER / APP_PASSWORD default empty (auth disabled, logs a warning)
   JOBS_DIR                default /data/jobs
+  CMTRACE_MAX_LINES       default 50000 (cap rendered rows in the log viewer)
 """
 
 from __future__ import annotations
@@ -33,6 +34,7 @@ import zipfile
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import List, Optional
+from urllib.parse import quote
 
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
@@ -59,6 +61,9 @@ JOB_CONCURRENCY = max(1, int(os.environ.get("JOB_CONCURRENCY", "2")))
 JOBS_DIR = Path(os.environ.get("JOBS_DIR", "/data/jobs"))
 APP_USER = os.environ.get("APP_USER", "")
 APP_PASSWORD = os.environ.get("APP_PASSWORD", "")
+# Cap rows rendered by the CMTrace log viewer so a large upload can't build a
+# multi-hundred-MB HTML table; extra lines are dropped with a notice.
+CMTRACE_MAX_LINES = max(1, int(os.environ.get("CMTRACE_MAX_LINES", "50000")))
 
 ALLOWED_EXTENSIONS = {".log", ".zip"}
 CHUNK = 1024 * 1024
@@ -94,6 +99,106 @@ def read_status(job_id: str) -> Optional[dict]:
 def find_report(output_dir: Path) -> Optional[Path]:
     reports = sorted(output_dir.glob("*.html"), key=lambda f: f.stat().st_mtime, reverse=True)
     return reports[0] if reports else None
+
+
+def _log_sort_key(rel: str):
+    """Order classic IME CMTrace logs first; command-output dumps last."""
+    leaf = rel.rsplit("/", 1)[-1].lower()
+    is_cmd = leaf.startswith("(") or ("command" in leaf and "output" in leaf)
+    return (1 if is_cmd else 0, rel.lower())
+
+
+def list_input_logs(job_id: str) -> List[str]:
+    """Relative POSIX paths of .log files under <job>/input (the raw uploads).
+
+    Recurses so a folder structure from a diagnostics zip is preserved; the
+    returned paths double as the membership allow-list for the view route.
+    """
+    input_dir = job_dir(job_id) / "input"
+    if not input_dir.is_dir():
+        return []
+    rels = [
+        p.relative_to(input_dir).as_posix()
+        for p in input_dir.rglob("*.log")
+        if p.is_file()
+    ]
+    return sorted(rels, key=_log_sort_key)
+
+
+# --- CMTrace log parsing -----------------------------------------------------
+# IME logs use the CMTrace format, e.g.
+#   <![LOG[message]LOG]!><time="08:45:50.100" date="9-13-2023"
+#       component="IntuneManagementExtension" context="" type="1" thread="4" file="">
+# The message may span newlines, so match non-greedily with DOTALL.
+CMTRACE_RE = re.compile(
+    r'<!\[LOG\[(?P<msg>.*?)\]LOG\]!>'
+    r'<time="(?P<time>[^"]*)"\s+date="(?P<date>[^"]*)"'
+    r'\s+component="(?P<component>[^"]*)"'
+    r'[^>]*?\btype="(?P<type>[^"]*)"'
+    r'[^>]*?\bthread="(?P<thread>[^"]*)"',
+    re.DOTALL,
+)
+
+
+def _plain_records(chunk: str):
+    """Yield one info record per non-blank line of a non-CMTrace chunk.
+
+    Command-output logs (ipconfig, netsh, …) aren't CMTrace-formatted, so we keep
+    them readable line-by-line instead of as one giant blob.
+    """
+    for line in chunk.splitlines():
+        if line.strip() == "":
+            continue
+        yield {"msg": line.rstrip("\r"), "time": "", "date": "",
+               "component": "", "type": "", "thread": "", "structured": False}
+
+
+def parse_cmtrace(text: str, limit: int = CMTRACE_MAX_LINES) -> tuple[List[dict], bool]:
+    """Parse CMTrace-formatted text into records.
+
+    Returns (records, truncated). CMTrace lines become structured records;
+    anything between/around them is split into per-line info records so no content
+    is dropped. Stops at `limit` records and reports truncation.
+    """
+    records: List[dict] = []
+    truncated = False
+    pos = 0
+
+    def add(rec: dict) -> bool:
+        nonlocal truncated
+        if len(records) >= limit:
+            truncated = True
+            return False
+        records.append(rec)
+        return True
+
+    def add_plain(chunk: str) -> bool:
+        for rec in _plain_records(chunk):
+            if not add(rec):
+                return False
+        return True
+
+    for m in CMTRACE_RE.finditer(text):
+        if not add_plain(text[pos:m.start()]):
+            return records, truncated
+        if not add({
+            "msg": m.group("msg"),
+            "time": m.group("time"),
+            "date": m.group("date"),
+            "component": m.group("component"),
+            "type": m.group("type"),
+            "thread": m.group("thread"),
+            "structured": True,
+        }):
+            return records, truncated
+        pos = m.end()
+        # Skip the trailing `... file="">` tail of the matched line.
+        tail = text.find(">", pos)
+        if tail != -1 and text.find("<![LOG[", pos, tail) == -1:
+            pos = tail + 1
+
+    add_plain(text[pos:])
+    return records, truncated
 
 
 # --- Analysis subprocess -----------------------------------------------------
@@ -406,8 +511,9 @@ UPLOAD_PAGE = """<!doctype html>
   %(nav)s
   <section class="hero">
     <h1>Analyze Intune Management Extension logs</h1>
-    <p>Upload your IME logs and get an interactive HTML timeline of Win32App
-       installs, detections and errors &mdash; right in your browser.</p>
+    <p>Upload your IME logs and either build an interactive Win32App
+       <strong>timeline</strong>, or browse the raw files in a
+       <strong>CMTrace</strong> table &mdash; right in your browser.</p>
   </section>
   <main class="wrap">
     <div class="card">
@@ -432,7 +538,11 @@ UPLOAD_PAGE = """<!doctype html>
             <span class="badge">.log</span><span class="badge">.zip</span>
             Max total upload: <strong>%(max)d&nbsp;MB</strong>
           </p>
-          <button id="submit" class="btn" type="submit" disabled>Analyze logs</button>
+          <span style="display:flex;gap:.6rem;flex-wrap:wrap">
+            <button class="btn btn-ghost go" type="submit" formaction="/cmtrace-view"
+                    disabled>CMTrace viewer</button>
+            <button class="btn go" type="submit" disabled>Build timeline</button>
+          </span>
         </div>
       </form>
     </div>
@@ -443,7 +553,7 @@ UPLOAD_PAGE = """<!doctype html>
   const input = document.getElementById('input');      // the field that submits
   const dirinput = document.getElementById('dirinput'); // folder dialog trigger
   const list = document.getElementById('files');
-  const submit = document.getElementById('submit');
+  const buttons = [...document.querySelectorAll('.go')];
   const LOGRE = /\.(log|zip)$/i;
 
   // Assign a list of File objects to the (submitting) input via DataTransfer,
@@ -462,7 +572,8 @@ UPLOAD_PAGE = """<!doctype html>
                        ' (' + (f.size/1048576).toFixed(2) + ' MB)';
       list.appendChild(li);
     }
-    submit.disabled = input.files.length === 0;
+    const empty = input.files.length === 0;
+    buttons.forEach(b => b.disabled = empty);
   }
 
   // Recurse a dropped directory entry, collecting all files.
@@ -532,10 +643,67 @@ REPORT_PAGE = """<!doctype html>
 </style></head><body>
   <div class="topbar">
     <a class="brand" href="/">%(logo)s Sherlog</a>
-    <a class="btn btn-ghost" href="/">New analysis</a>
+    <span>
+      <a class="btn btn-ghost" href="/result/%(job)s/cmtrace">Raw logs (CMTrace)</a>
+      <a class="btn btn-ghost" href="/">New analysis</a>
+    </span>
   </div>
   <iframe src="/result/%(job)s/report"
           sandbox="allow-scripts allow-popups allow-popups-to-escape-sandbox"></iframe>
+</body></html>"""
+
+CMTRACE_PAGE = """<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sherlog &mdash; raw logs (CMTrace)</title>
+<style>%(css)s
+  html,body{height:100%%}
+  .topbar{display:flex;align-items:center;justify-content:space-between;
+    padding:.6rem 1.25rem;border-bottom:1px solid var(--border);background:var(--bg)}
+  .body{display:flex;height:calc(100vh - 3.6rem)}
+  .side{width:300px;flex:none;overflow:auto;border-right:1px solid var(--border);
+    background:var(--surface);padding:.5rem .35rem;font-size:.86rem}
+  .side details{margin:0}
+  .side summary{cursor:pointer;padding:.25rem .4rem;color:var(--fg);font-weight:600;
+    border-radius:6px;list-style:none;display:flex;align-items:center;gap:.35rem}
+  .side summary::before{content:'▸';color:var(--muted);font-size:.7rem;transition:.1s}
+  .side details[open]>summary::before{transform:rotate(90deg)}
+  .side .grp{padding-left:.6rem;border-left:1px solid var(--border);margin-left:.55rem}
+  .side .file{padding:.3rem .5rem;border-radius:6px;color:var(--muted);cursor:pointer;
+    white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .side .file:hover{background:var(--bg);color:var(--fg)}
+  .side .file.active{background:var(--accent);color:#fff}
+  iframe{border:0;flex:1;height:100%%;display:block}
+</style></head><body>
+  <div class="topbar">
+    <a class="brand" href="/">%(logo)s Sherlog</a>
+    <span>
+      %(timeline)s
+      <a class="btn btn-ghost" href="/">New analysis</a>
+    </span>
+  </div>
+  <div class="body">
+    <nav class="side" id="side">%(tree)s</nav>
+    <iframe id="view" src="/result/%(job)s/cmtrace/view?file=%(first)s"></iframe>
+  </div>
+<script>
+  const job = %(jobjson)s;
+  const first = %(firstjson)s;
+  const side = document.getElementById('side');
+  const view = document.getElementById('view');
+  const files = [...side.querySelectorAll('.file')];
+  function select(el) {
+    files.forEach(f => f.classList.toggle('active', f === el));
+    view.src = '/result/' + job + '/cmtrace/view?file=' +
+               encodeURIComponent(el.dataset.file);
+  }
+  side.addEventListener('click', ev => {
+    const f = ev.target.closest('.file');
+    if (f) select(f);
+  });
+  // Highlight the file the iframe already loaded (server's first/default).
+  (files.find(f => f.dataset.file === first) || files[0])?.classList.add('active');
+</script>
 </body></html>"""
 
 ERROR_PAGE = """<!doctype html>
@@ -574,6 +742,146 @@ def strip_branding(html: str) -> str:
     return _BRANDING_FOOTER.sub("", html, count=1)
 
 
+# --- CMTrace viewer rendering ------------------------------------------------
+
+# Standalone styles: the view is served inside a sandboxed iframe (separate
+# origin), so it cannot share the app's stylesheet — keep it self-contained.
+_CMTRACE_CSS = """
+  *{box-sizing:border-box}
+  body{font:13px/1.45 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+    margin:0;color:#1f2937;background:#fff}
+  .bar{position:sticky;top:0;display:flex;gap:.5rem;align-items:center;
+    padding:.5rem .75rem;background:#f9fafb;border-bottom:1px solid #e5e7eb;z-index:2}
+  .bar input,.bar select{font:inherit;padding:.3rem .5rem;border:1px solid #d1d5db;
+    border-radius:6px}
+  .bar input{flex:1;min-width:8rem}
+  .count{color:#6b7280;white-space:nowrap}
+  .note{padding:.5rem .75rem;color:#92400e;background:#fef3c7;
+    border-bottom:1px solid #fde68a}
+  table{border-collapse:collapse;width:100%;table-layout:fixed}
+  th,td{text-align:left;padding:.25rem .6rem;border-bottom:1px solid #f1f5f9;
+    vertical-align:top;word-break:break-word;white-space:pre-wrap}
+  th{position:sticky;top:2.6rem;background:#f3f4f6;font-weight:600;z-index:1}
+  td.msg{width:auto}
+  td.c,td.t,td.th{width:9rem;color:#6b7280;white-space:nowrap}
+  td.th{width:4rem}
+  td.ln,th.ln{width:4rem;color:#9ca3af;text-align:right;
+    font-variant-numeric:tabular-nums;user-select:none}
+  tr.warn{background:#fffbeb}
+  tr.warn td.msg{color:#92400e}
+  tr.err{background:#fef2f2}
+  tr.err td.msg{color:#b91c1c;font-weight:600}
+  tr.hide{display:none}
+"""
+
+
+def _row_class(type_str: str) -> str:
+    t = type_str.strip().lower()
+    if t in ("3", "error"):
+        return "err"
+    if t in ("2", "warning", "warn"):
+        return "warn"
+    return ""
+
+
+# Keyword colouring for plain (non-CMTrace) command-output lines.
+_PLAIN_ERR = re.compile(r"\b(error|errors|failed|failure|fatal|exception|0x8)\b|0x8[0-9a-f]{7}", re.I)
+_PLAIN_WARN = re.compile(r"\b(warn|warning|warnings)\b", re.I)
+
+
+def _plain_class(text: str) -> str:
+    if _PLAIN_ERR.search(text):
+        return "err"
+    if _PLAIN_WARN.search(text):
+        return "warn"
+    return ""
+
+
+def render_cmtrace_view(filename: str, records: List[dict], truncated: bool) -> str:
+    """Standalone (sandboxed) HTML view for one parsed log file.
+
+    Two layouts: a full CMTrace table when the file has structured records, or a
+    compact line-numbered single column for plain command-output logs (empty
+    Component/Date/Thread columns are dropped). Every field is html-escaped —
+    log content is untrusted.
+    """
+    structured = any(r["structured"] for r in records)
+    note = ""
+    if truncated:
+        note = (f'<div class="note">Showing the first {len(records):,} lines '
+                f'(file is larger; output truncated).</div>')
+
+    if structured:
+        components = sorted({r["component"] for r in records if r["component"]})
+        opts = "".join(
+            f'<option value="{html_escape(c)}">{html_escape(c)}</option>'
+            for c in components
+        )
+        rows = []
+        for r in records:
+            cls = _row_class(r["type"]) if r["structured"] else _plain_class(r["msg"])
+            when = (r["date"] + " " + r["time"]).strip()
+            rows.append(
+                f'<tr class="{cls}" data-c="{html_escape(r["component"])}">'
+                f'<td class="msg">{html_escape(r["msg"])}</td>'
+                f'<td class="c">{html_escape(r["component"])}</td>'
+                f'<td class="t">{html_escape(when)}</td>'
+                f'<td class="th">{html_escape(r["thread"])}</td></tr>'
+            )
+        head = ('<th>Log text</th><th class="c">Component</th>'
+                '<th class="t">Date / time</th><th class="th">Thread</th>')
+        comp_sel = ('<select id="comp"><option value="">All components</option>'
+                    f'{opts}</select>')
+    else:
+        rows = []
+        for i, r in enumerate(records, 1):
+            cls = _plain_class(r["msg"])
+            rows.append(
+                f'<tr class="{cls}" data-c="">'
+                f'<td class="ln">{i}</td>'
+                f'<td class="msg">{html_escape(r["msg"])}</td></tr>'
+            )
+        head = '<th class="ln">#</th><th>Log text</th>'
+        comp_sel = ""
+
+    return """<!doctype html><html lang="en"><head><meta charset="utf-8">
+<title>%(file)s</title><style>%(css)s</style></head><body>
+  <div class="bar">
+    <input id="q" type="search" placeholder="Filter text…" autocomplete="off">
+    %(comp)s
+    <span class="count" id="count"></span>
+  </div>
+  %(note)s
+  <table><thead><tr>%(head)s</tr></thead><tbody id="body">
+  %(rows)s
+  </tbody></table>
+<script>
+  const q = document.getElementById('q');
+  const comp = document.getElementById('comp');
+  const count = document.getElementById('count');
+  const rows = [...document.querySelectorAll('#body tr')];
+  function apply() {
+    const needle = q.value.toLowerCase();
+    const c = comp ? comp.value : '';
+    let shown = 0;
+    for (const tr of rows) {
+      const ok = (!c || tr.dataset.c === c) &&
+                 (!needle || tr.textContent.toLowerCase().includes(needle));
+      tr.classList.toggle('hide', !ok);
+      if (ok) shown++;
+    }
+    count.textContent = shown + ' / ' + rows.length + ' lines';
+  }
+  q.addEventListener('input', apply);
+  if (comp) comp.addEventListener('change', apply);
+  apply();
+</script>
+</body></html>""" % {
+        "file": html_escape(filename), "css": _CMTRACE_CSS, "comp": comp_sel,
+        "head": head, "note": note, "rows": "\n".join(rows),
+    }
+
+
 # --- Routes ------------------------------------------------------------------
 
 @app.get("/", response_class=HTMLResponse)
@@ -591,8 +899,12 @@ async def health() -> JSONResponse:
     return JSONResponse({"status": "degraded", "pwsh": None}, status_code=503)
 
 
-@app.post("/analyze")
-async def analyze(request: Request) -> Response:
+async def stage_upload(request: Request):
+    """Validate + stage an upload into a fresh job dir.
+
+    Returns (job_id, input_dir, output_dir) on success, or an HTMLResponse error
+    to return to the client. Shared by /analyze (timeline) and /cmtrace-view.
+    """
     # Early server-side size guard: reject before parsing/buffering the body.
     # Content-Length can be absent/spoofed, so save_uploads() still enforces the
     # real limit by counting bytes as it streams; this just fails fast.
@@ -630,8 +942,31 @@ async def analyze(request: Request) -> Response:
         shutil.rmtree(base, ignore_errors=True)
         return HTMLResponse("No .log files found in the upload.", status_code=400)
 
+    return job_id, input_dir, output_dir
+
+
+@app.post("/analyze")
+async def analyze(request: Request) -> Response:
+    staged = await stage_upload(request)
+    if isinstance(staged, Response):
+        return staged
+    job_id, input_dir, output_dir = staged
+
     asyncio.create_task(run_job(job_id, input_dir, output_dir))
     return RedirectResponse(url=f"/result/{job_id}", status_code=303)
+
+
+@app.post("/cmtrace-view")
+async def cmtrace_view_upload(request: Request) -> Response:
+    """Stage logs for the raw CMTrace viewer only — no timeline analysis runs."""
+    staged = await stage_upload(request)
+    if isinstance(staged, Response):
+        return staged
+    job_id, _input_dir, _output_dir = staged
+
+    # No subprocess; mark the job as logs-only so the cmtrace routes serve it.
+    write_status(job_id, state="logs")
+    return RedirectResponse(url=f"/result/{job_id}/cmtrace", status_code=303)
 
 
 @app.get("/result/{job_id}", response_class=HTMLResponse)
@@ -645,6 +980,8 @@ async def result(job_id: str) -> Response:
         return HTMLResponse("Unknown job.", status_code=404)
 
     state = status.get("state")
+    if state == "logs":  # CMTrace-only job, no timeline report exists
+        return RedirectResponse(url=f"/result/{job_id}/cmtrace", status_code=303)
     if state in ("running", "queued"):
         return HTMLResponse(BUSY_PAGE % {
             "css": PAGE_CSS, "nav": NAV, "footer": FOOTER, "job": job_id,
@@ -685,4 +1022,87 @@ async def report_raw(job_id: str) -> Response:
     return HTMLResponse(
         strip_branding(report.read_text(encoding="utf-8", errors="replace")),
         headers={"Content-Security-Policy": "sandbox allow-scripts allow-popups"},
+    )
+
+
+def _attr(s: str) -> str:  # safe inside a double-quoted HTML attribute
+    return html_escape(s).replace('"', "&quot;")
+
+
+def render_log_tree(paths: List[str]) -> str:
+    """Nested <details> folder tree from sorted relative log paths.
+
+    Folders come from the uploaded structure (a diagnostics zip); flat uploads
+    just yield files at the root. File order within a folder keeps the incoming
+    (CMTrace-first) sort.
+    """
+    tree: dict = {}
+    for p in paths:
+        *dirs, leaf = p.split("/")
+        node = tree
+        for d in dirs:
+            node = node.setdefault(d, {})
+        node.setdefault("__files__", []).append((leaf, p))
+
+    def render(node: dict) -> str:
+        out = []
+        for name in sorted(k for k in node if k != "__files__"):
+            out.append(
+                f"<details open><summary>{html_escape(name)}</summary>"
+                f'<div class="grp">{render(node[name])}</div></details>'
+            )
+        for leaf, full in node.get("__files__", []):
+            out.append(
+                f'<div class="file" data-file="{_attr(full)}" '
+                f'title="{_attr(full)}">{html_escape(leaf)}</div>'
+            )
+        return "".join(out)
+
+    return render(tree)
+
+
+@app.get("/result/{job_id}/cmtrace", response_class=HTMLResponse)
+async def cmtrace(job_id: str) -> Response:
+    """App-chrome page: a folder tree of raw logs + a sandboxed viewer iframe."""
+    if not job_id.isalnum():
+        return HTMLResponse("Invalid job id.", status_code=400)
+    status = read_status(job_id)
+    if status is None or status.get("state") not in ("done", "logs"):
+        return HTMLResponse("Logs not available.", status_code=404)
+
+    logs = list_input_logs(job_id)
+    if not logs:
+        return HTMLResponse("No raw logs found for this job.", status_code=404)
+
+    # Only a finished timeline job has a report to link back to.
+    timeline = (f'<a class="btn btn-ghost" href="/result/{job_id}">&larr; Timeline</a>'
+                if status.get("state") == "done" else "")
+
+    return HTMLResponse(CMTRACE_PAGE % {
+        "css": PAGE_CSS, "logo": _LOGO, "job": job_id, "timeline": timeline,
+        "tree": render_log_tree(logs), "first": quote(logs[0]),
+        "firstjson": json.dumps(logs[0]), "jobjson": json.dumps(job_id),
+    })
+
+
+@app.get("/result/{job_id}/cmtrace/view", response_class=HTMLResponse)
+async def cmtrace_view(job_id: str, file: str) -> Response:
+    """Sandboxed CMTrace table for one raw log. Untrusted content, so it is
+    served with a CSP `sandbox` directive and only framed by the page above."""
+    if not job_id.isalnum():
+        return HTMLResponse("Invalid job id.", status_code=400)
+    status = read_status(job_id)
+    if status is None or status.get("state") not in ("done", "logs"):
+        return HTMLResponse("Logs not available.", status_code=404)
+
+    # Membership check: `file` must be exactly one of the staged logs — this
+    # rejects any path-traversal attempt without touching the filesystem.
+    if file not in list_input_logs(job_id):
+        return HTMLResponse("Unknown log file.", status_code=404)
+
+    text = (job_dir(job_id) / "input" / file).read_text(encoding="utf-8", errors="replace")
+    records, truncated = parse_cmtrace(text)
+    return HTMLResponse(
+        render_cmtrace_view(file, records, truncated),
+        headers={"Content-Security-Policy": "sandbox allow-scripts"},
     )

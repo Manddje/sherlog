@@ -18,6 +18,12 @@ Eén container, twee lagen:
 De state staat volledig op het bestandssysteem (`/data`): geen database, geen
 Redis.
 
+Naast het timeline-rapport biedt de app een **CMTrace-logviewer**: bekijk de ruwe
+geüploade `.log`-bestanden in een gekleurde tabel (warnings geel, errors rood) met
+tekst- en componentfilter — een web-equivalent van het Windows-only CMTrace.exe.
+Bereikbaar via "Raw logs (CMTrace)" op de rapportpagina. De (untrusted) loginhoud
+wordt in een sandboxed iframe geserveerd.
+
 ## Credits
 
 Het analysescript `Get-IntuneManagementExtensionDiagnostics.ps1` is gemaakt door
@@ -53,6 +59,7 @@ Alle configuratie loopt via environment variables met veilige defaults:
 | `JOB_RETENTION_HOURS`    | `24`    | Jobmappen (logs + rapport) ouder dan dit worden automatisch verwijderd.                       |
 | `SCRIPT_TIMEOUT_SECONDS` | `300`   | Timeout voor het analyse-subprocess. Bij overschrijding wordt de job als `failed` gemarkeerd. |
 | `JOB_CONCURRENCY`        | `2`     | Maximum aantal analyses dat tegelijk draait. Extra jobs wachten in de wachtrij.               |
+| `CMTRACE_MAX_LINES`      | `50000` | Maximum aantal regels dat de CMTrace-logviewer per bestand rendert.                            |
 | `APP_USER`               | *(leeg)*| Optionele gebruikersnaam voor basic auth.                                                     |
 | `APP_PASSWORD`           | *(leeg)*| Optioneel wachtwoord voor basic auth.                                                         |
 

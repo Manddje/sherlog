@@ -111,6 +111,103 @@ def test_wrong_extension_rejected(client):
     assert r.status_code == 400
 
 
+def test_cmtrace_viewer(client):
+    data = _zip_of_testdata()
+    r = client.post(
+        "/analyze",
+        files={"files": ("logs.zip", data, "application/zip")},
+        follow_redirects=False,
+    )
+    location = r.headers["location"]
+    _wait_for_result(client, location)  # block until the job is done
+    job_id = location.rstrip("/").rsplit("/", 1)[-1]
+
+    page = client.get(f"/result/{job_id}/cmtrace")
+    assert page.status_code == 200
+    assert "IntuneManagementExtension.log" in page.text
+    assert "AgentExecutor.log" in page.text
+    assert "iframe" in page.text
+
+    view = client.get(
+        f"/result/{job_id}/cmtrace/view",
+        params={"file": "IntuneManagementExtension.log"},
+    )
+    assert view.status_code == 200
+    assert "Win32App" in view.text
+    assert "sandbox" in view.headers.get("content-security-policy", "")
+
+    # Membership check rejects traversal and unknown files.
+    assert client.get(
+        f"/result/{job_id}/cmtrace/view", params={"file": "../app.py"}
+    ).status_code == 404
+    assert client.get(
+        f"/result/{job_id}/cmtrace/view", params={"file": "nope.log"}
+    ).status_code == 404
+
+
+def test_parse_cmtrace_against_testdata():
+    import app as app_module
+    text = (TESTDATA / "IntuneManagementExtension.log").read_text(encoding="utf-8")
+    records, truncated = app_module.parse_cmtrace(text)
+    assert records
+    assert any(r["component"] == "IntuneManagementExtension" for r in records)
+    assert any("Win32App" in r["msg"] for r in records)
+    assert not truncated
+
+
+def test_parse_cmtrace_multiline_and_plain():
+    import app as app_module
+    text = (
+        "plain line before\n"
+        '<![LOG[first\nsecond]LOG]!><time="01:02:03.000" date="1-2-2024" '
+        'component="X" context="" type="3" thread="7" file="">\n'
+    )
+    records, _ = app_module.parse_cmtrace(text)
+    assert records[0]["msg"] == "plain line before"
+    assert records[0]["structured"] is False
+    assert records[1]["msg"] == "first\nsecond"   # multi-line message stays one record
+    assert records[1]["structured"] is True
+    assert records[1]["component"] == "X"
+    assert records[1]["type"] == "3"
+    assert records[1]["thread"] == "7"
+
+
+def test_parse_cmtrace_plain_splits_per_line():
+    import app as app_module
+    # A command-output (non-CMTrace) log becomes one record per non-blank line.
+    records, _ = app_module.parse_cmtrace("line one\n\nline two\nline three\n")
+    assert [r["msg"] for r in records] == ["line one", "line two", "line three"]
+    assert all(r["structured"] is False for r in records)
+
+
+def test_render_log_tree_groups_folders():
+    import app as app_module
+    html = app_module.render_log_tree([
+        "IntuneManagementExtension.log",
+        "mdmdiagnostics/(29) Command foo output.log",
+    ])
+    assert "<details" in html and "mdmdiagnostics" in html
+    assert 'data-file="mdmdiagnostics/(29) Command foo output.log"' in html
+    assert ">(29) Command foo output.log<" in html  # leaf shown, not full path
+
+
+def test_render_view_plain_vs_structured():
+    import app as app_module
+    plain, _ = app_module.parse_cmtrace("ERROR: boom\nall good\n")
+    html = app_module.render_cmtrace_view("cmd.log", plain, False)
+    assert 'class="ln"' in html       # line-number column for plain logs
+    assert "Component" not in html    # structured columns hidden
+    assert 'class="err"' in html      # ERROR line coloured
+
+    struct, _ = app_module.parse_cmtrace(
+        '<![LOG[hi]LOG]!><time="1" date="2" component="C" context="" '
+        'type="2" thread="3" file="">'
+    )
+    html2 = app_module.render_cmtrace_view("ime.log", struct, False)
+    assert "Component" in html2       # full CMTrace table
+    assert 'class="warn"' in html2
+
+
 def test_zip_slip_rejected(client):
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w") as zf:
