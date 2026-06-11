@@ -524,7 +524,8 @@ NAV = ("""<header><nav class="nav">
 </nav></header>""" % {"logo": _LOGO})
 
 FOOTER = ("""<footer>
-  <span>Sherlog &middot; sherlog.nl</span>
+  <span>Sherlog &middot; sherlog.nl
+  </span>
 </footer>""")
 
 # Browser-side job history. The list lives only in the visitor's own
@@ -988,6 +989,41 @@ ERROR_CODES: dict[str, str] = {
     "0x87D5507A": "Download failed: the app no longer exists or is no longer "
                   "assigned to this device (assignment removed while the "
                   "policy was applying).",
+    "0x87D5507B": "Download failed because of an Intune service error. "
+                  "Retried automatically.",
+    "0x87D5507C": "Download failed because of an Intune service error. "
+                  "Retried automatically.",
+    "0x87D5507D": "Download failed because of an Intune service error. "
+                  "Retried automatically.",
+    "0x87D103E8": "Unknown error during app installation. Check the "
+                  "surrounding log lines and the app's own install log.",
+    # Management agent / app evaluation (0x87D00xxx — shared agent codes,
+    # seen on co-managed devices and in agent logs)
+    "0x87D00215": "Item not found: the deployment or its content is not "
+                  "available to the client. Check that the assignment still "
+                  "exists and content is reachable.",
+    "0x87D00321": "The script execution has timed out. The install or "
+                  "detection script ran longer than the allowed run time.",
+    "0x87D00324": "The application was not detected after installation "
+                  "completed. The install finished but the detection rule "
+                  "did not match — verify the detection rule.",
+    "0x87D00325": "The application was still detected after the uninstall "
+                  "completed. The uninstall command did not remove what the "
+                  "detection rule checks.",
+    "0x87D00327": "Script is not signed. The PowerShell execution policy "
+                  "requires signed scripts; sign the script or change the "
+                  "policy.",
+    "0x87D00329": "Application requirement evaluation or detection failed. "
+                  "Check dependency and supersedence rules and the "
+                  "detection script for errors.",
+    "0x87D00607": "Content not found: the app content could not be located "
+                  "for download.",
+    "0x87D01107": "Failed to access the provided program locations; the "
+                  "client retries if attempts remain.",
+    "0x87D01201": "The content download cannot be performed: not enough "
+                  "available cache space or the disk is full.",
+    "0x87D01202": "The content download cannot be performed: the configured "
+                  "client cache is smaller than the requested content.",
     # Windows installer / general Windows (0x800700xx = Win32 error as HRESULT)
     "0x80004005": "Unspecified error. Check the surrounding log lines and the "
                   "app's own install log for the real cause.",
@@ -1000,7 +1036,18 @@ ERROR_CODES: dict[str, str] = {
     "0x80070003": "The system cannot find the path specified.",
     "0x80070005": "Access denied. The installing process lacks permission "
                   "(NTFS rights, antivirus blocking, or admin rights needed).",
+    "0x8007000D": "The data is invalid — often a corrupt installer package "
+                  "or malformed configuration.",
     "0x8007000E": "Not enough memory to complete the operation.",
+    "0x80070032": "The request is not supported on this device or OS "
+                  "version.",
+    "0x8007007E": "The specified module could not be found — a required "
+                  "DLL is missing or a dependency is not installed.",
+    "0x800704C7": "The operation was cancelled by the user.",
+    "0x80070570": "The file or directory is corrupted and unreadable — "
+                  "often a corrupt download or failing disk.",
+    "0x800706BA": "The RPC server is unavailable — a required service is "
+                  "not running or is blocked.",
     "0x80070020": "The file is in use by another process (sharing violation).",
     "0x80070057": "Invalid parameter — often a malformed install command line.",
     "0x800700C1": "Not a valid Win32 application — usually a corrupt download "
@@ -1008,10 +1055,22 @@ ERROR_CODES: dict[str, str] = {
     "0x80070490": "Element not found — a required registry key, setting or "
                   "component is missing.",
     "0x800705B4": "The operation timed out.",
+    "0x80070641": "The Windows Installer service could not be accessed "
+                  "(MSI 1601). Check that the msiserver service can run.",
+    "0x80070642": "The user cancelled the installation (MSI 1602).",
     "0x80070643": "Fatal error during installation (MSI 1603). The installer "
                   "itself failed; check the application's own install log.",
+    "0x80070645": "This action is only valid for products that are "
+                  "currently installed (MSI 1605) — often an uninstall of "
+                  "something already removed.",
     "0x80070652": "Another installation is already in progress (MSI 1618). "
                   "Wait for it to finish and retry.",
+    "0x80070659": "The installation is forbidden by system policy "
+                  "(MSI 1625). Check Windows Installer group policies.",
+    "0x80070661": "The package is not supported by this processor type "
+                  "(MSI 1633) — architecture mismatch.",
+    "0x80070666": "Another version of this product is already installed "
+                  "(MSI 1638). Uninstall or upgrade the existing version.",
     "0x80070BC2": "The installation succeeded but a restart is required to "
                   "complete it (MSI 3010).",
     "0x80091007": "The hash value is not correct: downloaded content does not "
@@ -1020,12 +1079,17 @@ ERROR_CODES: dict[str, str] = {
     "0xC0000142": "A DLL failed to initialize and the process terminated "
                   "abnormally — often a broken dependency.",
     # MSIX / Store packages
+    "0x80073CF0": "The package could not be opened — it is unsigned or the "
+                  "publisher name does not match the signing certificate.",
     "0x80073CF3": "The package conflicts with an installed package, a "
                   "dependency is missing, or the processor architecture does "
                   "not match.",
     "0x80073CFB": "The package is already installed and reinstalling a "
                   "non-identical (rebuilt/re-signed) version is blocked. "
                   "Increment the package version.",
+    "0x80073CFF": "Sideloading is required to install this package: the "
+                  "package must be signed with a trusted certificate and "
+                  "the device must allow trusted apps.",
     # Network / WinHTTP
     "0x80072EE2": "The network request timed out while contacting the server.",
     "0x80072EE7": "The server name could not be resolved — DNS failure or "
@@ -1033,8 +1097,44 @@ ERROR_CODES: dict[str, str] = {
     "0x80072EFD": "Could not connect to the server (firewall, proxy or "
                   "network outage).",
     "0x80072EFE": "The connection to the server was closed unexpectedly.",
+    "0x80072F05": "The server certificate's date is invalid (expired or not "
+                  "yet valid) — check the system clock and any "
+                  "SSL-inspecting proxy.",
+    "0x80072F06": "The server certificate's hostname does not match the "
+                  "requested host — often an SSL-inspecting proxy.",
     "0x80072F8F": "TLS/SSL security error — often a wrong system clock or an "
                   "SSL-inspecting proxy presenting an untrusted certificate.",
+    # Delivery Optimization (0x80D0xxxx) — used for Win32 app content downloads
+    "0x80D01001": "Delivery Optimization was unable to provide the service. "
+                  "Check that the DoSvc service is running.",
+    "0x80D02002": "The download made no progress within the defined period "
+                  "— a stalled connection, proxy or firewall issue.",
+    "0x80D02010": "No file is available because no download URL produced a "
+                  "result.",
+    "0x80D02013": "The requested action is not allowed in the current "
+                  "download job state (job cancelled or already completed).",
+    "0x80D03002": "The download job is not allowed due to user or admin "
+                  "settings — often Delivery Optimization DownloadMode set "
+                  "to 100 (Bypass), which is deprecated.",
+    "0x80D03801": "Delivery Optimization paused the download due to "
+                  "metered-connection cost policy restrictions.",
+    "0x80D03803": "Delivery Optimization paused the download because a "
+                  "cellular network was detected and policy restricts it.",
+    "0x80D03804": "Delivery Optimization paused the download because the "
+                  "device switched to battery power.",
+    "0x80D03805": "Delivery Optimization paused the download due to loss of "
+                  "network connectivity.",
+    "0x80D03807": "Delivery Optimization paused the download because a VPN "
+                  "connection was detected.",
+    "0x80D03808": "Delivery Optimization paused the download due to "
+                  "critical memory usage on the system.",
+    "0x80D05001": "The HTTP server returned a response with a different "
+                  "data size than requested — often a proxy or captive "
+                  "portal interfering with the download.",
+    "0x80D05010": "The specified byte range is invalid.",
+    "0x80D05011": "The server does not support the HTTP Range header that "
+                  "Delivery Optimization requires — often a proxy that "
+                  "strips range support.",
     # HTTP status wrapped as HRESULT (0x80190xxx, last hex digits = status)
     "0x80190190": "HTTP 400 Bad Request — the service rejected the request.",
     "0x80190191": "HTTP 401 Unauthorized — authentication failed or the "
@@ -1051,15 +1151,30 @@ ERROR_CODES: dict[str, str] = {
     "0x80131500": "A .NET exception occurred in the agent or installer; see "
                   "the surrounding log lines for the stack trace.",
     # Bare MSI exit codes (matched as "exit code N" / "error code N")
+    "1601": "MSI: the Windows Installer service could not be accessed. "
+            "Check that the msiserver service can run.",
     "1602": "MSI: the user cancelled the installation.",
     "1603": "MSI: fatal error during installation. Check the application's "
             "own install log for the real cause.",
     "1605": "MSI: the product is not installed — often an uninstall or "
             "upgrade of something already removed.",
+    "1606": "MSI: could not access a required (network) location.",
     "1618": "MSI: another installation is already in progress.",
+    "1619": "MSI: the installation package could not be opened — missing "
+            "file or insufficient permissions.",
+    "1620": "MSI: the installation package could not be opened — it is not "
+            "a valid Windows Installer package or is corrupt.",
+    "1622": "MSI: error opening the installation log file — the log path "
+            "is invalid or not writable.",
+    "1625": "MSI: this installation is forbidden by system policy. Check "
+            "Windows Installer group policies.",
+    "1632": "MSI: the Temp folder is full or inaccessible. Free up space "
+            "and check permissions on the Temp directory.",
     "1633": "MSI: the package is not supported by this processor type "
             "(architecture mismatch).",
     "1638": "MSI: another version of this product is already installed.",
+    "1639": "MSI: invalid command line argument — check the install "
+            "command line in the app configuration.",
     "1641": "MSI: installation succeeded and a restart has been initiated.",
     "1642": "MSI: the upgrade patch does not match the installed program "
             "(missing or different version).",

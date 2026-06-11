@@ -291,6 +291,22 @@ def test_cmtrace_detail_panel():
     assert 'id="detail"' in html2
 
 
+def test_error_codes_shape_and_coverage():
+    import re
+
+    import app as app_module
+
+    # Keys must match what the client-side lookup produces: '0x' + uppercase
+    # hex for HRESULTs, bare 3-4 digit decimals for MSI exit codes.
+    for key in app_module.ERROR_CODES:
+        assert re.fullmatch(r"0x[0-9A-F]{8}|\d{3,4}", key), key
+    assert len(app_module.ERROR_CODES) >= 95
+    # One representative per added group.
+    for code in ("0x87D00324", "0x87D5507B", "0x80D02002", "0x8007007E",
+                 "0x80073CFF", "0x80072F05", "1619"):
+        assert code in app_module.ERROR_CODES, code
+
+
 def test_run_script_passes_report_flags():
     # Guard against accidental removal of the always-on report flags.
     script = (REPO_ROOT / "scripts" / "run-analysis.sh").read_text()
