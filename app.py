@@ -16,6 +16,8 @@ Configuration (env, with safe defaults):
   APP_USER / APP_PASSWORD default empty (auth disabled, logs a warning)
   JOBS_DIR                default /data/jobs
   CMTRACE_MAX_LINES       default 50000 (cap rendered rows in the log viewer)
+  LONG_SCRIPT_THRESHOLD_SECONDS  default 180 (flag long-running PowerShell
+                          scripts in the timeline; consumed by run-analysis.sh)
 """
 
 from __future__ import annotations

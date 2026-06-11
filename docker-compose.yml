@@ -18,4 +18,5 @@ services:
       JOB_RETENTION_HOURS: "24"
       SCRIPT_TIMEOUT_SECONDS: "300"
       JOB_CONCURRENCY: "2"
+      LONG_SCRIPT_THRESHOLD_SECONDS: "180"
     restart: unless-stopped

@@ -291,6 +291,20 @@ def test_cmtrace_detail_panel():
     assert 'id="detail"' in html2
 
 
+def test_run_script_passes_report_flags():
+    # Guard against accidental removal of the always-on report flags.
+    script = (REPO_ROOT / "scripts" / "run-analysis.sh").read_text()
+    for flag in (
+        "-ShowErrorsInReport",
+        "-ShowErrorsSummary",
+        "-ShowAllTimelineEvents",
+        "-ShowStdOutInReport",
+        "-LongRunningPowershellNotifyThreshold",
+    ):
+        assert flag in script
+    assert "LONG_SCRIPT_THRESHOLD_SECONDS" in script
+
+
 def test_zip_slip_rejected(client):
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w") as zf:
