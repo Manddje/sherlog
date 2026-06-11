@@ -33,7 +33,10 @@ import shutil
 import time
 import uuid
 import zipfile
+from collections import Counter
 from contextlib import asynccontextmanager
+from dataclasses import dataclass, field
+from html.parser import HTMLParser
 from pathlib import Path
 from typing import List, Optional
 from urllib.parse import quote
@@ -203,7 +206,184 @@ def parse_cmtrace(text: str, limit: int = CMTRACE_MAX_LINES) -> tuple[List[dict]
     return records, truncated
 
 
+# --- Timeline report summary -------------------------------------------------
+# The generated HTML report contains the full observed timeline as
+# <table id="ObservedTimeline"> (columns: Index, Date, Status, Type, Intent,
+# Detail, Seconds, LogEntry, Color, DetailToolTip) and the download stats as
+# <table id="ApplicationDownloadStatistics">. We parse those tables back out to
+# build a compact summary for the result page. The report unescapes <\> inside
+# timeline cells (upstream "Fix-HTMLSyntax"), so log content can contain raw
+# pseudo-tags; the parser ignores unknown tags and keeps accumulating cell text.
+
+_TIMELINE_COLS = ("index", "date", "status", "type", "intent",
+                  "detail", "seconds", "logentry")
+_DOWNLOAD_COLS = ("app_type", "app_name", "dl_sec", "size_mb", "mbps", "do_pct")
+_CELL_CAP = 1000  # bound memory per parsed cell
+SUMMARY_DETAIL_CAP = 300
+SUMMARY_MAX_FAILED_ITEMS = 50
+
+
+@dataclass
+class ReportSummary:
+    timeline: list[dict] = field(default_factory=list)
+    downloads: list[dict] = field(default_factory=list)
+    parse_ok: bool = True
+
+
+class _ReportTableParser(HTMLParser):
+    """Pull rows out of the two known summary tables of the timeline report."""
+
+    TABLES = {"ObservedTimeline": "timeline",
+              "ApplicationDownloadStatistics": "downloads"}
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.rows: dict[str, list[list[str]]] = {"timeline": [], "downloads": []}
+        self._table: Optional[str] = None
+        self._row: Optional[list[str]] = None
+        self._cell: Optional[list[str]] = None
+        self._row_is_header = False
+
+    def handle_starttag(self, tag: str, attrs) -> None:
+        if tag == "table":
+            table_id = dict(attrs).get("id", "")
+            self._table = self.TABLES.get(table_id)
+        elif self._table and tag == "tr":
+            self._row, self._row_is_header = [], False
+        elif self._table and self._row is not None and tag in ("td", "th"):
+            self._cell = []
+            self._row_is_header = self._row_is_header or tag == "th"
+        # Anything else (including unescaped pseudo-tags from log content) is
+        # ignored; cell text keeps accumulating across it.
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag == "table":
+            self._table = None
+        elif self._table and tag in ("td", "th") and self._cell is not None:
+            if self._row is not None:
+                self._row.append("".join(self._cell)[:_CELL_CAP].strip())
+            self._cell = None
+        elif self._table and tag == "tr" and self._row is not None:
+            if not self._row_is_header and self._row:
+                self.rows[self._table].append(self._row)
+            self._row = None
+
+    def handle_data(self, data: str) -> None:
+        if self._cell is not None and len(self._cell) < _CELL_CAP:
+            self._cell.append(data)
+
+
+def parse_report_summary(html: str) -> ReportSummary:
+    """Parse the timeline + download tables out of a generated report.
+
+    Never raises: any parse failure degrades to parse_ok=False so the job
+    outcome is unaffected.
+    """
+    summary = ReportSummary()
+    try:
+        parser = _ReportTableParser()
+        parser.feed(html)
+        parser.close()
+        for row in parser.rows["timeline"]:
+            if len(row) < len(_TIMELINE_COLS):
+                continue
+            summary.timeline.append(dict(zip(_TIMELINE_COLS, row)))
+        for row in parser.rows["downloads"]:
+            if len(row) < len(_DOWNLOAD_COLS):
+                continue
+            summary.downloads.append(dict(zip(_DOWNLOAD_COLS, row)))
+    except Exception:
+        log.warning("report summary parse failed", exc_info=True)
+        return ReportSummary(parse_ok=False)
+    return summary
+
+
+_HEX_CODE_RE = re.compile(r"0x[0-9A-Fa-f]{8}")
+_SIGNED_DEC_RE = re.compile(r"-2\d{9}")
+_EXIT_CODE_RE = re.compile(r"\b(?:exit|error)\s*code[:\s]+(\d{3,4})\b", re.IGNORECASE)
+
+
+def find_error_codes(text: str) -> dict[str, str]:
+    """Server-side mirror of the CMTrace viewer's client-side code lookup."""
+    found: dict[str, str] = {}
+    for m in _HEX_CODE_RE.finditer(text):
+        key = "0x" + m.group(0)[2:].upper()
+        if key in ERROR_CODES:
+            found[key] = ERROR_CODES[key]
+    for m in _SIGNED_DEC_RE.finditer(text):
+        key = "0x" + format(int(m.group(0)) & 0xFFFFFFFF, "08X")
+        if key in ERROR_CODES:
+            found[key] = ERROR_CODES[key]
+    for m in _EXIT_CODE_RE.finditer(text):
+        if m.group(1) in ERROR_CODES:
+            found[m.group(1)] = ERROR_CODES[m.group(1)]
+    return found
+
+
+def summarize(summary: ReportSummary) -> dict:
+    """Reduce a parsed report to the model rendered on the result page."""
+    counts: dict[str, dict[str, int]] = {}
+    failed_items: list[dict] = []
+    code_counter: Counter[str] = Counter()
+    warnings = 0
+    not_detected = 0
+
+    for row in summary.timeline:
+        status, rtype = row["status"], row["type"]
+        if status in ("Success", "Failed") and rtype:
+            bucket = counts.setdefault(rtype, {"success": 0, "failed": 0})
+            bucket["success" if status == "Success" else "failed"] += 1
+        if status == "Warning":
+            warnings += 1
+        if status == "Not Detected":
+            not_detected += 1
+        if status in ("Failed", "ErrorLog"):
+            for code in find_error_codes(row["detail"]):
+                code_counter[code] += 1
+        if status == "Failed":
+            failed_items.append({
+                "date": row["date"],
+                "type": rtype,
+                "intent": row["intent"],
+                "detail": row["detail"][:SUMMARY_DETAIL_CAP],
+            })
+
+    return {
+        "parse_ok": summary.parse_ok,
+        "counts": [{"type": t, **c} for t, c in sorted(counts.items())],
+        "warnings": warnings,
+        "not_detected": not_detected,
+        "failed_items": failed_items[:SUMMARY_MAX_FAILED_ITEMS],
+        "top_errors": [
+            {"code": code, "count": n, "explanation": ERROR_CODES[code]}
+            for code, n in code_counter.most_common(10)
+        ],
+        "downloads": summary.downloads,
+    }
+
+
 # --- Analysis subprocess -----------------------------------------------------
+
+def _write_summary(report: Path, dest: Path) -> None:
+    """Derive summary.json from a finished report. Failures only log a warning;
+    the job outcome must never depend on the summary."""
+    try:
+        html = report.read_text(encoding="utf-8", errors="replace")
+        dest.write_text(json.dumps(summarize(parse_report_summary(html))),
+                        encoding="utf-8")
+    except Exception:
+        log.warning("could not write summary for %s", report.name, exc_info=True)
+
+
+def read_summary(job_id: str) -> Optional[dict]:
+    p = job_dir(job_id) / "output" / "summary.json"
+    if not p.is_file():
+        return None
+    try:
+        return json.loads(p.read_text(encoding="utf-8"))
+    except (ValueError, OSError):
+        return None
+
 
 async def run_job(job_id: str, input_dir: Path, output_dir: Path) -> None:
     """Run the headless analysis script and record the outcome."""
@@ -239,6 +419,7 @@ async def _run_job_locked(job_id: str, input_dir: Path, output_dir: Path) -> Non
         rc = proc.returncode
         report = find_report(output_dir)
         if rc == 0 and report is not None:
+            _write_summary(report, output_dir / "summary.json")
             write_status(job_id, state="done", exitcode=0,
                          report=report.name, stdout=stdout, stderr=stderr)
             log.info("job %s done -> %s", job_id, report.name)
@@ -776,9 +957,24 @@ REPORT_PAGE = """<!doctype html>
 <title>Sherlog &mdash; timeline report</title>
 <style>%(css)s
   html,body{height:100%%}
+  body{display:flex;flex-direction:column}
   .topbar{display:flex;align-items:center;justify-content:space-between;
     padding:.6rem 1.25rem;border-bottom:1px solid var(--border);background:var(--bg)}
-  iframe{border:0;width:100%%;height:calc(100vh - 3.4rem);display:block}
+  iframe{border:0;width:100%%;flex:1;display:block}
+  details.summary{flex:none;max-height:45vh;overflow:auto;background:var(--surface);
+    border-bottom:1px solid var(--border);padding:.4rem 1.25rem;font-size:.9rem}
+  details.summary>summary{cursor:pointer;font-weight:600;padding:.25rem 0}
+  .sum-chips{display:flex;flex-wrap:wrap;gap:.4rem;margin:.5rem 0}
+  .sum-chip{border:1px solid var(--border);border-radius:999px;padding:.15rem .7rem;
+    background:var(--bg);white-space:nowrap}
+  .sum-chip .ok{color:#1a7f37;font-weight:600}
+  .sum-chip .bad{color:#c33;font-weight:600}
+  .sum-chip .warn{color:#9a6700;font-weight:600}
+  details.summary h3{margin:.7rem 0 .3rem;font-size:.95rem}
+  details.summary table{border-collapse:collapse;width:100%%;font-size:.86rem}
+  details.summary th,details.summary td{text-align:left;padding:.25rem .6rem;
+    border-bottom:1px solid var(--border);vertical-align:top}
+  details.summary .code{margin:.2rem 0}
 </style></head><body>
   <div class="topbar">
     <a class="brand" href="/">%(logo)s Sherlog</a>
@@ -787,6 +983,7 @@ REPORT_PAGE = """<!doctype html>
       <a class="btn btn-ghost" href="/timeline">New analysis</a>
     </span>
   </div>
+  %(summary)s
   <iframe src="/result/%(job)s/report"
           sandbox="allow-scripts allow-popups allow-popups-to-escape-sandbox"></iframe>
   %(history)s
@@ -882,6 +1079,87 @@ _BRANDING_FOOTER = re.compile(r"<footer\b[^>]*>.*?</footer>", re.IGNORECASE | re
 
 def strip_branding(html: str) -> str:
     return _BRANDING_FOOTER.sub("", html, count=1)
+
+
+def render_summary_panel(summary: Optional[dict]) -> str:
+    """Collapsible summary panel for the result page.
+
+    Renders in the app origin (not sandboxed), so every value — all derived
+    from untrusted log content — is escaped. Returns "" when there is nothing
+    worth showing so the page degrades to the plain report view.
+    """
+    if not summary or not summary.get("parse_ok"):
+        return ""
+    counts = summary.get("counts", [])
+    warnings = summary.get("warnings", 0)
+    not_detected = summary.get("not_detected", 0)
+    failed_items = summary.get("failed_items", [])
+    top_errors = summary.get("top_errors", [])
+    downloads = summary.get("downloads", [])
+    if not (counts or warnings or not_detected or failed_items or downloads):
+        return ""
+
+    total_failed = sum(c.get("failed", 0) for c in counts)
+    total_success = sum(c.get("success", 0) for c in counts)
+
+    chips = []
+    for c in counts:
+        chips.append(
+            f'<span class="sum-chip">{html_escape(c["type"])}: '
+            f'<span class="ok">{c.get("success", 0)} ok</span> / '
+            f'<span class="bad">{c.get("failed", 0)} failed</span></span>'
+        )
+    if warnings:
+        chips.append(f'<span class="sum-chip"><span class="warn">{warnings} '
+                     f'warning(s)</span></span>')
+    if not_detected:
+        chips.append(f'<span class="sum-chip"><span class="bad">{not_detected} '
+                     f'not detected</span></span>')
+
+    parts = [f'<div class="sum-chips">{"".join(chips)}</div>']
+
+    if top_errors:
+        rows = "".join(
+            f'<div class="code"><strong>{html_escape(e["code"])}</strong> '
+            f'({e["count"]}&times;) &mdash; {html_escape(e["explanation"])}</div>'
+            for e in top_errors
+        )
+        parts.append(f"<h3>Known error codes</h3>{rows}")
+
+    if failed_items:
+        rows = "".join(
+            f"<tr><td>{html_escape(i['date'])}</td>"
+            f"<td>{html_escape(i['type'])}</td>"
+            f"<td>{html_escape(i['intent'])}</td>"
+            f"<td>{html_escape(i['detail'])}</td></tr>"
+            for i in failed_items
+        )
+        parts.append(
+            "<h3>Failed items</h3><table><tr><th>Date</th><th>Type</th>"
+            f"<th>Intent</th><th>Detail</th></tr>{rows}</table>"
+        )
+
+    if downloads:
+        rows = "".join(
+            f"<tr><td>{html_escape(d['app_type'])}</td>"
+            f"<td>{html_escape(d['app_name'])}</td>"
+            f"<td>{html_escape(d['dl_sec'])}</td>"
+            f"<td>{html_escape(d['size_mb'])}</td>"
+            f"<td>{html_escape(d['mbps'])}</td>"
+            f"<td>{html_escape(d['do_pct'])}</td></tr>"
+            for d in downloads
+        )
+        parts.append(
+            "<h3>App downloads</h3><table><tr><th>Type</th><th>App</th>"
+            "<th>DL sec</th><th>Size (MB)</th><th>MB/s</th>"
+            f"<th>Delivery Optimization %</th></tr>{rows}</table>"
+        )
+
+    open_attr = " open" if (total_failed or warnings or not_detected) else ""
+    heading = (f"Analysis summary &mdash; {total_failed} failed, "
+               f"{total_success} succeeded")
+    return (f'<details class="summary"{open_attr}><summary>{heading}</summary>'
+            f'{"".join(parts)}</details>')
 
 
 # --- CMTrace viewer rendering ------------------------------------------------
@@ -1498,6 +1776,7 @@ async def result(job_id: str) -> Response:
         # Wrap the (untrusted) report in a sandboxed iframe — see /report below.
         return HTMLResponse(REPORT_PAGE % {
             "css": PAGE_CSS, "logo": _LOGO, "job": job_id,
+            "summary": render_summary_panel(read_summary(job_id)),
             "history": history_record_js(job_id, "timeline", "done",
                                          list_input_logs(job_id)),
         })

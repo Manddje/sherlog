@@ -20,6 +20,12 @@ Eén container, twee lagen:
 De state staat volledig op het bestandssysteem (`/data`): geen database, geen
 Redis.
 
+Boven het timeline-rapport toont de resultpagina een inklapbaar
+**samenvattingspaneel**: aantallen geslaagde/mislukte installaties per type
+(Win32App, PowerShell-script, remediation), mislukte items, herkende
+foutcodes met uitleg en downloadstatistieken per app. De samenvatting wordt
+na de analyse uit het rapport afgeleid (`summary.json` in de jobmap).
+
 Naast het timeline-rapport biedt de app een **CMTrace-logviewer**: bekijk de ruwe
 geüploade `.log`-bestanden in een gekleurde tabel (warnings geel, errors rood) met
 tekst- en componentfilter — een web-equivalent van het Windows-only CMTrace.exe.

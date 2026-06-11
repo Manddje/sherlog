@@ -130,6 +130,20 @@ def test_full_flow_zip_produces_report(client):
     assert "Win32App" in html
     assert "Get-IntuneManagementExtensionDiagnostics" in html
 
+    # The completed job derives a summary.json from the real report …
+    import app as app_module
+    job_id = location.rstrip("/").rsplit("/", 1)[-1]
+    summary_file = app_module.job_dir(job_id) / "output" / "summary.json"
+    assert summary_file.is_file()
+    model = app_module.read_summary(job_id)
+    assert model is not None and model["parse_ok"]
+    assert model["counts"]  # testdata contains Win32App/script events
+
+    # … and the wrapper page shows the summary panel above the iframe.
+    wrapper = client.get(location).text
+    assert 'class="summary"' in wrapper
+    assert "Analysis summary" in wrapper
+
 
 def test_oversized_upload_rejected(client):
     # MAX_UPLOAD_MB=1 in the fixture; send ~2 MB.
@@ -289,6 +303,94 @@ def test_cmtrace_detail_panel():
     plain, _ = app_module.parse_cmtrace("exit code 1603\n")
     html2 = app_module.render_cmtrace_view("cmd.log", plain, False)
     assert 'id="detail"' in html2
+
+
+_SYNTHETIC_REPORT = """
+<html><body>
+<table id="ObservedTimeline">
+<tr><th>Index</th><th>Date</th><th>Status</th><th>Type</th><th>Intent</th>
+<th>Detail</th><th>Seconds</th><th>LogEntry</th><th>Color</th><th>DetailToolTip</th></tr>
+<tr><td>1</td><td>2023-09-13 08:46:48</td><td>Success</td><td>Win32App</td>
+<td>Required Install</td><td>7-Zip (0 Success)</td><td>46</td><td>Line 8</td>
+<td>Green</td><td></td></tr>
+<tr><td>2</td><td>2023-09-13 08:47:14</td><td>Failed</td><td>Win32App</td>
+<td>Required Install</td><td>BadApp install failed 0x87D1041C</td><td></td>
+<td>Line 17</td><td>Red</td><td></td></tr>
+<tr><td>3</td><td>2023-09-13 08:47:20</td><td>Warning</td><td>Powershell script</td>
+<td>Execute</td><td>slow script</td><td>200</td><td>Line 20</td><td>Yellow</td><td></td></tr>
+<tr><td>4</td><td>2023-09-13 08:48:00</td><td>Failed</td><td>Win32App</td>
+<td>Required Install</td><td>hostile <detail with="raw tags"> exit code 1603 &amp; more
+multi-line</td><td></td><td>Line 30</td><td>Red</td><td>tooltip
+spanning <lines></td></tr>
+</table>
+<h2>App Download Statistics</h2>
+<table id="ApplicationDownloadStatistics">
+<tr><th>AppType</th><th>AppName</th><th>DL Sec</th><th>Size (MB)</th>
+<th>MB/s</th><th>Delivery Optimization %</th></tr>
+<tr><td>Win32App</td><td>7-Zip</td><td>3</td><td>2.1</td><td>0.7</td><td>0%</td></tr>
+</table>
+</body></html>
+"""
+
+
+def test_parse_report_summary_synthetic():
+    import app as app_module
+
+    s = app_module.parse_report_summary(_SYNTHETIC_REPORT)
+    assert s.parse_ok
+    assert len(s.timeline) == 4
+    assert s.timeline[0]["status"] == "Success"
+    assert s.timeline[0]["type"] == "Win32App"
+    # Hostile row: raw pseudo-tags inside Detail must not break cell tracking.
+    hostile = s.timeline[3]
+    assert hostile["status"] == "Failed"
+    assert "exit code 1603" in hostile["detail"]
+    assert len(s.downloads) == 1
+    assert s.downloads[0]["app_name"] == "7-Zip"
+
+    model = app_module.summarize(s)
+    win32 = next(c for c in model["counts"] if c["type"] == "Win32App")
+    assert win32["success"] == 1 and win32["failed"] == 2
+    assert model["warnings"] == 1
+    assert len(model["failed_items"]) == 2
+    codes = {e["code"] for e in model["top_errors"]}
+    assert "0x87D1041C" in codes and "1603" in codes
+
+
+def test_parse_report_summary_garbage_degrades():
+    import app as app_module
+
+    s = app_module.parse_report_summary("not html at all <<<>>")
+    assert s.parse_ok and s.timeline == [] and s.downloads == []
+    assert app_module.render_summary_panel(app_module.summarize(s)) == ""
+    assert app_module.render_summary_panel(None) == ""
+
+
+def test_find_error_codes():
+    import app as app_module
+
+    found = app_module.find_error_codes(
+        "failed 0x87d1041c then -2016345060 and exit code 1603")
+    assert "0x87D1041C" in found
+    assert "1603" in found
+    assert len(found) == 2  # signed decimal maps to the same hex code
+
+
+def test_render_summary_panel_escapes():
+    import app as app_module
+
+    model = {
+        "parse_ok": True,
+        "counts": [{"type": "Win32App", "success": 0, "failed": 1}],
+        "warnings": 0, "not_detected": 0,
+        "failed_items": [{"date": "d", "type": "Win32App", "intent": "i",
+                          "detail": '<script>alert(1)</script>'}],
+        "top_errors": [], "downloads": [],
+    }
+    html = app_module.render_summary_panel(model)
+    assert "<script>alert(1)</script>" not in html
+    assert "&lt;script&gt;" in html
+    assert 'class="summary" open' in html
 
 
 def test_error_codes_shape_and_coverage():
