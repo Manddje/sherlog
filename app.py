@@ -1083,7 +1083,8 @@ PAGE_CSS = """
   .cards .card{ display:flex; flex-direction:column; }
   .card h2{ margin:0 0 .4rem; font-size:1.25rem; }
   .card .desc{ color:var(--muted); margin:0 0 1.25rem; flex:1; overflow-wrap:anywhere; }
-  .cards .card .btn{ align-self:stretch; text-align:center; white-space:nowrap; }
+  .cards .card .btn{ align-self:stretch; text-align:center; padding-left:.5rem;
+    padding-right:.5rem; }
   .recent{ margin-top:1.25rem; }
   .recent h2{ margin:0 0 .5rem; font-size:1.1rem; }
   .recent ul{ list-style:none; margin:0; padding:0; }
@@ -1229,14 +1230,14 @@ LANDING_PAGE = """<!doctype html>
           interactive timeline report: app installs, scripts and errors in
           chronological order, with a summary of failures and known error
           codes.</p>
-        <a class="btn" href="/timeline">Open Timeline Analyzer</a>
+        <a class="btn" href="/timeline">Open Timeline</a>
       </div>
       <div class="card">
         <h2>CMTrace Viewer</h2>
         <p class="desc">Read raw <code>.log</code> files in a colored,
           filterable CMTrace-style table: warnings yellow, errors red, with
           text, component and severity filters. No analysis run.</p>
-        <a class="btn" href="/cmtrace">Open CMTrace Viewer</a>
+        <a class="btn" href="/cmtrace">Open CMTrace</a>
       </div>
       <div class="card">
         <h2>Diagnostics Package</h2>
@@ -1245,7 +1246,7 @@ LANDING_PAGE = """<!doctype html>
           checks, an automatic timeline analysis and a viewer for every file
           in the package &mdash; including event logs and registry
           exports.</p>
-        <a class="btn" href="/diagnostics">Open Diagnostics Package</a>
+        <a class="btn" href="/diagnostics">Open Diagnostics</a>
       </div>
     </div>
     %(recent)s
