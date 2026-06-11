@@ -4,12 +4,12 @@ Webapplicatie ([sherlog.nl](https://sherlog.nl)) die Microsoft Intune Management
 Extension (IME) logbestanden analyseert en het resultaat als
 HTML-timelinerapport in de browser toont.
 
-De homepage biedt twee losse tools: de **Timeline Analyzer** (`/timeline`) en
-de **CMTrace Viewer** (`/cmtrace`). Je uploadt logs (een `.zip` of losse
-`.log`-bestanden, bijvoorbeeld uit
-`C:\ProgramData\Microsoft\IntuneManagementExtension\Logs` of een Intune
-"Collect Diagnostics"-export). Voor de timeline draait de server het
-analysescript headless en serveert het gegenereerde rapport.
+De homepage biedt drie losse tools: de **Timeline Analyzer** (`/timeline`),
+de **CMTrace Viewer** (`/cmtrace`) en het **Diagnostics Package**
+(`/diagnostics`). Je uploadt logs (een `.zip` of losse `.log`-bestanden,
+bijvoorbeeld uit `C:\ProgramData\Microsoft\IntuneManagementExtension\Logs` of
+een Intune "Collect Diagnostics"-export). Voor de timeline draait de server
+het analysescript headless en serveert het gegenereerde rapport.
 
 Eén container, twee lagen:
 
@@ -32,6 +32,25 @@ tekst- en componentfilter — een web-equivalent van het Windows-only CMTrace.ex
 Bereikbaar als eigen tool via de uploadpagina `/cmtrace` (geen analyse nodig) én
 via "Raw logs (CMTrace)" op de rapportpagina. De (untrusted) loginhoud wordt in
 een sandboxed iframe geserveerd.
+
+De **Diagnostics Package**-tool neemt de zip die
+`Collect-IntuneDiagnostics.ps1` op een device produceert (`IntuneDiag-*.zip`)
+en biedt drie dingen in één resultaatpagina:
+
+1. **Diagnose-dashboard** — health checks uit het pakket: Entra join- en
+   PRT-status (`dsregcmd`), MDM-enrollment-URL, IME-servicestatus,
+   bereikbaarheid van de Intune/Entra-endpoints en verlopen
+   machinecertificaten. Ontbreekt een bronbestand, dan toont de check
+   "unknown" (grijs) in plaats van een fout.
+2. **Automatische timeline-analyse** — op de IME-logs in het pakket
+   (`Apps-IME\Logs`) draait dezelfde analyse als de Timeline Analyzer; het
+   rapport en het samenvattingspaneel verschijnen zodra de analyse klaar is.
+3. **File browser** — alle bestanden in het pakket zijn direct te bekijken:
+   `.log` in de CMTrace-viewer, tekstbestanden (`.txt`, `.reg`, `.xml`, …)
+   met UTF-16-detectie, `.html` in een sandboxed frame en `.evtx` in een
+   eventviewer (tijd, event-ID, level, provider; gecapt op
+   `EVTX_MAX_EVENTS`). Binaire `.cab`/`.etl`-bestanden worden niet
+   uitgepakt maar wel (grijs) in de bestandsboom getoond.
 
 **Recente uploads** worden alleen in je eigen browser bewaard (localStorage) —
 niet op de server, geen cookies of login. De lijst staat op de homepage en de
@@ -75,6 +94,7 @@ Alle configuratie loopt via environment variables met veilige defaults:
 | `SCRIPT_TIMEOUT_SECONDS` | `300`   | Timeout voor het analyse-subprocess. Bij overschrijding wordt de job als `failed` gemarkeerd. |
 | `JOB_CONCURRENCY`        | `2`     | Maximum aantal analyses dat tegelijk draait. Extra jobs wachten in de wachtrij.               |
 | `CMTRACE_MAX_LINES`      | `50000` | Maximum aantal regels dat de CMTrace-logviewer per bestand rendert.                            |
+| `EVTX_MAX_EVENTS`        | `2000`  | Maximum aantal events dat de eventviewer per `.evtx`-bestand parst en rendert.                 |
 | `LONG_SCRIPT_THRESHOLD_SECONDS` | `180` | PowerShell-scripts die langer draaien dan dit worden in de timeline als waarschuwing gemarkeerd. |
 | `APP_USER`               | *(leeg)*| Optionele gebruikersnaam voor basic auth.                                                     |
 | `APP_PASSWORD`           | *(leeg)*| Optioneel wachtwoord voor basic auth.                                                         |

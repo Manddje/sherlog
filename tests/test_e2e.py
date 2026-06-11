@@ -433,3 +433,404 @@ def test_zip_slip_rejected(client):
         follow_redirects=False,
     )
     assert r.status_code == 400
+
+
+# --- Diagnostics package tool --------------------------------------------------
+
+def _u16(s: str) -> bytes:
+    """UTF-16LE with BOM, like PowerShell 5.1 Out-File / reg export."""
+    return s.encode("utf-16")
+
+
+_DSREGCMD = """\
++----------------------------------------------------------------------+
+| Device State                                                         |
++----------------------------------------------------------------------+
+
+             AzureAdJoined : YES
+          EnterpriseJoined : NO
+                  DeviceId : 11111111-2222-3333-4444-555555555555
+                TenantName : Contoso
+
++----------------------------------------------------------------------+
+| SSO State                                                            |
++----------------------------------------------------------------------+
+
+                AzureAdPrt : YES
+
++----------------------------------------------------------------------+
+| Management                                                           |
++----------------------------------------------------------------------+
+
+                    MdmUrl : https://enrollment.manage.microsoft.com/enrollmentserver/discovery.svc
+"""
+
+_ENDPOINTS = """\
+Endpoint                              Reachable RemoteIP
+--------                              --------- --------
+login.microsoftonline.com             True      20.190.160.2
+graph.microsoft.com                   False
+"""
+
+_SERVICE = """\
+Name                      Status StartType
+----                      ------ ---------
+IntuneManagementExtension Running Automatic
+"""
+
+_CERTS = """\
+Subject    : CN=11111111-2222-3333-4444-555555555555
+NotAfter   : 1/1/2027 10:00:00
+Thumbprint : AAAA1111BBBB2222CCCC3333DDDD4444EEEE5555
+Expired    : False
+
+Subject    : CN=OldIntuneCert
+NotAfter   : 1/1/2024 10:00:00
+Thumbprint : 9999888877776666555544443333222211110000
+Expired    : True
+"""
+
+_REG = """\
+Windows Registry Editor Version 5.00
+
+[HKEY_LOCAL_MACHINE\\SOFTWARE\\Microsoft\\Enrollments]
+"ProviderID"="MS DM Server"
+"""
+
+
+def _zip_of_diag_package() -> bytes:
+    nested = io.BytesIO()
+    with zipfile.ZipFile(nested, "w") as zf:
+        zf.writestr("areas/info.txt", "mdm diag area info")
+        zf.writestr("areas/blob.cab", b"\x00binary cab\x00")
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("_SUMMARY.txt", _u16(
+            " Device   : TESTPC-01\n Date     : 06/11/2026 10:00:00\n"
+            "  AzureAdJoined : YES\n"))
+        zf.writestr("Identity/dsregcmd-status.txt", _u16(_DSREGCMD))
+        zf.writestr("Identity/certs-machine-overview.txt", _u16(_CERTS))
+        zf.writestr("Network/endpoint-connectivity.txt", _u16(_ENDPOINTS))
+        zf.writestr("Apps-IME/service-status.txt", _u16(_SERVICE))
+        zf.writestr("Registry/Enrollments.reg", _u16(_REG))
+        for log in TESTDATA.glob("*.log"):
+            zf.writestr(f"Apps-IME/Logs/{log.name}", log.read_bytes())
+        zf.writestr("MDM/MDMDiag-AllAreas.zip", nested.getvalue())
+        zf.writestr("Defender/MpSupportFiles.cab", b"\x00cab\x00")
+        zf.writestr("System/battery-report.html",
+                     "<html><body>battery</body></html>")
+    return buf.getvalue()
+
+
+def test_diagnostics_upload_page(client):
+    r = client.get("/diagnostics")
+    assert r.status_code == 200
+    assert 'action="/diagnostics-analyze"' in r.text
+    assert 'accept=".zip"' in r.text
+    assert "Max total upload" in r.text
+
+
+def test_landing_and_nav_show_diagnostics(client):
+    r = client.get("/")
+    assert "Diagnostics Package" in r.text
+    assert 'href="/diagnostics"' in r.text
+
+
+def test_diag_upload_requires_single_zip(client):
+    r = client.post(
+        "/diagnostics-analyze",
+        files=[("files", ("a.log", b"hi", "text/plain"))],
+        follow_redirects=False,
+    )
+    assert r.status_code == 400
+
+    r = client.post(
+        "/diagnostics-analyze",
+        files=[("files", ("a.zip", _zip_of_diag_package(), "application/zip")),
+               ("files", ("b.zip", _zip_of_diag_package(), "application/zip"))],
+        follow_redirects=False,
+    )
+    assert r.status_code == 400
+
+
+def test_diag_zip_without_viewable_files_rejected(client):
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr("only.cab", b"\x00")
+    r = client.post(
+        "/diagnostics-analyze",
+        files={"files": ("diag.zip", buf.getvalue(), "application/zip")},
+        follow_redirects=False,
+    )
+    assert r.status_code == 400
+
+
+def _wait_for_analysis(client, job_id: str, timeout: float = 300.0) -> str:
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        st = client.get(f"/result/{job_id}/status").json()
+        if st["analysis"] not in ("queued", "running"):
+            return st["analysis"]
+        time.sleep(1.0)
+    raise AssertionError("diagnostics analysis did not finish within timeout")
+
+
+def test_diag_full_flow(client):
+    r = client.post(
+        "/diagnostics-analyze",
+        files={"files": ("IntuneDiag-TESTPC-01.zip", _zip_of_diag_package(),
+                         "application/zip")},
+        follow_redirects=False,
+    )
+    assert r.status_code == 303
+    job_id = r.headers["location"].rstrip("/").rsplit("/", 1)[-1]
+
+    # Dashboard + browser are available immediately (state "ready").
+    page = client.get(f"/result/{job_id}")
+    assert page.status_code == 200
+    assert "Device health" in page.text
+    assert "Entra joined" in page.text
+    assert "graph.microsoft.com" in page.text       # unreachable endpoint named
+    assert "1 of 2 expired" in page.text            # expired machine cert
+    assert "Enrollments.reg" in page.text           # UTF-16 file in the tree
+    assert "info.txt" in page.text                  # nested-zip member extracted
+    assert "MpSupportFiles.cab" in page.text        # listed …
+    assert 'class="file disabled"' in page.text     # … but not clickable
+    assert '"tool": "diag"' in page.text            # history entry
+
+    # Dashboard model on disk: ok/bad/warn statuses derived from the package.
+    import app as app_module
+    dash = app_module.read_dashboard(job_id)
+    by_label = {c["label"]: c for c in dash["checks"]}
+    assert by_label["Entra joined"]["status"] == "ok"
+    assert by_label["Entra PRT"]["status"] == "ok"
+    assert by_label["MDM enrollment"]["status"] == "ok"
+    assert by_label["IME service"]["status"] == "ok"
+    assert by_label["Intune/Entra endpoints"]["status"] == "warn"
+    assert by_label["Machine certificates"]["status"] == "warn"
+
+    # File viewer: UTF-16 .reg decodes readable, html is sandboxed.
+    view = client.get(f"/result/{job_id}/files/view",
+                      params={"file": "Registry/Enrollments.reg"})
+    assert view.status_code == 200
+    assert "Windows Registry Editor" in view.text
+    assert "sandbox" in view.headers.get("content-security-policy", "")
+
+    html_view = client.get(f"/result/{job_id}/files/view",
+                           params={"file": "System/battery-report.html"})
+    assert html_view.status_code == 200
+    assert "sandbox" in html_view.headers.get("content-security-policy", "")
+
+    # Membership check: traversal, unknown and non-extracted files all 404.
+    for bad in ("../app.py", "nope.txt", "Defender/MpSupportFiles.cab"):
+        assert client.get(f"/result/{job_id}/files/view",
+                          params={"file": bad}).status_code == 404
+
+    # CMTrace viewer works on the diag job's logs too.
+    cm = client.get(f"/result/{job_id}/cmtrace")
+    assert cm.status_code == 200
+    assert "IntuneManagementExtension.log" in cm.text
+
+    # The timeline analysis on Apps-IME/Logs completes and serves a report.
+    assert _wait_for_analysis(client, job_id) == "done"
+    page2 = client.get(f"/result/{job_id}")
+    assert "Timeline analysis ready" in page2.text
+    assert "Analysis summary" in page2.text          # inline summary panel
+    timeline = client.get(f"/result/{job_id}/timeline")
+    assert timeline.status_code == 200
+    report = client.get(f"/result/{job_id}/report")
+    assert report.status_code == 200
+    assert "Win32App" in report.text
+
+
+def test_read_text_tolerant_encodings(tmp_path):
+    import app as app_module
+    import codecs
+    cases = {
+        "utf16le.txt": "héllo wörld".encode("utf-16"),          # BOM + LE
+        "utf16be.txt": codecs.BOM_UTF16_BE + "héllo wörld".encode("utf-16-be"),
+        "utf8bom.txt": "héllo wörld".encode("utf-8-sig"),
+        "utf8.txt": "héllo wörld".encode("utf-8"),
+        "utf16le_nobom.txt": "héllo wörld".encode("utf-16-le"),
+    }
+    for name, data in cases.items():
+        p = tmp_path / name
+        p.write_bytes(data)
+        assert app_module.read_text_tolerant(p) == "héllo wörld", name
+
+
+def test_dashboard_parsers():
+    import app as app_module
+
+    info = app_module.parse_dsregcmd(_DSREGCMD)
+    assert info["AzureAdJoined"] == "YES"
+    assert info["AzureAdPrt"] == "YES"
+    assert "manage.microsoft.com" in info["MdmUrl"]
+    assert info["TenantName"] == "Contoso"
+
+    eps = app_module.parse_endpoint_connectivity(_ENDPOINTS)
+    assert {e["endpoint"]: e["reachable"] for e in eps} == {
+        "login.microsoftonline.com": True, "graph.microsoft.com": False}
+
+    assert app_module.parse_service_status(_SERVICE) is True
+    assert app_module.parse_service_status("") is None
+    assert app_module.parse_service_status(
+        "IntuneManagementExtension Stopped Manual") is False
+
+    certs = app_module.parse_cert_overview(_CERTS)
+    assert len(certs) == 2
+    assert [c["expired"] for c in certs] == [False, True]
+
+    # Garbage in -> empty out, never raises.
+    assert app_module.parse_dsregcmd("\x00\x01 nonsense") == {}
+    assert app_module.parse_endpoint_connectivity("garbage") == []
+    assert app_module.parse_cert_overview("garbage") == []
+
+
+def test_build_dashboard_missing_files_unknown(tmp_path):
+    import app as app_module
+    dash = app_module.build_dashboard(tmp_path)  # empty package
+    assert all(c["status"] == "unknown" for c in dash["checks"])
+
+
+def test_build_dashboard_dutch_names(tmp_path):
+    import app as app_module
+    (tmp_path / "Identity").mkdir()
+    (tmp_path / "Identity" / "certs-machine-overzicht.txt").write_bytes(_u16(
+        "Subject    : CN=X\nThumbprint : AB\nVerlopen   : True\n"))
+    (tmp_path / "_SAMENVATTING.txt").write_bytes(_u16(
+        "  AzureAdJoined : YES\n  AzureAdPrt    : NO\n"))
+    dash = app_module.build_dashboard(tmp_path)
+    by_label = {c["label"]: c for c in dash["checks"]}
+    assert by_label["Entra joined"]["status"] == "ok"
+    assert by_label["Entra PRT"]["status"] == "bad"
+    assert by_label["Machine certificates"]["status"] == "warn"
+
+
+def test_extract_zip_members_nested_and_policy(tmp_path):
+    import app as app_module
+    nested2 = io.BytesIO()
+    with zipfile.ZipFile(nested2, "w") as zf:
+        zf.writestr("deep.txt", "too deep")
+    nested1 = io.BytesIO()
+    with zipfile.ZipFile(nested1, "w") as zf:
+        zf.writestr("inner.txt", "inner")
+        zf.writestr("deeper.zip", nested2.getvalue())
+        zf.writestr("inner.cab", b"\x00")
+    outer = tmp_path / "outer.zip"
+    with zipfile.ZipFile(outer, "w") as zf:
+        zf.writestr("top.txt", "top")
+        zf.writestr("MDM/nested.zip", nested1.getvalue())
+        zf.writestr("top.etl", b"\x00")
+
+    dest = tmp_path / "out"
+    count, skipped = app_module.extract_zip_members(
+        outer, dest, app_module.DIAG_KEEP_EXTS)
+    assert count == 2  # top.txt + inner.txt; depth-2 zip and binaries skipped
+    assert (dest / "top.txt").is_file()
+    assert (dest / "MDM" / "nested" / "inner.txt").is_file()
+    assert not list(dest.rglob("deep.txt"))
+    names = {s["name"] for s in skipped}
+    assert "top.etl" in names
+    assert "MDM/nested.zip!/inner.cab" in names
+    assert "MDM/nested.zip!/deeper.zip" in names
+    assert not (dest / "MDM" / "nested.zip").exists()  # temp zip removed
+
+
+def test_extract_zip_members_nested_zip_slip(tmp_path):
+    import app as app_module
+    evil_inner = io.BytesIO()
+    with zipfile.ZipFile(evil_inner, "w") as zf:
+        zf.writestr("../../../escape.txt", "pwned")
+    outer = tmp_path / "outer.zip"
+    with zipfile.ZipFile(outer, "w") as zf:
+        zf.writestr("evil.zip", evil_inner.getvalue())
+    with pytest.raises(app_module.UploadError):
+        app_module.extract_zip_members(outer, tmp_path / "out",
+                                       app_module.DIAG_KEEP_EXTS)
+
+
+def test_extract_zip_members_shared_bomb_budget(tmp_path, monkeypatch):
+    import app as app_module
+    monkeypatch.setattr(app_module, "MAX_UNCOMPRESSED_BYTES", 1024)
+    inner = io.BytesIO()
+    with zipfile.ZipFile(inner, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("b.txt", "y" * 600)
+    outer = tmp_path / "outer.zip"
+    with zipfile.ZipFile(outer, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("a.txt", "x" * 600)
+        zf.writestr("nested.zip", inner.getvalue())
+    # 600 + len(nested.zip) + 600 > 1024: the budget must carry across nesting.
+    with pytest.raises(app_module.UploadError):
+        app_module.extract_zip_members(outer, tmp_path / "out",
+                                       app_module.DIAG_KEEP_EXTS)
+
+
+def test_render_file_tree_disabled_entries():
+    import app as app_module
+    html = app_module.render_file_tree(
+        ["Registry/Enrollments.reg"], ["Defender/MpSupportFiles.cab"])
+    assert 'data-file="Registry/Enrollments.reg"' in html
+    assert 'class="file disabled"' in html
+    assert "MpSupportFiles.cab" in html
+    assert 'data-file="Defender/MpSupportFiles.cab"' not in html  # not clickable
+
+
+_EVTX_XML = """\
+<Event xmlns="http://schemas.microsoft.com/win/2004/08/events/event">
+  <System>
+    <Provider Name="Microsoft-Windows-DeviceManagement-Enterprise-Diagnostics-Provider"/>
+    <EventID Qualifiers="0">404</EventID>
+    <Level>2</Level>
+    <TimeCreated SystemTime="2026-01-02T03:04:05.678901Z"/>
+  </System>
+  <EventData>
+    <Data Name="Error">0x87D1041C</Data>
+    <Data Name="Detail">install failed</Data>
+  </EventData>
+</Event>
+"""
+
+
+def test_evtx_xml_to_record():
+    import app as app_module
+    rec = app_module.evtx_xml_to_record(_EVTX_XML)
+    assert rec["time"] == "2026-01-02 03:04:05"
+    assert rec["event_id"] == "404"
+    assert rec["level"] == "2" and rec["level_name"] == "Error"
+    assert rec["provider"].startswith("Microsoft-Windows-DeviceManagement")
+    assert "Error: 0x87D1041C" in rec["msg"]
+    assert "Detail: install failed" in rec["msg"]
+
+    # RenderingInfo message wins over raw EventData when present.
+    with_msg = _EVTX_XML.replace(
+        "</Event>",
+        "<RenderingInfo Culture=\"en-US\"><Message>Readable text</Message>"
+        "</RenderingInfo></Event>")
+    assert app_module.evtx_xml_to_record(with_msg)["msg"] == "Readable text"
+
+    # Malformed XML degrades to a raw record, never raises.
+    bad = app_module.evtx_xml_to_record("<not<xml")
+    assert bad["msg"].startswith("<not<xml")
+
+
+def test_render_evtx_view():
+    import app as app_module
+    rec = app_module.evtx_xml_to_record(_EVTX_XML)
+    html = app_module.render_evtx_view("EventLogs/System.evtx", [rec], True)
+    assert "All providers" in html
+    assert '<tr class="err"' in html             # level 2 -> error colouring
+    assert "0x87D1041C" in html
+    assert "EVTX_MAX_EVENTS" in html             # truncation note
+    assert 'id="detail"' in html                 # shared detail panel
+
+
+@pytest.mark.skipif(not (TESTDATA / "sample.evtx").is_file(),
+                    reason="no sample.evtx in testdata")
+def test_parse_evtx_file_sample():
+    pytest.importorskip("Evtx")
+    import app as app_module
+    records, _truncated = app_module.parse_evtx_file(TESTDATA / "sample.evtx")
+    assert records
+    assert any(r["event_id"] for r in records)

@@ -48,6 +48,27 @@ Deployment-doel: **Coolify** (self-hosted PaaS), build via Dockerfile in de repo
   een sandboxed iframe (`Content-Security-Policy: sandbox`) geserveerd, net als het
   rapport. Bestandskeuze via membership-check (geen path traversal). Rendering
   gecapt op `CMTRACE_MAX_LINES` (default 50000) regels.
+- **Diagnostics Package-tool**: upload van de zip die
+  `Collect-IntuneDiagnostics.ps1` produceert (precies één `.zip`; Engelse én
+  Nederlandse scriptvariant ondersteund via kandidaat-bestandsnamen). Drie
+  onderdelen:
+  1. **Diagnose-dashboard** — health checks geparst uit o.a.
+     `dsregcmd-status.txt`, `endpoint-connectivity.txt`, `service-status.txt`
+     en het machinecert-overzicht (Entra join/PRT/MDM-URL, IME-service,
+     endpoint-bereikbaarheid, verlopen certs). Parsers zijn totaal:
+     ontbrekend bestand → status `unknown`, nooit een error (het
+     collect-script wrapt alles in Invoke-Safe).
+  2. **Automatische timeline-analyse** op de IME-logs in het pakket
+     (`Apps-IME/Logs`); de analyse is een sub-state (`analysis` in
+     `job.json`, jobkind `diag`) en mag de diag-job nooit laten falen.
+  3. **File browser** voor alle pakketbestanden. Extension policy:
+     `.log` → CMTrace-viewer; `.txt/.reg/.xml/.json/.csv` → tekstviewer met
+     UTF-16-tolerante decodering (PowerShell 5.1 Out-File en `reg export`
+     schrijven UTF-16LE); `.html/.htm` → sandboxed iframe; `.evtx` →
+     eventviewer (python-evtx, gecapt op `EVTX_MAX_EVENTS`); `.cab/.etl` →
+     niet uitgepakt, wel als disabled entry in de tree zichtbaar. Nested
+     zips (mdmdiagnosticstool-output) worden precies één niveau diep
+     uitgepakt met een gedeeld zip-bomb-budget.
 
 ## Wijzigingen aan het originele script
 
@@ -70,12 +91,13 @@ Deployment-doel: **Coolify** (self-hosted PaaS), build via Dockerfile in de repo
 ## Conventies
 
 - Python: type hints, geen onnodige dependencies (FastAPI, uvicorn,
-  python-multipart volstaan in v1)
+  python-multipart; python-evtx voor de .evtx-viewer)
 - Alle configuratie via environment variables met veilige defaults:
   - `MAX_UPLOAD_MB` (default 100)
   - `JOB_RETENTION_HOURS` (default 24)
   - `SCRIPT_TIMEOUT_SECONDS` (default 300)
   - `CMTRACE_MAX_LINES` (default 50000)
+  - `EVTX_MAX_EVENTS` (default 2000)
 - Logging naar stdout (Coolify/Docker vangt dit op)
 - Commit per afgeronde fase met duidelijke commit message
 

@@ -18,6 +18,7 @@ Configuration (env, with safe defaults):
   CMTRACE_MAX_LINES       default 50000 (cap rendered rows in the log viewer)
   LONG_SCRIPT_THRESHOLD_SECONDS  default 180 (flag long-running PowerShell
                           scripts in the timeline; consumed by run-analysis.sh)
+  EVTX_MAX_EVENTS         default 2000 (cap events parsed per .evtx view)
 """
 
 from __future__ import annotations
@@ -32,6 +33,7 @@ import secrets
 import shutil
 import time
 import uuid
+import xml.etree.ElementTree as ET
 import zipfile
 from collections import Counter
 from contextlib import asynccontextmanager
@@ -45,6 +47,11 @@ from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from starlette.datastructures import UploadFile
 from starlette.middleware.base import BaseHTTPMiddleware
+
+try:  # optional: .evtx viewing degrades gracefully when python-evtx is absent
+    from Evtx.Evtx import Evtx
+except ImportError:  # pragma: no cover
+    Evtx = None
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("ime-analyzer")
@@ -73,6 +80,17 @@ CMTRACE_MAX_LINES = max(1, int(os.environ.get("CMTRACE_MAX_LINES", "50000")))
 ALLOWED_EXTENSIONS = {".log", ".zip"}
 CHUNK = 1024 * 1024
 
+# Cap events parsed per .evtx file in the event log viewer (python-evtx is
+# pure Python; large System.evtx files would otherwise stall the request).
+EVTX_MAX_EVENTS = max(1, int(os.environ.get("EVTX_MAX_EVENTS", "2000")))
+
+# Diagnostics-package extension policy. Text-ish files get the line viewer,
+# .log the CMTrace viewer, .html a sandboxed iframe, .evtx the event viewer.
+# .cab/.etl are binary and unparseable on Linux: they are not extracted but
+# still listed (disabled) in the file tree so the user knows they exist.
+DIAG_TEXT_EXTS = {".txt", ".reg", ".xml", ".json", ".csv"}
+DIAG_KEEP_EXTS = {".log", ".html", ".htm", ".evtx"} | DIAG_TEXT_EXTS
+
 # Bounds the number of analysis subprocesses running at once.
 _job_sem = asyncio.Semaphore(JOB_CONCURRENCY)
 
@@ -89,6 +107,20 @@ def status_path(job_id: str) -> Path:
 
 def write_status(job_id: str, **fields) -> None:
     status_path(job_id).write_text(json.dumps(fields), encoding="utf-8")
+
+
+def update_status(job_id: str, **fields) -> None:
+    """Merge fields into job.json (read-modify-write, atomic replace).
+
+    Used by diagnostics jobs where the analysis task updates only its own
+    sub-dict while the rest of the record stays intact.
+    """
+    current = read_status(job_id) or {}
+    current.update(fields)
+    p = status_path(job_id)
+    tmp = p.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(current), encoding="utf-8")
+    os.replace(tmp, p)
 
 
 def read_status(job_id: str) -> Optional[dict]:
@@ -113,21 +145,65 @@ def _log_sort_key(rel: str):
     return (1 if is_cmd else 0, rel.lower())
 
 
-def list_input_logs(job_id: str) -> List[str]:
-    """Relative POSIX paths of .log files under <job>/input (the raw uploads).
+def list_input_files(job_id: str, exts: Optional[set] = None) -> List[str]:
+    """Relative POSIX paths of files under <job>/input (the raw uploads).
 
     Recurses so a folder structure from a diagnostics zip is preserved; the
-    returned paths double as the membership allow-list for the view route.
+    returned paths double as the membership allow-list for the view routes.
+    `exts` restricts to those suffixes (lowercased); None lists everything.
     """
     input_dir = job_dir(job_id) / "input"
     if not input_dir.is_dir():
         return []
     rels = [
         p.relative_to(input_dir).as_posix()
-        for p in input_dir.rglob("*.log")
-        if p.is_file()
+        for p in input_dir.rglob("*")
+        if p.is_file() and (exts is None or p.suffix.lower() in exts)
     ]
     return sorted(rels, key=_log_sort_key)
+
+
+def list_input_logs(job_id: str) -> List[str]:
+    return list_input_files(job_id, exts={".log"})
+
+
+def find_ime_log_dir(input_dir: Path) -> Optional[Path]:
+    """Best directory inside a diagnostics package to run the timeline on.
+
+    The analysis script scans a folder recursively, so point it at the IME
+    logs only — not the whole package full of non-CMTrace noise. Preference:
+    the collector's Apps-IME/Logs folder, then any folder holding
+    IntuneManagementExtension.log, then any folder with .log files at all.
+    """
+    preferred = input_dir / "Apps-IME" / "Logs"
+    if preferred.is_dir() and any(preferred.glob("*.log")):
+        return preferred
+    for marker in sorted(input_dir.rglob("IntuneManagementExtension.log")):
+        return marker.parent
+    for any_log in sorted(input_dir.rglob("*.log")):
+        return any_log.parent
+    return None
+
+
+def read_text_tolerant(path: Path, max_bytes: int = MAX_UPLOAD_BYTES) -> str:
+    """Read a text file whose encoding is unknown.
+
+    PowerShell 5.1 Out-File and `reg export` write UTF-16LE (usually with a
+    BOM); other files in a diagnostics package are UTF-8 or ANSI. Sniff the
+    BOM, fall back to a NUL-byte heuristic for BOM-less UTF-16, then UTF-8
+    with replacement so decoding never raises.
+    """
+    data = path.read_bytes()[:max_bytes]
+    if data.startswith(b"\xff\xfe") or data.startswith(b"\xfe\xff"):
+        return data.decode("utf-16", errors="replace")  # BOM picks endianness
+    if data.startswith(b"\xef\xbb\xbf"):
+        return data.decode("utf-8-sig", errors="replace")
+    # BOM-less UTF-16LE: ASCII text shows as `c\x00h\x00…` — many NULs in
+    # the sample is a strong signal (UTF-8/ANSI text contains none).
+    sample = data[:4096]
+    if sample and sample.count(b"\x00") > len(sample) // 4:
+        return data.decode("utf-16-le", errors="replace")
+    return data.decode("utf-8", errors="replace")
 
 
 # --- CMTrace log parsing -----------------------------------------------------
@@ -204,6 +280,87 @@ def parse_cmtrace(text: str, limit: int = CMTRACE_MAX_LINES) -> tuple[List[dict]
 
     add_plain(text[pos:])
     return records, truncated
+
+
+# --- EVTX (Windows event log) parsing ----------------------------------------
+# python-evtx renders each record as the standard Event XML. Offline rendering
+# of localized message tables is impossible on Linux, so the message is the
+# RenderingInfo text when the exporter embedded it, else the raw EventData
+# values — still enough to spot error codes and failing components.
+
+_EVTX_LEVELS = {"1": "Critical", "2": "Error", "3": "Warning",
+                "4": "Information", "5": "Verbose", "0": "LogAlways"}
+
+
+def evtx_xml_to_record(xml_text: str) -> dict:
+    """Reduce one Event XML blob to the record shape the viewer renders.
+
+    Total: malformed XML degrades to a raw-text record, never raises.
+    """
+    try:
+        root = ET.fromstring(xml_text)
+    except ET.ParseError:
+        return {"time": "", "event_id": "", "level": "", "level_name": "",
+                "provider": "", "msg": xml_text.strip()[:_CELL_CAP]}
+
+    def text_of(path: str) -> str:
+        el = root.find(path)
+        return (el.text or "").strip() if el is not None else ""
+
+    time_el = root.find(".//{*}System/{*}TimeCreated")
+    when = time_el.get("SystemTime", "") if time_el is not None else ""
+    when = when[:19].replace("T", " ")
+    prov_el = root.find(".//{*}System/{*}Provider")
+    provider = prov_el.get("Name", "") if prov_el is not None else ""
+    level = text_of(".//{*}System/{*}Level")
+
+    msg = text_of(".//{*}RenderingInfo/{*}Message")
+    if not msg:
+        parts = []
+        for d in root.findall(".//{*}EventData/{*}Data"):
+            val = (d.text or "").strip()
+            if not val:
+                continue
+            name = d.get("Name", "")
+            parts.append(f"{name}: {val}" if name else val)
+        msg = "\n".join(parts)
+
+    return {"time": when,
+            "event_id": text_of(".//{*}System/{*}EventID"),
+            "level": level,
+            "level_name": _EVTX_LEVELS.get(level, level),
+            "provider": provider,
+            "msg": msg}
+
+
+def parse_evtx_file(path: Path, limit: int = EVTX_MAX_EVENTS) -> tuple[List[dict], bool]:
+    """Parse up to `limit` records from an .evtx file.
+
+    Corrupt chunks/records are common in exported logs; per-record failures
+    are skipped so one bad record never kills the view.
+    """
+    if Evtx is None:
+        raise RuntimeError("python-evtx is not installed")
+    records: List[dict] = []
+    truncated = False
+    with Evtx(str(path)) as ev:
+        for rec in ev.records():
+            if len(records) >= limit:
+                truncated = True
+                break
+            try:
+                records.append(evtx_xml_to_record(rec.xml()))
+            except Exception:
+                continue
+    return records, truncated
+
+
+def _evtx_row_class(level: str) -> str:
+    if level in ("1", "2"):
+        return "err"
+    if level == "3":
+        return "warn"
+    return ""
 
 
 # --- Timeline report summary -------------------------------------------------
@@ -362,6 +519,171 @@ def summarize(summary: ReportSummary) -> dict:
     }
 
 
+# --- Diagnostics dashboard ---------------------------------------------------
+# Health checks parsed from the text files a Collect-IntuneDiagnostics package
+# contains. Every parser is total: garbage in -> empty out, never raises. The
+# collector wraps every section in Invoke-Safe, so ANY file can be missing —
+# a missing source yields status "unknown", not an error.
+
+_KV_LINE_RE = re.compile(r"^\s*([A-Za-z][\w -]*?)\s*:\s*(.+?)\s*$", re.MULTILINE)
+
+
+def parse_dsregcmd(text: str) -> dict:
+    """Key/value scrape of `dsregcmd /status` output (also fits _SUMMARY.txt)."""
+    return {m.group(1): m.group(2) for m in _KV_LINE_RE.finditer(text)}
+
+
+# Same shape: the summary file uses `Key : value` lines for identity fields.
+parse_summary_txt = parse_dsregcmd
+
+_ENDPOINT_RE = re.compile(r"^\s*([a-z0-9.-]+\.[a-z]{2,})\s+(True|False)\b\s*(\S*)",
+                          re.IGNORECASE | re.MULTILINE)
+
+
+def parse_endpoint_connectivity(text: str) -> List[dict]:
+    """Rows of the Test-NetConnection table: endpoint, reachable, remote IP."""
+    return [
+        {"endpoint": m.group(1), "reachable": m.group(2).lower() == "true",
+         "remote_ip": m.group(3)}
+        for m in _ENDPOINT_RE.finditer(text)
+    ]
+
+
+def parse_service_status(text: str) -> Optional[bool]:
+    """True/False when a Running/Stopped state is found, None when unknown."""
+    for line in text.splitlines():
+        m = re.search(r"\b(Running|Stopped)\b", line)
+        if m and re.search(r"intune", line, re.IGNORECASE):
+            return m.group(1) == "Running"
+    # Single-service table: the state may sit on a line without the name.
+    m = re.search(r"\b(Running|Stopped)\b", text)
+    return m.group(1) == "Running" if m else None
+
+
+def parse_cert_overview(text: str) -> List[dict]:
+    """Format-List blocks (blank-line separated) of the machine cert overview."""
+    certs = []
+    for block in re.split(r"\n\s*\n", text):
+        kv = {m.group(1): m.group(2) for m in _KV_LINE_RE.finditer(block)}
+        if not kv.get("Subject") and not kv.get("Thumbprint"):
+            continue
+        expired_raw = kv.get("Expired", kv.get("Verlopen", ""))
+        certs.append({
+            "subject": kv.get("Subject", ""),
+            "not_after": kv.get("NotAfter", ""),
+            "thumbprint": kv.get("Thumbprint", ""),
+            "expired": expired_raw.strip().lower() == "true",
+        })
+    return certs
+
+
+# The collector exists in an English and a Dutch variant; accept both names.
+_DASH_SOURCES = {
+    "summary": ("_SUMMARY.txt", "_SAMENVATTING.txt"),
+    "dsregcmd": ("Identity/dsregcmd-status.txt",),
+    "endpoints": ("Network/endpoint-connectivity.txt",),
+    "ime_service": ("Apps-IME/service-status.txt",),
+    "certs": ("Identity/certs-machine-overview.txt",
+              "Identity/certs-machine-overzicht.txt"),
+}
+
+
+def _find_package_file(input_dir: Path, candidates) -> Optional[Path]:
+    """Locate a package file by relative path, falling back to a leaf-name
+    search so a zip with an extra top-level folder still resolves."""
+    for rel in candidates:
+        p = input_dir / rel
+        if p.is_file():
+            return p
+    leaves = {Path(c).name.lower() for c in candidates}
+    for p in sorted(input_dir.rglob("*")):
+        if p.is_file() and p.name.lower() in leaves:
+            return p
+    return None
+
+
+def _yesno_check(label: str, value: str, detail: str = "") -> dict:
+    v = value.strip().upper()
+    status = "ok" if v == "YES" else "bad" if v == "NO" else "unknown"
+    return {"label": label, "status": status, "detail": detail or (value or "not found")}
+
+
+def build_dashboard(input_dir: Path) -> dict:
+    """Derive the health-check model from a staged diagnostics package."""
+    def read(key: str) -> str:
+        p = _find_package_file(input_dir, _DASH_SOURCES[key])
+        return read_text_tolerant(p) if p else ""
+
+    identity = parse_dsregcmd(read("dsregcmd"))
+    if not identity.get("AzureAdJoined"):
+        identity = {**parse_summary_txt(read("summary")), **identity}
+
+    checks = [
+        _yesno_check("Entra joined", identity.get("AzureAdJoined", "")),
+        _yesno_check("Entra PRT", identity.get("AzureAdPrt", "")),
+    ]
+
+    mdm_url = identity.get("MdmUrl", identity.get("MDM URL", ""))
+    checks.append({
+        "label": "MDM enrollment",
+        "status": "ok" if "manage.microsoft.com" in mdm_url
+                  else "bad" if mdm_url else "unknown",
+        "detail": mdm_url or "MDM URL not found",
+    })
+
+    svc = parse_service_status(read("ime_service"))
+    checks.append({
+        "label": "IME service",
+        "status": "ok" if svc else "unknown" if svc is None else "bad",
+        "detail": "Running" if svc else "status unknown" if svc is None else "Stopped",
+    })
+
+    endpoints = parse_endpoint_connectivity(read("endpoints"))
+    if endpoints:
+        down = [e["endpoint"] for e in endpoints if not e["reachable"]]
+        checks.append({
+            "label": "Intune/Entra endpoints",
+            "status": "ok" if not down
+                      else "warn" if len(down) < len(endpoints) else "bad",
+            "detail": (f"{len(endpoints)} reachable" if not down
+                       else "unreachable: " + ", ".join(down)),
+        })
+    else:
+        checks.append({"label": "Intune/Entra endpoints", "status": "unknown",
+                       "detail": "no connectivity test found"})
+
+    certs = parse_cert_overview(read("certs"))
+    if certs:
+        expired = [c for c in certs if c["expired"]]
+        checks.append({
+            "label": "Machine certificates",
+            "status": "warn" if expired else "ok",
+            "detail": (f"{len(expired)} of {len(certs)} expired" if expired
+                       else f"{len(certs)} certificates, none expired"),
+        })
+    else:
+        checks.append({"label": "Machine certificates", "status": "unknown",
+                       "detail": "no certificate overview found"})
+
+    device = {
+        "name": identity.get("Device", ""),
+        "device_id": identity.get("DeviceId", ""),
+        "tenant": identity.get("TenantName", ""),
+        "collected": identity.get("Date", identity.get("Datum", "")),
+    }
+    return {"device": device, "checks": checks}
+
+
+def read_dashboard(job_id: str) -> Optional[dict]:
+    p = job_dir(job_id) / "output" / "dashboard.json"
+    if not p.is_file():
+        return None
+    try:
+        return json.loads(p.read_text(encoding="utf-8"))
+    except (ValueError, OSError):
+        return None
+
+
 # --- Analysis subprocess -----------------------------------------------------
 
 def _write_summary(report: Path, dest: Path) -> None:
@@ -385,15 +707,33 @@ def read_summary(job_id: str) -> Optional[dict]:
         return None
 
 
-async def run_job(job_id: str, input_dir: Path, output_dir: Path) -> None:
-    """Run the headless analysis script and record the outcome."""
-    write_status(job_id, state="queued")
+def _diag_state_writer(job_id: str):
+    """State writer for the analysis sub-task of a diagnostics job: updates
+    only the `analysis` dict in job.json, never the top-level job state."""
+    def set_state(**fields) -> None:
+        update_status(job_id, analysis=fields)
+    return set_state
+
+
+async def run_job(job_id: str, input_dir: Path, output_dir: Path,
+                  set_state=None) -> None:
+    """Run the headless analysis script and record the outcome.
+
+    `set_state(**fields)` records state transitions; the default writes the
+    top-level job.json record (timeline jobs). Diagnostics jobs pass
+    `_diag_state_writer(job_id)` so the analysis is a sub-state.
+    """
+    if set_state is None:
+        def set_state(**fields) -> None:
+            write_status(job_id, **fields)
+    set_state(state="queued")
     async with _job_sem:  # wait here if we are at the concurrency cap
-        await _run_job_locked(job_id, input_dir, output_dir)
+        await _run_job_locked(job_id, input_dir, output_dir, set_state)
 
 
-async def _run_job_locked(job_id: str, input_dir: Path, output_dir: Path) -> None:
-    write_status(job_id, state="running")
+async def _run_job_locked(job_id: str, input_dir: Path, output_dir: Path,
+                          set_state) -> None:
+    set_state(state="running")
     try:
         proc = await asyncio.create_subprocess_exec(
             str(RUN_SCRIPT), str(input_dir), str(output_dir),
@@ -407,8 +747,8 @@ async def _run_job_locked(job_id: str, input_dir: Path, output_dir: Path) -> Non
         except asyncio.TimeoutError:
             proc.kill()
             await proc.wait()
-            write_status(
-                job_id, state="failed", exitcode=None,
+            set_state(
+                state="failed", exitcode=None,
                 stdout="", stderr=f"Analysis timed out after {SCRIPT_TIMEOUT_SECONDS}s.",
             )
             log.warning("job %s timed out", job_id)
@@ -420,15 +760,15 @@ async def _run_job_locked(job_id: str, input_dir: Path, output_dir: Path) -> Non
         report = find_report(output_dir)
         if rc == 0 and report is not None:
             _write_summary(report, output_dir / "summary.json")
-            write_status(job_id, state="done", exitcode=0,
-                         report=report.name, stdout=stdout, stderr=stderr)
+            set_state(state="done", exitcode=0,
+                      report=report.name, stdout=stdout, stderr=stderr)
             log.info("job %s done -> %s", job_id, report.name)
         else:
-            write_status(job_id, state="failed", exitcode=rc,
-                         stdout=stdout, stderr=stderr)
+            set_state(state="failed", exitcode=rc,
+                      stdout=stdout, stderr=stderr)
             log.warning("job %s failed (exit %s)", job_id, rc)
     except Exception as e:  # pragma: no cover - defensive
-        write_status(job_id, state="failed", exitcode=None, stdout="", stderr=repr(e))
+        set_state(state="failed", exitcode=None, stdout="", stderr=repr(e))
         log.exception("job %s crashed", job_id)
 
 
@@ -481,29 +821,101 @@ async def save_uploads(files: List[UploadFile], input_dir: Path) -> int:
     return log_count
 
 
-def extract_zip_logs(zip_path: Path, input_dir: Path) -> int:
-    """Safely extract only .log members from a zip (zip-slip protected)."""
-    base = input_dir.resolve()
+async def save_diag_upload(files: List[UploadFile], input_dir: Path) -> tuple[int, list]:
+    """Validate + extract a diagnostics-package upload (exactly one .zip).
+
+    Returns (extracted_count, skipped). Raises UploadError on a wrong file
+    set, size overrun or unsafe zip.
+    """
+    zips = [up for up in files
+            if Path(up.filename or "").suffix.lower() == ".zip"]
+    if len(files) != 1 or len(zips) != 1:
+        raise UploadError(400, "Upload exactly one diagnostics .zip file.")
+
+    up = zips[0]
+    tmp_dir = input_dir.parent / "tmp"
+    tmp_dir.mkdir(parents=True, exist_ok=True)
+    dest = tmp_dir / f"{uuid.uuid4().hex}.zip"
+    total = 0
+    with dest.open("wb") as fh:
+        while True:
+            chunk = await up.read(CHUNK)
+            if not chunk:
+                break
+            total += len(chunk)
+            if total > MAX_UPLOAD_BYTES:
+                raise UploadError(413, f"Upload exceeds {MAX_UPLOAD_MB} MB limit.")
+            fh.write(chunk)
+
+    try:
+        count, skipped = extract_zip_members(dest, input_dir, DIAG_KEEP_EXTS)
+    except zipfile.BadZipFile:
+        raise UploadError(400, "The uploaded file is not a valid zip archive.")
+    if count == 0:
+        raise UploadError(400, "No viewable files found in the diagnostics zip.")
+    return count, skipped
+
+
+def extract_zip_members(zip_path: Path, dest_dir: Path, keep_exts: set,
+                        depth: int = 0,
+                        budget: Optional[list] = None) -> tuple[int, list]:
+    """Safely extract members with a kept extension from a zip.
+
+    Zip-slip protected; `budget` is a single-element mutable byte counter
+    shared across the outer zip and any nested zips so nesting cannot reset
+    the zip-bomb cap. Nested .zip members are extracted one level deep into
+    `<dest>/<zipname-stem>/`; deeper nesting is skipped. Returns
+    (kept_count, skipped) where skipped lists {"name", "size"} of members
+    that were not extracted.
+    """
+    if budget is None:
+        budget = [0]
+    base = dest_dir.resolve()
     count = 0
-    uncompressed = 0
+    skipped: list = []
     with zipfile.ZipFile(zip_path) as zf:
         for info in zf.infolist():
             if info.is_dir():
                 continue
             member = info.filename
-            if Path(member).suffix.lower() != ".log":
+            ext = Path(member).suffix.lower()
+            nested_zip = ext == ".zip" and depth == 0
+            if ext not in keep_exts and not nested_zip:
+                skipped.append({"name": member, "size": info.file_size})
                 continue
-            # Resolve target and ensure it stays inside input_dir (zip-slip guard).
-            target = (input_dir / member).resolve()
+            # Resolve target and ensure it stays inside dest_dir (zip-slip guard).
+            target = (dest_dir / member).resolve()
             if base != target and base not in target.parents:
                 raise UploadError(400, f"Unsafe path in zip: {member!r}.")
-            uncompressed += info.file_size
-            if uncompressed > MAX_UNCOMPRESSED_BYTES:
+            budget[0] += info.file_size
+            if budget[0] > MAX_UNCOMPRESSED_BYTES:
                 raise UploadError(413, "Zip contents too large (possible zip bomb).")
             target.parent.mkdir(parents=True, exist_ok=True)
             with zf.open(info) as src, target.open("wb") as dst:
                 shutil.copyfileobj(src, dst, CHUNK)
-            count += 1
+            if nested_zip:
+                nested_dest = target.parent / Path(member).stem
+                try:
+                    sub_count, sub_skipped = extract_zip_members(
+                        target, nested_dest, keep_exts, depth + 1, budget)
+                except zipfile.BadZipFile:
+                    sub_count, sub_skipped = 0, [{"name": member,
+                                                  "size": info.file_size}]
+                finally:
+                    target.unlink(missing_ok=True)
+                count += sub_count
+                prefix = f"{member}!/"
+                skipped.extend({"name": prefix + s["name"], "size": s["size"]}
+                               for s in sub_skipped)
+            else:
+                count += 1
+    return count, skipped
+
+
+def extract_zip_logs(zip_path: Path, input_dir: Path) -> int:
+    """Safely extract only .log members from a zip (zip-slip protected)."""
+    count, _skipped = extract_zip_members(zip_path, input_dir,
+                                          keep_exts={".log"}, depth=1)
     return count
 
 
@@ -666,7 +1078,7 @@ PAGE_CSS = """
   footer{ max-width:880px; margin:3rem auto 2rem; padding:1.5rem 1.25rem 0;
     border-top:1px solid var(--border); color:var(--muted); font-size:.85rem;
     display:flex; justify-content:space-between; flex-wrap:wrap; gap:.5rem; }
-  .cards{ display:grid; grid-template-columns:1fr 1fr; gap:1.25rem; }
+  .cards{ display:grid; grid-template-columns:repeat(auto-fit,minmax(240px,1fr)); gap:1.25rem; }
   @media (max-width:640px){ .cards{ grid-template-columns:1fr; } }
   .card h2{ margin:0 0 .4rem; font-size:1.25rem; }
   .card .desc{ color:var(--muted); margin:0 0 1.25rem; }
@@ -699,6 +1111,7 @@ NAV = ("""<header><nav class="nav">
   <span>
     <a class="navlink" href="/timeline">Timeline</a>
     <a class="navlink" href="/cmtrace">CMTrace</a>
+    <a class="navlink" href="/diagnostics">Diagnostics</a>
   </span>
 </nav></header>""" % {"logo": _LOGO})
 
@@ -742,7 +1155,8 @@ HISTORY_SECTION = """<section class="card recent" id="recent" hidden>
     const badge = document.createElement('span');
     badge.className = 'state' + (e.state === 'done' ? ' done'
                                : e.state === 'failed' ? ' failed' : '');
-    badge.textContent = (e.tool === 'logs' ? 'CMTrace' : 'Timeline') +
+    badge.textContent = (e.tool === 'logs' ? 'CMTrace'
+                       : e.tool === 'diag' ? 'Diagnostics' : 'Timeline') +
                         (e.state === 'busy' ? ' \\u2026'
                        : e.state === 'failed' ? ' failed' : '');
     const a = document.createElement('a');
@@ -819,6 +1233,13 @@ LANDING_PAGE = """<!doctype html>
           filterable CMTrace-style table &mdash; no analysis run.</p>
         <a class="btn btn-ghost" href="/cmtrace">Open CMTrace Viewer</a>
       </div>
+      <div class="card">
+        <h2>Diagnostics Package</h2>
+        <p class="desc">Upload a <code>Collect-IntuneDiagnostics</code> zip:
+          health checks, an automatic timeline analysis and a browser for
+          every file in the package.</p>
+        <a class="btn btn-ghost" href="/diagnostics">Open Diagnostics</a>
+      </div>
     </div>
     %(recent)s
   </main>
@@ -839,8 +1260,7 @@ UPLOAD_PAGE = """<!doctype html>
     <div class="card">
       <form id="form" action="%(action)s" method="post" enctype="multipart/form-data">
         <div class="drop" id="drop">
-          <strong>Drag &amp; drop</strong> a <code>.zip</code>, one or more
-          <code>.log</code> files, <em>or a whole folder</em> here, or
+          %(droptext)s
           <a href="#" id="pickfiles">choose files</a> &middot;
           <a href="#" id="pickdir">choose a folder</a>.
         </div>
@@ -849,13 +1269,13 @@ UPLOAD_PAGE = """<!doctype html>
              #input is the only field that submits; #dirinput just opens the
              folder dialog and its files are transferred into #input. -->
         <input id="input" name="files" type="file" multiple
-               accept=".log,.zip" style="display:none">
+               accept="%(accept)s" style="display:none">
         <input id="dirinput" type="file" multiple
                webkitdirectory style="display:none">
         <ul id="files"></ul>
         <div class="row">
           <p class="limits">
-            <span class="badge">.log</span><span class="badge">.zip</span>
+            %(badges)s
             Max total upload: <strong>%(max)d&nbsp;MB</strong>
           </p>
           <button class="btn go" type="submit" disabled>%(button)s</button>
@@ -871,7 +1291,7 @@ UPLOAD_PAGE = """<!doctype html>
   const dirinput = document.getElementById('dirinput'); // folder dialog trigger
   const list = document.getElementById('files');
   const buttons = [...document.querySelectorAll('.go')];
-  const LOGRE = /\\.(log|zip)$/i;
+  const LOGRE = new RegExp(%(patternjson)s, 'i');
 
   // Assign a list of File objects to the (submitting) input via DataTransfer,
   // keeping only .log/.zip. Used by the folder dialog and folder drag-drop.
@@ -1034,10 +1454,120 @@ CMTRACE_PAGE = """<!doctype html>
   }
   side.addEventListener('click', ev => {
     const f = ev.target.closest('.file');
-    if (f) select(f);
+    if (f && f.dataset.file) select(f);
   });
   // Highlight the file the iframe already loaded (server's first/default).
   (files.find(f => f.dataset.file === first) || files[0])?.classList.add('active');
+</script>
+  %(history)s
+</body></html>"""
+
+DIAG_PAGE = """<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sherlog &mdash; diagnostics package</title>
+<style>%(css)s
+  .topbar{display:flex;align-items:center;justify-content:space-between;
+    padding:.6rem 1.25rem;border-bottom:1px solid var(--border);background:var(--bg)}
+  .panels{max-width:1100px;margin:0 auto;padding:.9rem 1.25rem;display:flex;
+    flex-direction:column;gap:.8rem}
+  .panels>h2{margin:.2rem 0 0;font-size:1.15rem}
+  .devline{color:var(--muted);font-size:.9rem;margin:0}
+  .dash{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:.7rem}
+  .check{border:1px solid var(--border);border-radius:10px;padding:.65rem .9rem;
+    background:var(--bg)}
+  .check .lbl{font-weight:600;font-size:.92rem;display:flex;align-items:center;gap:.45rem}
+  .check .st{width:.65rem;height:.65rem;border-radius:50%%;display:inline-block;flex:none}
+  .st.ok{background:#16a34a}.st.bad{background:#dc2626}
+  .st.warn{background:#d97706}.st.unknown{background:#9ca3af}
+  .check .det{color:var(--muted);font-size:.85rem;margin-top:.2rem;word-break:break-word}
+  .acard{border:1px solid var(--border);border-radius:10px;padding:.75rem 1rem;
+    background:var(--surface);display:flex;align-items:center;gap:.8rem;flex-wrap:wrap}
+  .acard pre{margin:.4rem 0 0;width:100%%;max-height:10rem}
+  .spin-sm{width:1.1rem;height:1.1rem;border:2px solid var(--border);
+    border-top-color:var(--accent);border-radius:50%%;flex:none;
+    animation:spin 1s linear infinite}
+  details.summary{background:var(--surface);border:1px solid var(--border);
+    border-radius:10px;padding:.4rem 1rem;font-size:.9rem;max-height:45vh;overflow:auto}
+  details.summary>summary{cursor:pointer;font-weight:600;padding:.25rem 0}
+  .sum-chips{display:flex;flex-wrap:wrap;gap:.4rem;margin:.5rem 0}
+  .sum-chip{border:1px solid var(--border);border-radius:999px;padding:.15rem .7rem;
+    background:var(--bg);white-space:nowrap}
+  .sum-chip .ok{color:#1a7f37;font-weight:600}
+  .sum-chip .bad{color:#c33;font-weight:600}
+  .sum-chip .warn{color:#9a6700;font-weight:600}
+  details.summary h3{margin:.7rem 0 .3rem;font-size:.95rem}
+  details.summary table{border-collapse:collapse;width:100%%;font-size:.86rem}
+  details.summary th,details.summary td{text-align:left;padding:.25rem .6rem;
+    border-bottom:1px solid var(--border);vertical-align:top}
+  details.summary .code{margin:.2rem 0}
+  .browser{display:flex;height:75vh;border-top:1px solid var(--border)}
+  .side{width:300px;flex:none;overflow:auto;border-right:1px solid var(--border);
+    background:var(--surface);padding:.5rem .35rem;font-size:.86rem}
+  .side details{margin:0}
+  .side summary{cursor:pointer;padding:.25rem .4rem;color:var(--fg);font-weight:600;
+    border-radius:6px;list-style:none;display:flex;align-items:center;gap:.35rem}
+  .side summary::before{content:'▸';color:var(--muted);font-size:.7rem;transition:.1s}
+  .side details[open]>summary::before{transform:rotate(90deg)}
+  .side .grp{padding-left:.6rem;border-left:1px solid var(--border);margin-left:.55rem}
+  .side .file{padding:.3rem .5rem;border-radius:6px;color:var(--muted);cursor:pointer;
+    white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .side .file:hover{background:var(--bg);color:var(--fg)}
+  .side .file.active{background:var(--accent);color:#fff}
+  .side .file.disabled{opacity:.45;cursor:default}
+  .side .file.disabled:hover{background:none;color:var(--muted)}
+  .browser iframe{border:0;flex:1;height:100%%;display:block}
+</style></head><body>
+  <div class="topbar">
+    <a class="brand" href="/">%(logo)s Sherlog</a>
+    <span>
+      <a class="btn btn-ghost" href="/result/%(job)s/cmtrace">Raw logs (CMTrace)</a>
+      <a class="btn btn-ghost" href="/diagnostics">New upload</a>
+    </span>
+  </div>
+  <div class="panels">
+    <h2>Device health</h2>
+    %(dashboard)s
+    %(analysis)s
+    %(summary)s
+  </div>
+  <div class="browser">
+    <nav class="side" id="side">%(tree)s</nav>
+    <iframe id="view" src="%(firstsrc)s"></iframe>
+  </div>
+<script>
+  const job = %(jobjson)s;
+  const first = %(firstjson)s;
+  const side = document.getElementById('side');
+  const view = document.getElementById('view');
+  const files = [...side.querySelectorAll('.file')];
+  function select(el) {
+    files.forEach(f => f.classList.toggle('active', f === el));
+    view.src = '/result/' + job + '/files/view?file=' +
+               encodeURIComponent(el.dataset.file);
+  }
+  side.addEventListener('click', ev => {
+    const f = ev.target.closest('.file');
+    if (f && f.dataset.file) select(f);
+  });
+  (files.find(f => f.dataset.file === first) || null)?.classList.add('active');
+
+  // While the timeline analysis runs, poll the job status and reload once it
+  // settles so the analysis card and summary panel appear without user action.
+  const analysisState = %(analysisjson)s;
+  if (analysisState === 'queued' || analysisState === 'running') {
+    const timer = setInterval(async () => {
+      try {
+        const r = await fetch('/result/' + job + '/status');
+        if (!r.ok) return;
+        const j = await r.json();
+        if (j.analysis !== 'queued' && j.analysis !== 'running') {
+          clearInterval(timer);
+          location.reload();
+        }
+      } catch (e) {}
+    }, 5000);
+  }
 </script>
   %(history)s
 </body></html>"""
@@ -1158,6 +1688,56 @@ def render_summary_panel(summary: Optional[dict]) -> str:
                f"{total_success} succeeded")
     return (f'<details class="summary"{open_attr}><summary>{heading}</summary>'
             f'{"".join(parts)}</details>')
+
+
+def render_dashboard_panel(dash: Optional[dict]) -> str:
+    """Health-check cards for the diagnostics result page.
+
+    Rendered in the app origin, so every value — all parsed from untrusted
+    package content — is escaped.
+    """
+    if not dash:
+        return '<p class="devline">No dashboard data for this package.</p>'
+    parts = []
+    device = dash.get("device", {})
+    bits = [device.get("name", ""), device.get("tenant", ""),
+            device.get("collected", "")]
+    bits = [b for b in bits if b]
+    if bits:
+        parts.append(f'<p class="devline">{html_escape(" · ".join(bits))}</p>')
+    cards = []
+    for c in dash.get("checks", []):
+        st = c.get("status", "unknown")
+        if st not in ("ok", "bad", "warn", "unknown"):
+            st = "unknown"
+        cards.append(
+            f'<div class="check"><span class="lbl"><span class="st {st}"></span>'
+            f'{html_escape(str(c.get("label", "")))}</span>'
+            f'<div class="det">{html_escape(str(c.get("detail", "")))}</div></div>'
+        )
+    if cards:
+        parts.append(f'<div class="dash">{"".join(cards)}</div>')
+    return "".join(parts)
+
+
+def render_analysis_card(job_id: str, analysis: dict) -> str:
+    """State card for the timeline-analysis sub-task of a diagnostics job."""
+    state = analysis.get("state", "none")
+    if state == "done":
+        return (f'<div class="acard"><strong>Timeline analysis ready.</strong>'
+                f'<a class="btn" href="/result/{job_id}/timeline">'
+                f'Open timeline report</a></div>')
+    if state in ("queued", "running"):
+        return ('<div class="acard"><span class="spin-sm"></span>'
+                'Running the timeline analysis on the IME logs in this package&hellip; '
+                'this page updates automatically.</div>')
+    if state == "failed":
+        stderr = html_escape(analysis.get("stderr", "") or "(empty)")
+        return ('<div class="acard"><strong>Timeline analysis failed.</strong> '
+                'The package files below are still browsable.'
+                f'<pre>{stderr}</pre></div>')
+    return ('<div class="acard">No IME logs found in this package &mdash; '
+            'timeline analysis skipped.</div>')
 
 
 # --- CMTrace viewer rendering ------------------------------------------------
@@ -1473,6 +2053,7 @@ def render_cmtrace_view(filename: str, records: List[dict], truncated: bool) -> 
                 f'(file is larger; output truncated).</div>')
 
     if structured:
+        meta_labels = [["c", "Component"], ["t", "Time"], ["th", "Thread"]]
         components = sorted({r["component"] for r in records if r["component"]})
         opts = "".join(
             f'<option value="{html_escape(c)}">{html_escape(c)}</option>'
@@ -1494,6 +2075,7 @@ def render_cmtrace_view(filename: str, records: List[dict], truncated: bool) -> 
         comp_sel = ('<select id="comp"><option value="">All components</option>'
                     f'{opts}</select>')
     else:
+        meta_labels = []
         rows = []
         for i, r in enumerate(records, 1):
             cls = _plain_class(r["msg"])
@@ -1505,6 +2087,48 @@ def render_cmtrace_view(filename: str, records: List[dict], truncated: bool) -> 
         head = '<th class="ln">#</th><th>Log text</th>'
         comp_sel = ""
 
+    return _render_records_page(filename, head, rows, comp_sel, note, meta_labels)
+
+
+def render_evtx_view(filename: str, records: List[dict], truncated: bool) -> str:
+    """Standalone (sandboxed) HTML view for one parsed .evtx event log."""
+    note = ""
+    if truncated:
+        note = (f'<div class="note">Showing the first {len(records):,} events '
+                f'(EVTX_MAX_EVENTS cap). Messages are best-effort: offline '
+                f'message tables are unavailable, so raw event data is shown.</div>')
+
+    providers = sorted({r["provider"] for r in records if r["provider"]})
+    opts = "".join(
+        f'<option value="{html_escape(p)}">{html_escape(p)}</option>'
+        for p in providers
+    )
+    rows = []
+    for r in records:
+        cls = _evtx_row_class(r["level"])
+        rows.append(
+            f'<tr class="{cls}" data-c="{html_escape(r["provider"])}">'
+            f'<td class="msg">{html_escape(r["msg"])}</td>'
+            f'<td class="c">{html_escape(r["provider"])}</td>'
+            f'<td class="t">{html_escape(r["time"])}</td>'
+            f'<td class="th">{html_escape(r["event_id"])}</td>'
+            f'<td class="th">{html_escape(r["level_name"])}</td></tr>'
+        )
+    head = ('<th>Message</th><th class="c">Provider</th>'
+            '<th class="t">Time (UTC)</th><th class="th">Event ID</th>'
+            '<th class="th">Level</th>')
+    comp_sel = ('<select id="comp"><option value="">All providers</option>'
+                f'{opts}</select>')
+    meta_labels = [["c", "Provider"], ["t", "Time"], ["th", "Event ID"]]
+    return _render_records_page(filename, head, rows, comp_sel, note, meta_labels)
+
+
+def _render_records_page(filename: str, head: str, rows: List[str],
+                         comp_sel: str, note: str,
+                         meta_labels: List[list]) -> str:
+    """Shared sandboxed record-table page (CMTrace + EVTX viewers): filter bar,
+    severity legend, colored rows and the click-for-detail panel with error
+    code explanations."""
     return """<!doctype html><html lang="en"><head><meta charset="utf-8">
 <title>%(file)s</title><style>%(css)s</style></head><body>
   <div class="bar">
@@ -1564,6 +2188,7 @@ def render_cmtrace_view(filename: str, records: List[dict], truncated: bool) -> 
   // Detail panel: click a row to read the full message, with plain-language
   // explanations for known error codes (hex, signed decimal, or MSI exit).
   const CODES = %(codes)s;
+  const META = %(meta)s;
   const detail = document.getElementById('detail');
   const dMsg = document.getElementById('d-msg');
   const dMeta = document.getElementById('d-meta');
@@ -1593,7 +2218,7 @@ def render_cmtrace_view(filename: str, records: List[dict], truncated: bool) -> 
     dSev.textContent = isErr ? 'Error' : isWarn ? 'Warning' : 'Info';
     dSev.className = 'sev ' + (isErr ? 'e' : isWarn ? 'w' : 'i');
     const meta = [];
-    for (const [cls, label] of [['c', 'Component'], ['t', 'Time'], ['th', 'Thread']]) {
+    for (const [cls, label] of META) {
       const td = tr.querySelector('td.' + cls);
       if (td && td.textContent) meta.push(label + ': ' + td.textContent);
     }
@@ -1626,7 +2251,7 @@ def render_cmtrace_view(filename: str, records: List[dict], truncated: bool) -> 
 </body></html>""" % {
         "file": html_escape(filename), "css": _CMTRACE_CSS, "comp": comp_sel,
         "head": head, "note": note, "rows": "\n".join(rows),
-        "codes": json.dumps(ERROR_CODES),
+        "codes": json.dumps(ERROR_CODES), "meta": json.dumps(meta_labels),
     }
 
 
@@ -1639,12 +2264,24 @@ async def index() -> HTMLResponse:
     })
 
 
+_DEFAULT_DROPTEXT = ("<strong>Drag &amp; drop</strong> a <code>.zip</code>, "
+                     "one or more <code>.log</code> files, <em>or a whole "
+                     "folder</em> here, or")
+
+
 def render_upload_page(*, title: str, heading: str, intro: str,
-                       action: str, button: str) -> HTMLResponse:
+                       action: str, button: str,
+                       accept: str = ".log,.zip",
+                       pattern: str = r"\.(log|zip)$",
+                       badges: str = '<span class="badge">.log</span>'
+                                     '<span class="badge">.zip</span>',
+                       droptext: str = _DEFAULT_DROPTEXT) -> HTMLResponse:
     return HTMLResponse(UPLOAD_PAGE % {
         "css": PAGE_CSS, "nav": NAV, "footer": FOOTER, "max": MAX_UPLOAD_MB,
         "title": title, "heading": heading, "intro": intro,
         "action": action, "button": button, "recent": HISTORY_SECTION,
+        "accept": accept, "patternjson": json.dumps(pattern),
+        "badges": badges, "droptext": droptext,
     })
 
 
@@ -1672,6 +2309,25 @@ async def cmtrace_upload_page() -> HTMLResponse:
     )
 
 
+@app.get("/diagnostics", response_class=HTMLResponse)
+async def diagnostics_upload_page() -> HTMLResponse:
+    return render_upload_page(
+        title="Diagnostics Package",
+        heading="Troubleshoot a diagnostics package",
+        intro=("Upload the <code>IntuneDiag-*.zip</code> produced by "
+               "<code>Collect-IntuneDiagnostics.ps1</code> and get device "
+               "health checks, an automatic Win32App <strong>timeline</strong> "
+               "and a browser for every file in the package."),
+        action="/diagnostics-analyze",
+        button="Analyze package",
+        accept=".zip",
+        pattern=r"\.zip$",
+        badges='<span class="badge">.zip</span>',
+        droptext=("<strong>Drag &amp; drop</strong> the "
+                  "<code>IntuneDiag-*.zip</code> here, or"),
+    )
+
+
 @app.get("/health")
 async def health() -> JSONResponse:
     pwsh = shutil.which("pwsh")
@@ -1680,15 +2336,12 @@ async def health() -> JSONResponse:
     return JSONResponse({"status": "degraded", "pwsh": None}, status_code=503)
 
 
-async def stage_upload(request: Request):
-    """Validate + stage an upload into a fresh job dir.
+def _content_length_error(request: Request) -> Optional[HTMLResponse]:
+    """Early server-side size guard: reject before parsing/buffering the body.
 
-    Returns (job_id, input_dir, output_dir) on success, or an HTMLResponse error
-    to return to the client. Shared by /analyze (timeline) and /cmtrace-view.
+    Content-Length can be absent/spoofed, so the save functions still enforce
+    the real limit by counting bytes as they stream; this just fails fast.
     """
-    # Early server-side size guard: reject before parsing/buffering the body.
-    # Content-Length can be absent/spoofed, so save_uploads() still enforces the
-    # real limit by counting bytes as it streams; this just fails fast.
     cl = request.headers.get("content-length")
     if cl is not None:
         try:
@@ -1698,6 +2351,18 @@ async def stage_upload(request: Request):
                 )
         except ValueError:
             return HTMLResponse("Invalid Content-Length.", status_code=400)
+    return None
+
+
+async def stage_upload(request: Request):
+    """Validate + stage an upload into a fresh job dir.
+
+    Returns (job_id, input_dir, output_dir) on success, or an HTMLResponse error
+    to return to the client. Shared by /analyze (timeline) and /cmtrace-view.
+    """
+    err = _content_length_error(request)
+    if err is not None:
+        return err
 
     form = await request.form()
     files = [v for v in form.getlist("files") if isinstance(v, UploadFile) and v.filename]
@@ -1750,6 +2415,54 @@ async def cmtrace_view_upload(request: Request) -> Response:
     return RedirectResponse(url=f"/result/{job_id}/cmtrace", status_code=303)
 
 
+# Cap the skipped-members list persisted in job.json (a hostile zip could
+# contain millions of entries).
+_MAX_SKIPPED_LISTED = 200
+
+
+@app.post("/diagnostics-analyze")
+async def diagnostics_analyze(request: Request) -> Response:
+    """Stage a diagnostics package: extract, build the dashboard, kick off the
+    timeline analysis on the IME logs inside (when present)."""
+    err = _content_length_error(request)
+    if err is not None:
+        return err
+
+    form = await request.form()
+    files = [v for v in form.getlist("files")
+             if isinstance(v, UploadFile) and v.filename]
+    if not files:
+        return HTMLResponse("No files uploaded.", status_code=400)
+
+    job_id = uuid.uuid4().hex
+    base = job_dir(job_id)
+    input_dir = base / "input"
+    output_dir = base / "output"
+    input_dir.mkdir(parents=True, exist_ok=True)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    try:
+        _count, skipped = await save_diag_upload(files, input_dir)
+    except UploadError as e:
+        shutil.rmtree(base, ignore_errors=True)
+        return HTMLResponse(html_escape(e.message), status_code=e.status_code)
+    finally:
+        shutil.rmtree(base / "tmp", ignore_errors=True)
+
+    dashboard = build_dashboard(input_dir)
+    (output_dir / "dashboard.json").write_text(json.dumps(dashboard),
+                                               encoding="utf-8")
+
+    ime_dir = find_ime_log_dir(input_dir)
+    write_status(job_id, kind="diag", state="ready",
+                 skipped=skipped[:_MAX_SKIPPED_LISTED],
+                 analysis={"state": "queued" if ime_dir else "none"})
+    if ime_dir is not None:
+        asyncio.create_task(run_job(job_id, ime_dir, output_dir,
+                                    _diag_state_writer(job_id)))
+    return RedirectResponse(url=f"/result/{job_id}", status_code=303)
+
+
 @app.get("/result/{job_id}", response_class=HTMLResponse)
 async def result(job_id: str) -> Response:
     # Reject anything that isn't a clean job id (no path traversal).
@@ -1759,6 +2472,9 @@ async def result(job_id: str) -> Response:
     status = read_status(job_id)
     if status is None:
         return HTMLResponse("Unknown job.", status_code=404)
+
+    if status.get("kind") == "diag":
+        return render_diag_page(job_id, status)
 
     state = status.get("state")
     if state == "logs":  # CMTrace-only job, no timeline report exists
@@ -1802,10 +2518,14 @@ async def report_raw(job_id: str) -> Response:
         return HTMLResponse("Invalid job id.", status_code=400)
 
     status = read_status(job_id)
-    if status is None or status.get("state") != "done":
+    if status is None:
+        return HTMLResponse("Report not available.", status_code=404)
+    # Diagnostics jobs keep the analysis outcome in a sub-dict.
+    rec = status.get("analysis") or {} if status.get("kind") == "diag" else status
+    if rec.get("state") != "done":
         return HTMLResponse("Report not available.", status_code=404)
 
-    report = job_dir(job_id) / "output" / status.get("report", "")
+    report = job_dir(job_id) / "output" / rec.get("report", "")
     if not report.is_file():
         return HTMLResponse("Report missing.", status_code=500)
 
@@ -1819,20 +2539,28 @@ def _attr(s: str) -> str:  # safe inside a double-quoted HTML attribute
     return html_escape(s).replace('"', "&quot;")
 
 
-def render_log_tree(paths: List[str]) -> str:
-    """Nested <details> folder tree from sorted relative log paths.
+def render_file_tree(paths: List[str], skipped: List[str] = ()) -> str:
+    """Nested <details> folder tree from sorted relative file paths.
 
     Folders come from the uploaded structure (a diagnostics zip); flat uploads
     just yield files at the root. File order within a folder keeps the incoming
-    (CMTrace-first) sort.
+    (CMTrace-first) sort. `skipped` paths (members not extracted, e.g. .cab)
+    are rendered as disabled, non-clickable entries so the user knows they
+    exist in the original package.
     """
     tree: dict = {}
-    for p in paths:
+
+    def insert(p: str, disabled: bool) -> None:
         *dirs, leaf = p.split("/")
         node = tree
         for d in dirs:
             node = node.setdefault(d, {})
-        node.setdefault("__files__", []).append((leaf, p))
+        node.setdefault("__files__", []).append((leaf, p, disabled))
+
+    for p in paths:
+        insert(p, False)
+    for p in skipped:
+        insert(p, True)
 
     def render(node: dict) -> str:
         out = []
@@ -1841,14 +2569,24 @@ def render_log_tree(paths: List[str]) -> str:
                 f"<details open><summary>{html_escape(name)}</summary>"
                 f'<div class="grp">{render(node[name])}</div></details>'
             )
-        for leaf, full in node.get("__files__", []):
-            out.append(
-                f'<div class="file" data-file="{_attr(full)}" '
-                f'title="{_attr(full)}">{html_escape(leaf)}</div>'
-            )
+        for leaf, full, disabled in node.get("__files__", []):
+            if disabled:
+                out.append(
+                    f'<div class="file disabled" '
+                    f'title="{_attr(full)} (not extracted)">{html_escape(leaf)}</div>'
+                )
+            else:
+                out.append(
+                    f'<div class="file" data-file="{_attr(full)}" '
+                    f'title="{_attr(full)}">{html_escape(leaf)}</div>'
+                )
         return "".join(out)
 
     return render(tree)
+
+
+def render_log_tree(paths: List[str]) -> str:
+    return render_file_tree(paths)
 
 
 @app.get("/result/{job_id}/cmtrace", response_class=HTMLResponse)
@@ -1857,21 +2595,29 @@ async def cmtrace(job_id: str) -> Response:
     if not job_id.isalnum():
         return HTMLResponse("Invalid job id.", status_code=400)
     status = read_status(job_id)
-    if status is None or status.get("state") not in ("done", "logs"):
+    if status is None or status.get("state") not in ("done", "logs", "ready"):
         return HTMLResponse("Logs not available.", status_code=404)
 
     logs = list_input_logs(job_id)
     if not logs:
         return HTMLResponse("No raw logs found for this job.", status_code=404)
 
-    # Only a finished timeline job has a report to link back to.
-    timeline = (f'<a class="btn btn-ghost" href="/result/{job_id}">&larr; Timeline</a>'
-                if status.get("state") == "done" else "")
+    # Link back to whichever overview this job has.
+    if status.get("kind") == "diag":
+        timeline = (f'<a class="btn btn-ghost" href="/result/{job_id}">'
+                    f'&larr; Diagnostics</a>')
+    elif status.get("state") == "done":  # finished timeline job has a report
+        timeline = f'<a class="btn btn-ghost" href="/result/{job_id}">&larr; Timeline</a>'
+    else:
+        timeline = ""
 
-    # A logs-only job is its own history entry; a finished timeline job viewed
-    # here keeps its existing "timeline" entry (same id, just an update).
+    # A logs-only job is its own history entry; a finished timeline or
+    # diagnostics job viewed here keeps its existing entry (same id, update).
     job_state = status.get("state", "logs")
-    tool = "logs" if job_state == "logs" else "timeline"
+    if status.get("kind") == "diag":
+        tool, job_state = "diag", "done"
+    else:
+        tool = "logs" if job_state == "logs" else "timeline"
     return HTMLResponse(CMTRACE_PAGE % {
         "css": PAGE_CSS, "logo": _LOGO, "job": job_id, "timeline": timeline,
         "tree": render_log_tree(logs), "first": quote(logs[0]),
@@ -1887,7 +2633,7 @@ async def cmtrace_view(job_id: str, file: str) -> Response:
     if not job_id.isalnum():
         return HTMLResponse("Invalid job id.", status_code=400)
     status = read_status(job_id)
-    if status is None or status.get("state") not in ("done", "logs"):
+    if status is None or status.get("state") not in ("done", "logs", "ready"):
         return HTMLResponse("Logs not available.", status_code=404)
 
     # Membership check: `file` must be exactly one of the staged logs — this
@@ -1895,9 +2641,121 @@ async def cmtrace_view(job_id: str, file: str) -> Response:
     if file not in list_input_logs(job_id):
         return HTMLResponse("Unknown log file.", status_code=404)
 
-    text = (job_dir(job_id) / "input" / file).read_text(encoding="utf-8", errors="replace")
+    text = read_text_tolerant(job_dir(job_id) / "input" / file)
     records, truncated = parse_cmtrace(text)
     return HTMLResponse(
         render_cmtrace_view(file, records, truncated),
         headers={"Content-Security-Policy": "sandbox allow-scripts"},
     )
+
+
+# --- Diagnostics package routes ------------------------------------------------
+
+def render_diag_page(job_id: str, status: dict) -> HTMLResponse:
+    """Diagnostics overview: dashboard, analysis card, summary, file browser."""
+    analysis = status.get("analysis") or {}
+    files = list_input_files(job_id, exts=DIAG_KEEP_EXTS)
+    skipped = [s.get("name", "") for s in status.get("skipped", [])
+               if isinstance(s, dict) and s.get("name")]
+    first = files[0] if files else ""
+    firstsrc = (f"/result/{job_id}/files/view?file={quote(first)}"
+                if first else "about:blank")
+    summary = (render_summary_panel(read_summary(job_id))
+               if analysis.get("state") == "done" else "")
+    hist_state = ("busy" if analysis.get("state") in ("queued", "running")
+                  else "done")
+    return HTMLResponse(DIAG_PAGE % {
+        "css": PAGE_CSS, "logo": _LOGO, "job": job_id,
+        "dashboard": render_dashboard_panel(read_dashboard(job_id)),
+        "analysis": render_analysis_card(job_id, analysis),
+        "summary": summary,
+        "tree": render_file_tree(files, skipped),
+        "firstsrc": firstsrc,
+        "jobjson": json.dumps(job_id), "firstjson": json.dumps(first),
+        "analysisjson": json.dumps(analysis.get("state", "none")),
+        "history": history_record_js(job_id, "diag", hist_state, files),
+    })
+
+
+@app.get("/result/{job_id}/status")
+async def job_status(job_id: str) -> JSONResponse:
+    """Small sanitized status poll for the diagnostics result page."""
+    if not job_id.isalnum():
+        return JSONResponse({"error": "invalid job id"}, status_code=400)
+    status = read_status(job_id)
+    if status is None:
+        return JSONResponse({"error": "unknown job"}, status_code=404)
+    return JSONResponse({
+        "state": status.get("state"),
+        "analysis": (status.get("analysis") or {}).get("state"),
+    })
+
+
+@app.get("/result/{job_id}/timeline", response_class=HTMLResponse)
+async def diag_timeline(job_id: str) -> Response:
+    """Full timeline report page for the analysis inside a diagnostics job."""
+    if not job_id.isalnum():
+        return HTMLResponse("Invalid job id.", status_code=400)
+    status = read_status(job_id)
+    if (status is None or status.get("kind") != "diag"
+            or (status.get("analysis") or {}).get("state") != "done"):
+        return HTMLResponse("Timeline report not available.", status_code=404)
+
+    return HTMLResponse(REPORT_PAGE % {
+        "css": PAGE_CSS, "logo": _LOGO, "job": job_id,
+        "summary": render_summary_panel(read_summary(job_id)),
+        "history": history_record_js(job_id, "diag", "done",
+                                     list_input_logs(job_id)),
+    })
+
+
+_SANDBOX_HEADERS = {"Content-Security-Policy": "sandbox allow-scripts"}
+
+
+@app.get("/result/{job_id}/files/view", response_class=HTMLResponse)
+async def diag_file_view(job_id: str, file: str) -> Response:
+    """Sandboxed view of one package file, dispatched on its extension.
+
+    Untrusted content, so every branch is served with a CSP `sandbox`
+    directive and only framed by the diagnostics page.
+    """
+    if not job_id.isalnum():
+        return HTMLResponse("Invalid job id.", status_code=400)
+    status = read_status(job_id)
+    if status is None or status.get("kind") != "diag":
+        return HTMLResponse("Files not available.", status_code=404)
+
+    # Membership check, same pattern as the CMTrace viewer: rejects any
+    # path-traversal attempt without touching the filesystem.
+    if file not in list_input_files(job_id, exts=DIAG_KEEP_EXTS):
+        return HTMLResponse("Unknown file.", status_code=404)
+
+    path = job_dir(job_id) / "input" / file
+    ext = Path(file).suffix.lower()
+
+    if ext in (".html", ".htm"):
+        return HTMLResponse(read_text_tolerant(path), headers=_SANDBOX_HEADERS)
+
+    if ext == ".evtx":
+        if Evtx is None:
+            return HTMLResponse("EVTX viewing is unavailable: python-evtx "
+                                "is not installed.", status_code=501,
+                                headers=_SANDBOX_HEADERS)
+        try:
+            # python-evtx is pure Python and slow on big logs; keep the event
+            # loop responsive.
+            records, truncated = await asyncio.to_thread(parse_evtx_file, path)
+        except Exception:
+            log.warning("evtx parse failed for job %s file %s", job_id, file,
+                        exc_info=True)
+            return HTMLResponse("Could not parse this .evtx file.",
+                                status_code=422, headers=_SANDBOX_HEADERS)
+        return HTMLResponse(render_evtx_view(file, records, truncated),
+                            headers=_SANDBOX_HEADERS)
+
+    # .log gets the CMTrace layout; other text files fall back to the plain
+    # line-numbered layout inside the same renderer.
+    text = read_text_tolerant(path)
+    records, truncated = parse_cmtrace(text)
+    return HTMLResponse(render_cmtrace_view(file, records, truncated),
+                        headers=_SANDBOX_HEADERS)
