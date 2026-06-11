@@ -1080,8 +1080,10 @@ PAGE_CSS = """
     display:flex; justify-content:space-between; flex-wrap:wrap; gap:.5rem; }
   .cards{ display:grid; grid-template-columns:repeat(auto-fit,minmax(240px,1fr)); gap:1.25rem; }
   @media (max-width:640px){ .cards{ grid-template-columns:1fr; } }
+  .cards .card{ display:flex; flex-direction:column; }
   .card h2{ margin:0 0 .4rem; font-size:1.25rem; }
-  .card .desc{ color:var(--muted); margin:0 0 1.25rem; }
+  .card .desc{ color:var(--muted); margin:0 0 1.25rem; flex:1; overflow-wrap:anywhere; }
+  .cards .card .btn{ align-self:stretch; text-align:center; white-space:nowrap; }
   .recent{ margin-top:1.25rem; }
   .recent h2{ margin:0 0 .5rem; font-size:1.1rem; }
   .recent ul{ list-style:none; margin:0; padding:0; }
@@ -1215,30 +1217,35 @@ LANDING_PAGE = """<!doctype html>
   %(nav)s
   <section class="hero">
     <h1>Analyze Intune Management Extension logs</h1>
-    <p>Upload your IME logs and either build an interactive Win32App
-       <strong>timeline</strong>, or browse the raw files in a
-       <strong>CMTrace</strong> table &mdash; right in your browser.</p>
+    <p>Build a Win32App <strong>timeline</strong> from your IME logs, read raw
+       logs in a <strong>CMTrace</strong> table, or troubleshoot a full
+       <strong>diagnostics package</strong> &mdash; right in your browser.</p>
   </section>
   <main class="wrap">
     <div class="cards">
       <div class="card">
         <h2>Timeline Analyzer</h2>
-        <p class="desc">Build an interactive Win32App timeline report from your
-          IME logs, powered by Get-IntuneManagementExtensionDiagnostics.</p>
+        <p class="desc">Upload IME <code>.log</code> files and get an
+          interactive timeline report: app installs, scripts and errors in
+          chronological order, with a summary of failures and known error
+          codes.</p>
         <a class="btn" href="/timeline">Open Timeline Analyzer</a>
       </div>
       <div class="card">
         <h2>CMTrace Viewer</h2>
-        <p class="desc">Browse raw <code>.log</code> files in a colored,
-          filterable CMTrace-style table &mdash; no analysis run.</p>
-        <a class="btn btn-ghost" href="/cmtrace">Open CMTrace Viewer</a>
+        <p class="desc">Read raw <code>.log</code> files in a colored,
+          filterable CMTrace-style table: warnings yellow, errors red, with
+          text, component and severity filters. No analysis run.</p>
+        <a class="btn" href="/cmtrace">Open CMTrace Viewer</a>
       </div>
       <div class="card">
         <h2>Diagnostics Package</h2>
-        <p class="desc">Upload a <code>Collect-IntuneDiagnostics</code> zip:
-          health checks, an automatic timeline analysis and a browser for
-          every file in the package.</p>
-        <a class="btn btn-ghost" href="/diagnostics">Open Diagnostics</a>
+        <p class="desc">Upload the zip from
+          <code>Collect-IntuneDiagnostics.ps1</code> and get device health
+          checks, an automatic timeline analysis and a viewer for every file
+          in the package &mdash; including event logs and registry
+          exports.</p>
+        <a class="btn" href="/diagnostics">Open Diagnostics Package</a>
       </div>
     </div>
     %(recent)s
