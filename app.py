@@ -483,6 +483,10 @@ PAGE_CSS = """
   footer{ max-width:880px; margin:3rem auto 2rem; padding:1.5rem 1.25rem 0;
     border-top:1px solid var(--border); color:var(--muted); font-size:.85rem;
     display:flex; justify-content:space-between; flex-wrap:wrap; gap:.5rem; }
+  .cards{ display:grid; grid-template-columns:1fr 1fr; gap:1.25rem; }
+  @media (max-width:640px){ .cards{ grid-template-columns:1fr; } }
+  .card h2{ margin:0 0 .4rem; font-size:1.25rem; }
+  .card .desc{ color:var(--muted); margin:0 0 1.25rem; }
 """
 
 _LOGO = ('<span class="dot"><svg width="15" height="15" viewBox="0 0 24 24" '
@@ -493,6 +497,8 @@ _LOGO = ('<span class="dot"><svg width="15" height="15" viewBox="0 0 24 24" '
 NAV = ("""<header><nav class="nav">
   <a class="brand" href="/">%(logo)s Sherlog</a>
   <span>
+    <a class="navlink" href="/timeline">Timeline</a>
+    <a class="navlink" href="/cmtrace">CMTrace</a>
     <a class="navlink" href="https://github.com/petripaavola/Get-IntuneManagementExtensionDiagnostics" target="_blank" rel="noopener">Engine</a>
     <a class="navlink" href="/health">Status</a>
   </span>
@@ -503,7 +509,7 @@ FOOTER = ("""<footer>
   <span>Timeline engine by <a href="https://github.com/petripaavola/Get-IntuneManagementExtensionDiagnostics" target="_blank" rel="noopener">Petri Paavola</a></span>
 </footer>""")
 
-UPLOAD_PAGE = """<!doctype html>
+LANDING_PAGE = """<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Sherlog &mdash; IME log analyzer</title><style>%(css)s</style></head>
@@ -516,8 +522,37 @@ UPLOAD_PAGE = """<!doctype html>
        <strong>CMTrace</strong> table &mdash; right in your browser.</p>
   </section>
   <main class="wrap">
+    <div class="cards">
+      <div class="card">
+        <h2>Timeline Analyzer</h2>
+        <p class="desc">Build an interactive Win32App timeline report from your
+          IME logs, powered by Get-IntuneManagementExtensionDiagnostics.</p>
+        <a class="btn" href="/timeline">Open Timeline Analyzer</a>
+      </div>
+      <div class="card">
+        <h2>CMTrace Viewer</h2>
+        <p class="desc">Browse raw <code>.log</code> files in a colored,
+          filterable CMTrace-style table &mdash; no analysis run.</p>
+        <a class="btn btn-ghost" href="/cmtrace">Open CMTrace Viewer</a>
+      </div>
+    </div>
+  </main>
+  %(footer)s
+</body></html>"""
+
+UPLOAD_PAGE = """<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sherlog &mdash; %(title)s</title><style>%(css)s</style></head>
+<body>
+  %(nav)s
+  <section class="hero">
+    <h1>%(heading)s</h1>
+    <p>%(intro)s</p>
+  </section>
+  <main class="wrap">
     <div class="card">
-      <form id="form" action="/analyze" method="post" enctype="multipart/form-data">
+      <form id="form" action="%(action)s" method="post" enctype="multipart/form-data">
         <div class="drop" id="drop">
           <strong>Drag &amp; drop</strong> a <code>.zip</code>, one or more
           <code>.log</code> files, <em>or a whole folder</em> here, or
@@ -538,11 +573,7 @@ UPLOAD_PAGE = """<!doctype html>
             <span class="badge">.log</span><span class="badge">.zip</span>
             Max total upload: <strong>%(max)d&nbsp;MB</strong>
           </p>
-          <span style="display:flex;gap:.6rem;flex-wrap:wrap">
-            <button class="btn btn-ghost go" type="submit" formaction="/cmtrace-view"
-                    disabled>CMTrace viewer</button>
-            <button class="btn go" type="submit" disabled>Build timeline</button>
-          </span>
+          <button class="btn go" type="submit" disabled>%(button)s</button>
         </div>
       </form>
     </div>
@@ -554,7 +585,7 @@ UPLOAD_PAGE = """<!doctype html>
   const dirinput = document.getElementById('dirinput'); // folder dialog trigger
   const list = document.getElementById('files');
   const buttons = [...document.querySelectorAll('.go')];
-  const LOGRE = /\.(log|zip)$/i;
+  const LOGRE = /\\.(log|zip)$/i;
 
   // Assign a list of File objects to the (submitting) input via DataTransfer,
   // keeping only .log/.zip. Used by the folder dialog and folder drag-drop.
@@ -645,7 +676,7 @@ REPORT_PAGE = """<!doctype html>
     <a class="brand" href="/">%(logo)s Sherlog</a>
     <span>
       <a class="btn btn-ghost" href="/result/%(job)s/cmtrace">Raw logs (CMTrace)</a>
-      <a class="btn btn-ghost" href="/">New analysis</a>
+      <a class="btn btn-ghost" href="/timeline">New analysis</a>
     </span>
   </div>
   <iframe src="/result/%(job)s/report"
@@ -679,7 +710,7 @@ CMTRACE_PAGE = """<!doctype html>
     <a class="brand" href="/">%(logo)s Sherlog</a>
     <span>
       %(timeline)s
-      <a class="btn btn-ghost" href="/">New analysis</a>
+      <a class="btn btn-ghost" href="/cmtrace">New analysis</a>
     </span>
   </div>
   <div class="body">
@@ -720,7 +751,7 @@ ERROR_PAGE = """<!doctype html>
     <div class="card">
       <h3 style="margin-top:0">stderr</h3><pre>%(stderr)s</pre>
       <h3>stdout</h3><pre>%(stdout)s</pre>
-      <p class="center"><a class="btn btn-ghost" href="/">&larr; Try another upload</a></p>
+      <p class="center"><a class="btn btn-ghost" href="/timeline">&larr; Try another upload</a></p>
     </div>
   </main>
   %(footer)s
@@ -886,9 +917,42 @@ def render_cmtrace_view(filename: str, records: List[dict], truncated: bool) -> 
 
 @app.get("/", response_class=HTMLResponse)
 async def index() -> HTMLResponse:
+    return HTMLResponse(LANDING_PAGE % {
+        "css": PAGE_CSS, "nav": NAV, "footer": FOOTER,
+    })
+
+
+def render_upload_page(*, title: str, heading: str, intro: str,
+                       action: str, button: str) -> HTMLResponse:
     return HTMLResponse(UPLOAD_PAGE % {
         "css": PAGE_CSS, "nav": NAV, "footer": FOOTER, "max": MAX_UPLOAD_MB,
+        "title": title, "heading": heading, "intro": intro,
+        "action": action, "button": button,
     })
+
+
+@app.get("/timeline", response_class=HTMLResponse)
+async def timeline_upload_page() -> HTMLResponse:
+    return render_upload_page(
+        title="Timeline Analyzer",
+        heading="Build a Win32App timeline",
+        intro=("Upload your IME logs and get an interactive Win32App "
+               "<strong>timeline</strong> report &mdash; right in your browser."),
+        action="/analyze",
+        button="Build timeline",
+    )
+
+
+@app.get("/cmtrace", response_class=HTMLResponse)
+async def cmtrace_upload_page() -> HTMLResponse:
+    return render_upload_page(
+        title="CMTrace Viewer",
+        heading="Browse raw logs in CMTrace style",
+        intro=("Upload <code>.log</code> files and read them in a colored, "
+               "filterable <strong>CMTrace</strong> table &mdash; no analysis run."),
+        action="/cmtrace-view",
+        button="Open viewer",
+    )
 
 
 @app.get("/health")

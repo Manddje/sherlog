@@ -67,10 +67,26 @@ def test_health_no_auth(client):
     assert r.json()["status"] == "ok"
 
 
-def test_index_shows_limits(client):
+def test_landing_shows_both_tools(client):
     r = client.get("/")
     assert r.status_code == 200
+    assert "Timeline Analyzer" in r.text
+    assert "CMTrace Viewer" in r.text
+    assert 'href="/timeline"' in r.text
+    assert 'href="/cmtrace"' in r.text
+    assert "<form" not in r.text  # landing has no upload form
+
+
+@pytest.mark.parametrize("path,action", [
+    ("/timeline", "/analyze"),
+    ("/cmtrace", "/cmtrace-view"),
+])
+def test_upload_pages_show_limits(client, path, action):
+    r = client.get(path)
+    assert r.status_code == 200
     assert "Max total upload" in r.text
+    assert f'action="{action}"' in r.text
+    assert "formaction" not in r.text  # single submit button per tool
 
 
 def test_full_flow_zip_produces_report(client):

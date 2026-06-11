@@ -4,10 +4,12 @@ Webapplicatie ([sherlog.nl](https://sherlog.nl)) die Microsoft Intune Management
 Extension (IME) logbestanden analyseert en het resultaat als
 HTML-timelinerapport in de browser toont.
 
-Je uploadt logs (een `.zip` of losse `.log`-bestanden, bijvoorbeeld uit
+De homepage biedt twee losse tools: de **Timeline Analyzer** (`/timeline`) en
+de **CMTrace Viewer** (`/cmtrace`). Je uploadt logs (een `.zip` of losse
+`.log`-bestanden, bijvoorbeeld uit
 `C:\ProgramData\Microsoft\IntuneManagementExtension\Logs` of een Intune
-"Collect Diagnostics"-export). De server draait het analysescript headless en
-serveert het gegenereerde rapport.
+"Collect Diagnostics"-export). Voor de timeline draait de server het
+analysescript headless en serveert het gegenereerde rapport.
 
 Eén container, twee lagen:
 
@@ -21,8 +23,9 @@ Redis.
 Naast het timeline-rapport biedt de app een **CMTrace-logviewer**: bekijk de ruwe
 geüploade `.log`-bestanden in een gekleurde tabel (warnings geel, errors rood) met
 tekst- en componentfilter — een web-equivalent van het Windows-only CMTrace.exe.
-Bereikbaar via "Raw logs (CMTrace)" op de rapportpagina. De (untrusted) loginhoud
-wordt in een sandboxed iframe geserveerd.
+Bereikbaar als eigen tool via de uploadpagina `/cmtrace` (geen analyse nodig) én
+via "Raw logs (CMTrace)" op de rapportpagina. De (untrusted) loginhoud wordt in
+een sandboxed iframe geserveerd.
 
 ## Credits
 
@@ -45,7 +48,8 @@ Vereist: Docker met Compose.
 docker compose up --build
 ```
 
-Open daarna <http://localhost:8080>. De app draait standaard als **publieke
+Open daarna <http://localhost:8080>. De homepage laat je kiezen tussen de
+Timeline Analyzer en de CMTrace Viewer. De app draait standaard als **publieke
 tool zonder login**: iedereen kan logs uploaden en het rapport bekijken.
 Optioneel kun je er basic auth voor zetten (zie hieronder).
 
