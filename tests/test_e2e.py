@@ -640,6 +640,14 @@ def test_landing_and_nav_show_diagnostics(client):
     assert 'href="/diagnostics"' in r.text
 
 
+def test_dark_mode_toggle_on_every_page(client):
+    for path in ("/", "/timeline", "/cmtrace", "/diagnostics"):
+        page = client.get(path)
+        assert "localStorage.getItem('sherlog.theme')" in page.text  # head init
+        assert 'onclick="sherlogTheme()"' in page.text               # nav toggle
+        assert "html.dark{" in page.text                             # dark palette
+
+
 def test_about_dialog_on_every_page(client):
     for path in ("/", "/timeline", "/cmtrace", "/diagnostics"):
         page = client.get(path)

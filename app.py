@@ -1291,6 +1291,20 @@ if STATIC_DIR.is_dir():
 PAGE_CSS = """
   :root{ --bg:#ffffff; --fg:#1f2937; --muted:#6b7280; --accent:#2563eb;
     --border:#e5e7eb; --surface:#f9fafb; --radius:8px; }
+  /* Dark theme: the head script toggles .dark on <html> (localStorage
+     "sherlog.theme", falling back to prefers-color-scheme). */
+  html.dark{ --bg:#0f172a; --fg:#e2e8f0; --muted:#94a3b8; --accent:#3b82f6;
+    --border:#293548; --surface:#16202f; }
+  html.dark .btn:hover{ background:#2563eb; }
+  html.dark .recent .state.done{ background:rgba(16,185,129,.12);
+    border-color:#065f46; color:#34d399; }
+  html.dark .recent .state.failed{ background:rgba(239,68,68,.12);
+    border-color:#7f1d1d; color:#f87171; }
+  /* Status text colours on the result pages need lighter shades on dark. */
+  html.dark .sum-chip .ok, html.dark details.summary .st-ok{ color:#4ade80; }
+  html.dark .sum-chip .bad, html.dark details.summary .st-bad{ color:#f87171; }
+  html.dark .sum-chip .warn, html.dark details.summary .st-warn{ color:#fbbf24; }
+  html.dark details.summary .st-nd{ color:#94a3b8; }
   *{ box-sizing:border-box; }
   body{ font-family:system-ui,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
     color:var(--fg); background:var(--bg); margin:0; line-height:1.55;
@@ -1390,7 +1404,7 @@ PAGE_CSS = """
   /* About-me dialog (nav "About"), same content as on payloadkit.app. */
   dialog.about{ position:relative; border:1px solid var(--border); border-radius:12px;
     padding:2rem; max-width:26rem; width:calc(100vw - 2.5rem);
-    box-shadow:0 10px 40px rgba(0,0,0,.15); color:var(--fg); }
+    box-shadow:0 10px 40px rgba(0,0,0,.15); color:var(--fg); background:var(--bg); }
   dialog.about::backdrop{ background:rgba(15,23,42,.45); }
   .about .close{ position:absolute; top:.55rem; right:.8rem; border:0; background:none;
     font-size:1.35rem; line-height:1; color:var(--muted); cursor:pointer; }
@@ -1402,6 +1416,14 @@ PAGE_CSS = """
   .about .role{ color:var(--muted); font-size:.9rem; margin:.2rem 0 0; }
   .about p{ font-size:.92rem; margin:.8rem 0; }
   .about .links{ display:flex; justify-content:center; gap:.7rem; margin-top:1.25rem; }
+  /* Dark-mode toggle in the nav: moon in light theme, sun in dark theme. */
+  button.navlink.theme{ border:0; background:none; cursor:pointer; padding:0;
+    font:inherit; }
+  .theme svg{ vertical-align:-2px; }
+  .theme:hover{ color:var(--fg); }
+  .theme .sun{ display:none; }
+  html.dark .theme .sun{ display:inline; }
+  html.dark .theme .moon{ display:none; }
 """
 
 _LOGO = ('<span class="dot"><svg width="15" height="15" viewBox="0 0 24 24" '
@@ -1421,6 +1443,16 @@ NAV = ("""<header><nav class="nav">
        Sherlog">PayloadKit&nbsp;&#8599;</a>
     <a class="navlink" href="#about"
        onclick="document.getElementById('about').showModal();return false">About</a>
+    <button class="navlink theme" type="button" aria-label="Toggle dark mode"
+            onclick="sherlogTheme()"><svg class="moon" width="14" height="14"
+        viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+        stroke-linecap="round" stroke-linejoin="round"><path
+        d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg><svg
+        class="sun" width="14" height="14" viewBox="0 0 24 24" fill="none"
+        stroke="currentColor" stroke-width="2" stroke-linecap="round"
+        stroke-linejoin="round"><circle cx="12" cy="12" r="4"/><path
+        d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20
+        12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"/></svg></button>
   </span>
 </nav>
 <dialog id="about" class="about" aria-label="About the maintainer of Sherlog">
@@ -1560,6 +1592,7 @@ def history_record_js(job_id: str, tool: str, state: str, files: List[str]) -> s
 
 LANDING_PAGE = """<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
+<script>(function(){function a(d){document.documentElement.classList.toggle('dark',d);document.documentElement.style.colorScheme=d?'dark':'light'}var t=null;try{t=localStorage.getItem('sherlog.theme')}catch(e){}a(t==='dark'||(t!=='light'&&matchMedia('(prefers-color-scheme: dark)').matches));window.sherlogTheme=function(){var d=!document.documentElement.classList.contains('dark');a(d);try{localStorage.setItem('sherlog.theme',d?'dark':'light')}catch(e){}}})()</script>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Sherlog &mdash; IME log analyzer</title><style>%(css)s</style></head>
 <body>
@@ -1650,6 +1683,7 @@ LANDING_PAGE = """<!doctype html>
 
 UPLOAD_PAGE = """<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
+<script>(function(){function a(d){document.documentElement.classList.toggle('dark',d);document.documentElement.style.colorScheme=d?'dark':'light'}var t=null;try{t=localStorage.getItem('sherlog.theme')}catch(e){}a(t==='dark'||(t!=='light'&&matchMedia('(prefers-color-scheme: dark)').matches));window.sherlogTheme=function(){var d=!document.documentElement.classList.contains('dark');a(d);try{localStorage.setItem('sherlog.theme',d?'dark':'light')}catch(e){}}})()</script>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Sherlog &mdash; %(title)s</title><style>%(css)s</style></head>
 <body>
@@ -1757,6 +1791,7 @@ UPLOAD_PAGE = """<!doctype html>
 
 BUSY_PAGE = """<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
+<script>(function(){function a(d){document.documentElement.classList.toggle('dark',d);document.documentElement.style.colorScheme=d?'dark':'light'}var t=null;try{t=localStorage.getItem('sherlog.theme')}catch(e){}a(t==='dark'||(t!=='light'&&matchMedia('(prefers-color-scheme: dark)').matches));window.sherlogTheme=function(){var d=!document.documentElement.classList.contains('dark');a(d);try{localStorage.setItem('sherlog.theme',d?'dark':'light')}catch(e){}}})()</script>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta http-equiv="refresh" content="3">
 <title>Analyzing…</title><style>%(css)s</style></head>
@@ -1774,6 +1809,7 @@ BUSY_PAGE = """<!doctype html>
 
 REPORT_PAGE = """<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
+<script>(function(){function a(d){document.documentElement.classList.toggle('dark',d);document.documentElement.style.colorScheme=d?'dark':'light'}var t=null;try{t=localStorage.getItem('sherlog.theme')}catch(e){}a(t==='dark'||(t!=='light'&&matchMedia('(prefers-color-scheme: dark)').matches));window.sherlogTheme=function(){var d=!document.documentElement.classList.contains('dark');a(d);try{localStorage.setItem('sherlog.theme',d?'dark':'light')}catch(e){}}})()</script>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Sherlog &mdash; timeline report</title>
 <style>%(css)s
@@ -1819,6 +1855,7 @@ REPORT_PAGE = """<!doctype html>
 
 CMTRACE_PAGE = """<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
+<script>(function(){function a(d){document.documentElement.classList.toggle('dark',d);document.documentElement.style.colorScheme=d?'dark':'light'}var t=null;try{t=localStorage.getItem('sherlog.theme')}catch(e){}a(t==='dark'||(t!=='light'&&matchMedia('(prefers-color-scheme: dark)').matches));window.sherlogTheme=function(){var d=!document.documentElement.classList.contains('dark');a(d);try{localStorage.setItem('sherlog.theme',d?'dark':'light')}catch(e){}}})()</script>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Sherlog &mdash; raw logs (CMTrace)</title>
 <style>%(css)s
@@ -1874,6 +1911,7 @@ CMTRACE_PAGE = """<!doctype html>
 
 DIAG_PAGE = """<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
+<script>(function(){function a(d){document.documentElement.classList.toggle('dark',d);document.documentElement.style.colorScheme=d?'dark':'light'}var t=null;try{t=localStorage.getItem('sherlog.theme')}catch(e){}a(t==='dark'||(t!=='light'&&matchMedia('(prefers-color-scheme: dark)').matches));window.sherlogTheme=function(){var d=!document.documentElement.classList.contains('dark');a(d);try{localStorage.setItem('sherlog.theme',d?'dark':'light')}catch(e){}}})()</script>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Sherlog &mdash; diagnostics package</title>
 <style>%(css)s
@@ -2012,6 +2050,7 @@ DIAG_PAGE = """<!doctype html>
 
 ERROR_PAGE = """<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
+<script>(function(){function a(d){document.documentElement.classList.toggle('dark',d);document.documentElement.style.colorScheme=d?'dark':'light'}var t=null;try{t=localStorage.getItem('sherlog.theme')}catch(e){}a(t==='dark'||(t!=='light'&&matchMedia('(prefers-color-scheme: dark)').matches));window.sherlogTheme=function(){var d=!document.documentElement.classList.contains('dark');a(d);try{localStorage.setItem('sherlog.theme',d?'dark':'light')}catch(e){}}})()</script>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Analysis failed</title><style>%(css)s</style></head>
 <body>
@@ -2658,6 +2697,7 @@ def _render_records_page(filename: str, head: str, rows: List[str],
     severity legend, colored rows and the click-for-detail panel with error
     code explanations."""
     return """<!doctype html><html lang="en"><head><meta charset="utf-8">
+<script>(function(){function a(d){document.documentElement.classList.toggle('dark',d);document.documentElement.style.colorScheme=d?'dark':'light'}var t=null;try{t=localStorage.getItem('sherlog.theme')}catch(e){}a(t==='dark'||(t!=='light'&&matchMedia('(prefers-color-scheme: dark)').matches));window.sherlogTheme=function(){var d=!document.documentElement.classList.contains('dark');a(d);try{localStorage.setItem('sherlog.theme',d?'dark':'light')}catch(e){}}})()</script>
 <title>%(file)s</title><style>%(css)s</style></head><body>
   <div class="bar">
     <input id="q" type="search" placeholder="Filter text…" autocomplete="off">
@@ -2819,7 +2859,7 @@ def render_upload_page(*, title: str, heading: str, intro: str,
 async def timeline_upload_page() -> HTMLResponse:
     return render_upload_page(
         title="Timeline Analyzer",
-        heading="Build a Win32App timeline",
+        heading="Build a logging timeline",
         intro=("Upload your IME logs and get an interactive "
                "<strong>timeline</strong> report &mdash; right in your browser."),
         action="/analyze",
