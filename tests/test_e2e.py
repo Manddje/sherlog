@@ -74,7 +74,46 @@ def test_landing_shows_both_tools(client):
     assert "CMTrace Viewer" in r.text
     assert 'href="/timeline"' in r.text
     assert 'href="/cmtrace"' in r.text
-    assert "<form" not in r.text  # landing has no upload form
+    # Explainer sections, screenshots and the sample-logs demo button.
+    assert 'action="/demo"' in r.text
+    assert "How it works" in r.text
+    assert "Which tool do I need?" in r.text
+    assert '/static/timeline.png' in r.text
+    assert "enctype" not in r.text  # landing has no upload form
+
+
+def test_static_screenshots_served(client):
+    r = client.get("/static/timeline.png")
+    assert r.status_code == 200
+    assert r.headers["content-type"] == "image/png"
+
+
+def test_demo_creates_and_reuses_job(client):
+    import app as app_module
+
+    # Creation path: stages the bundled sample logs into a fresh demo job.
+    r = client.post("/demo", follow_redirects=False)
+    assert r.status_code == 303
+    job_id = r.headers["location"].rstrip("/").rsplit("/", 1)[-1]
+    status = app_module.read_status(job_id)
+    assert status and status.get("demo") is True
+    assert any("sample" in n for n in status["uploads"])
+    assert (app_module.job_dir(job_id) / "input" /
+            "IntuneManagementExtension.log").is_file()
+
+    # Let the spawned analysis task settle (it fails fast without pwsh, and
+    # would otherwise race the state we set below), then mark it done.
+    deadline = time.time() + 30
+    while (app_module.read_status(job_id) or {}).get("state") in ("queued", "running"):
+        if time.time() > deadline:
+            raise AssertionError("demo job did not settle")
+        time.sleep(0.2)
+
+    # Reuse path: a pending/finished demo job wins over creating a new one.
+    app_module.update_status(job_id, state="done")
+    r2 = client.post("/demo", follow_redirects=False)
+    assert r2.status_code == 303
+    assert r2.headers["location"].rstrip("/").rsplit("/", 1)[-1] == job_id
 
 
 @pytest.mark.parametrize("path,action", [

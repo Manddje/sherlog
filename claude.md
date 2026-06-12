@@ -46,6 +46,11 @@ upload/extractie → auth/middleware → HTML-rendering → routes.
 `job.json` (status). `JOBS_DIR` default `/data/jobs`. Retentie via
 achtergrondtaak (`JOB_RETENTION_HOURS`, default 24).
 
+**Homepage**: screenshots uit `static/` (StaticFiles-mount op `/static`) en
+een demo-knop (`POST /demo`) die de timeline-analyse op `testdata/` draait;
+een bestaande demo-job (`demo: true` in `job.json`) wordt hergebruikt.
+`testdata/` en `static/` zitten daarom in de Docker-image.
+
 **Drie tools, drie jobkinds** (zelfde job-layout, ander `job.json`):
 
 1. **Timeline** (`/timeline` → `POST /analyze`) — draait

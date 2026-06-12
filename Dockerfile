@@ -33,6 +33,9 @@ COPY Get-IntuneManagementExtensionDiagnostics.ps1 /app/
 COPY Collect-IntuneDiagnostics.ps1 /app/
 COPY app.py /app/
 COPY scripts/ /app/scripts/
+# Landing-page screenshots and the sample logs behind the homepage demo button.
+COPY static/ /app/static/
+COPY testdata/ /app/testdata/
 
 RUN chmod +x /app/scripts/run-analysis.sh \
     && chmod 0644 /app/Collect-IntuneDiagnostics.ps1

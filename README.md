@@ -57,6 +57,13 @@ niet op de server, geen cookies of login. De lijst staat op de homepage en de
 uploadpagina's; jobs die de server heeft opgeruimd (na `JOB_RETENTION_HOURS`)
 verdwijnen er automatisch uit.
 
+De homepage toont screenshots van de drie tools (statische assets in
+`static/`) en heeft een **demo-knop** ("Try it with sample logs",
+`POST /demo`) die de timeline-analyse draait op de meegeleverde
+geanonimiseerde voorbeeldlogs uit `testdata/` — die map zit daarom ook in de
+Docker-image. Een bestaande demo-job wordt hergebruikt zolang de retentie hem
+niet heeft opgeruimd.
+
 ## Credits
 
 Het analysescript `Get-IntuneManagementExtensionDiagnostics.ps1` is gemaakt door

@@ -7,8 +7,8 @@
 /out/
 *_Intune_Logs_Report.html
 
-# Sensitive sample/anonymised logs — must never enter the image
-/testdata/
+# NOTE: /testdata/ (anonymised sample logs) intentionally ships in the image
+# since the homepage demo button (POST /demo) runs the analysis on it.
 
 # Tests (not needed at runtime)
 /tests/

@@ -47,6 +47,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from starlette.datastructures import UploadFile
 from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.staticfiles import StaticFiles
 
 try:  # optional: .evtx viewing degrades gracefully when python-evtx is absent
     from Evtx.Evtx import Evtx
@@ -995,8 +996,9 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         resp.headers.setdefault(
             "Content-Security-Policy",
             "default-src 'none'; script-src 'unsafe-inline'; "
-            "style-src 'unsafe-inline'; img-src data:; frame-src 'self'; "
-            "form-action 'self'; base-uri 'none'; frame-ancestors 'self'",
+            "style-src 'unsafe-inline'; img-src 'self' data:; "
+            "frame-src 'self'; form-action 'self'; base-uri 'none'; "
+            "frame-ancestors 'self'",
         )
         return resp
 
@@ -1122,6 +1124,12 @@ app = FastAPI(title="Sherlog", lifespan=lifespan)
 app.add_middleware(BasicAuthMiddleware)
 app.add_middleware(SecurityHeadersMiddleware)
 
+# Screenshots shown on the landing page. Guarded so a build without the
+# assets still boots; the homepage then just shows broken images.
+STATIC_DIR = APP_DIR / "static"
+if STATIC_DIR.is_dir():
+    app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
+
 
 # --- HTML pages --------------------------------------------------------------
 
@@ -1180,11 +1188,29 @@ PAGE_CSS = """
   footer{ max-width:880px; margin:3rem auto 2rem; padding:1.5rem 1.25rem 0;
     border-top:1px solid var(--border); color:var(--muted); font-size:.85rem;
     display:flex; justify-content:space-between; flex-wrap:wrap; gap:.5rem; }
+  .hero .cta{ margin:1.5rem 0 0; }
+  .hero .trust{ font-size:.88rem; margin-top:.9rem; }
   .cards{ display:grid; grid-template-columns:repeat(auto-fit,minmax(240px,1fr)); gap:1.25rem; }
   @media (max-width:640px){ .cards{ grid-template-columns:1fr; } }
   .cards .card{ display:flex; flex-direction:column; }
   .card h2{ margin:0 0 .4rem; font-size:1.25rem; }
   .card .desc{ color:var(--muted); margin:0 0 1.25rem; flex:1; overflow-wrap:anywhere; }
+  /* Screenshot bleeds to the card edges (cancels the 1.75rem card padding). */
+  .card .shot{ display:block; margin:-1.75rem -1.75rem 1.1rem;
+    border-bottom:1px solid var(--border); border-radius:12px 12px 0 0;
+    overflow:hidden; background:var(--surface); }
+  .card .shot img{ display:block; width:100%; height:auto; aspect-ratio:8/5;
+    object-fit:cover; object-position:top left; }
+  .card .when{ color:var(--fg); font-size:.9rem; font-style:italic; margin:0 0 .5rem; }
+  .explain{ margin-top:2.75rem; }
+  .explain h2{ font-size:1.25rem; margin:0 0 .7rem; }
+  .steps{ margin:0; padding-left:1.4rem; }
+  .steps li{ color:var(--muted); margin-bottom:.65rem; }
+  .steps li strong{ color:var(--fg); }
+  ul.pick{ list-style:none; margin:0; padding:0; }
+  ul.pick li{ color:var(--muted); padding:.45rem 0;
+    border-bottom:1px solid var(--border); }
+  ul.pick li:last-child{ border-bottom:0; }
   .cards .card .btn{ align-self:stretch; text-align:center; padding-left:.5rem;
     padding-right:.5rem; }
   .recent{ margin-top:1.25rem; }
@@ -1331,14 +1357,24 @@ LANDING_PAGE = """<!doctype html>
   %(nav)s
   <section class="hero">
     <h1>Analyze Intune Management Extension logs</h1>
-    <p>Build a Win32App <strong>timeline</strong> from your IME logs, read raw
-       logs in a <strong>CMTrace</strong> table, or troubleshoot a full
-       <strong>diagnostics package</strong> &mdash; right in your browser.</p>
+    <p>Sherlog is a free troubleshooting tool for <strong>Intune
+       administrators</strong>: upload the IME logs of a managed Windows
+       device and see what actually happened &mdash; app installs, scripts
+       and errors &mdash; without reading raw logs line by line.</p>
+    <form class="cta" method="post" action="/demo">
+      <button class="btn" type="submit">Try it with sample logs</button>
+    </form>
+    <p class="trust">No account needed &middot; uploads are deleted after
+       %(retention)d hours</p>
   </section>
   <main class="wrap">
     <div class="cards">
       <div class="card">
+        <a class="shot" href="/timeline"><img src="/static/timeline.png"
+          loading="lazy" alt="Screenshot of the interactive Win32App timeline
+          report with the analysis summary panel"></a>
         <h2>Timeline Analyzer</h2>
+        <p class="when">&ldquo;What happened on this device, and when?&rdquo;</p>
         <p class="desc">Upload IME <code>.log</code> files and get an
           interactive timeline report: app installs, scripts and errors in
           chronological order, with a summary of failures and known error
@@ -1346,14 +1382,22 @@ LANDING_PAGE = """<!doctype html>
         <a class="btn" href="/timeline">Open Timeline</a>
       </div>
       <div class="card">
+        <a class="shot" href="/cmtrace"><img src="/static/cmtrace.png"
+          loading="lazy" alt="Screenshot of the CMTrace-style log table with
+          colored warning and error rows and filters"></a>
         <h2>CMTrace Viewer</h2>
+        <p class="when">&ldquo;Let me just read this log, fast.&rdquo;</p>
         <p class="desc">Read raw <code>.log</code> files in a colored,
           filterable CMTrace-style table: warnings yellow, errors red, with
           text, component and severity filters. No analysis run.</p>
         <a class="btn" href="/cmtrace">Open CMTrace</a>
       </div>
       <div class="card">
+        <a class="shot" href="/diagnostics"><img src="/static/diagnostics.png"
+          loading="lazy" alt="Screenshot of the device health dashboard and
+          package file browser"></a>
         <h2>Diagnostics Package</h2>
+        <p class="when">&ldquo;Is this device healthy at all?&rdquo;</p>
         <p class="desc">Upload the zip from
           <code>Collect-IntuneDiagnostics.ps1</code> and get device health
           checks, an automatic timeline analysis and a viewer for every file
@@ -1362,6 +1406,34 @@ LANDING_PAGE = """<!doctype html>
         <a class="btn" href="/diagnostics">Open Diagnostics</a>
       </div>
     </div>
+    <section class="explain">
+      <h2>How it works</h2>
+      <ol class="steps">
+        <li><strong>Get the logs off the device.</strong> Copy them from
+          <code>C:\\ProgramData\\Microsoft\\IntuneManagementExtension\\Logs</code>,
+          download the Intune portal&rsquo;s <em>Collect diagnostics</em>
+          export, or run the <a href="/collect-script">collector script</a>
+          for a complete diagnostics package.</li>
+        <li><strong>Upload them here.</strong> Drag &amp; drop a
+          <code>.zip</code>, loose <code>.log</code> files or a whole folder.
+          Nothing is installed on the device or in Intune.</li>
+        <li><strong>Read the result in your browser.</strong> An interactive
+          timeline, a colored log table or a device health dashboard &mdash;
+          and every result page links back to the raw evidence.</li>
+      </ol>
+    </section>
+    <section class="explain">
+      <h2>Which tool do I need?</h2>
+      <ul class="pick">
+        <li>You have IME <code>.log</code> files and want to know what
+          happened &rarr; <a href="/timeline">Timeline Analyzer</a></li>
+        <li>You just want to read or filter a raw log quickly &rarr;
+          <a href="/cmtrace">CMTrace Viewer</a></li>
+        <li>You have an <code>IntuneDiag-*.zip</code> from the collector
+          script, or want the full device picture &rarr;
+          <a href="/diagnostics">Diagnostics Package</a></li>
+      </ul>
+    </section>
     %(recent)s
   </main>
   %(footer)s
@@ -2425,6 +2497,7 @@ def _render_records_page(filename: str, head: str, rows: List[str],
 async def index() -> HTMLResponse:
     return HTMLResponse(LANDING_PAGE % {
         "css": PAGE_CSS, "nav": NAV, "footer": FOOTER, "recent": HISTORY_SECTION,
+        "retention": JOB_RETENTION_HOURS,
     })
 
 
@@ -2609,6 +2682,47 @@ async def analyze(request: Request) -> Response:
 
     # Stored before the job task starts; run_job merges its state into this.
     write_status(job_id, state="queued", uploads=names[:5])
+    spawn_job(run_job(job_id, input_dir, output_dir))
+    return RedirectResponse(url=f"/result/{job_id}", status_code=303)
+
+
+# The anonymised sample logs the repo tests against double as the homepage
+# demo data set.
+TESTDATA_DIR = APP_DIR / "testdata"
+
+
+@app.post("/demo")
+async def demo() -> Response:
+    """Run the timeline analysis on the bundled sample logs.
+
+    Reuses an existing pending/finished demo job when one is still within
+    retention, so repeated clicks don't queue duplicate analyses; the cleanup
+    task removes it like any job, after which a click simply rebuilds it.
+    """
+    if JOBS_DIR.is_dir():
+        for child in sorted(JOBS_DIR.iterdir()):
+            status = read_status(child.name)
+            if (status and status.get("demo")
+                    and status.get("state") in ("queued", "running", "done")):
+                return RedirectResponse(url=f"/result/{child.name}",
+                                        status_code=303)
+
+    samples = sorted(TESTDATA_DIR.glob("*.log")) if TESTDATA_DIR.is_dir() else []
+    if not samples:
+        return HTMLResponse("Sample logs are not available on this server.",
+                            status_code=503)
+
+    job_id = uuid.uuid4().hex
+    base = job_dir(job_id)
+    input_dir = base / "input"
+    output_dir = base / "output"
+    input_dir.mkdir(parents=True, exist_ok=True)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    for p in samples:
+        shutil.copy(p, input_dir / p.name)
+
+    write_status(job_id, state="queued", demo=True,
+                 uploads=[f"{p.name} (sample)" for p in samples[:5]])
     spawn_job(run_job(job_id, input_dir, output_dir))
     return RedirectResponse(url=f"/result/{job_id}", status_code=303)
 
