@@ -609,18 +609,55 @@ def _yesno_check(label: str, value: str, detail: str = "") -> dict:
 
 
 def build_dashboard(input_dir: Path) -> dict:
-    """Derive the health-check model from a staged diagnostics package."""
+    """Derive the health-check model from a staged diagnostics package.
+
+    Each check carries an optional source pointer (`src` = relative package
+    path, `line` = row in the file viewer) so the dashboard card can deep-link
+    to the evidence it was parsed from.
+    """
+    found: dict = {}  # key -> (Optional[Path], text)
+
     def read(key: str) -> str:
-        p = _find_package_file(input_dir, _DASH_SOURCES[key])
-        return read_text_tolerant(p) if p else ""
+        if key not in found:
+            p = _find_package_file(input_dir, _DASH_SOURCES[key])
+            found[key] = (p, read_text_tolerant(p) if p else "")
+        return found[key][1]
+
+    def link(key: str, *patterns: str) -> dict:
+        """Source pointer for a check. The file viewer numbers non-blank
+        lines (it skips blanks), so locate the evidence row through the same
+        parser the viewer uses; first pattern that matches a row wins."""
+        path, text = found.get(key) or (None, "")
+        if path is None:
+            return {}
+        src = {"src": path.relative_to(input_dir).as_posix()}
+        records, _ = parse_cmtrace(text)
+        for pat in patterns:
+            rx = re.compile(pat, re.IGNORECASE)
+            for i, rec in enumerate(records, 1):
+                if rx.search(rec["msg"]):
+                    return {**src, "line": i}
+        return src
 
     identity = parse_dsregcmd(read("dsregcmd"))
     if not identity.get("AzureAdJoined"):
         identity = {**parse_summary_txt(read("summary")), **identity}
 
+    def id_link(*patterns: str) -> dict:
+        """Identity evidence lives in dsregcmd-status.txt or, for packages
+        without it, in the collector summary; prefer the file that matches."""
+        primary = link("dsregcmd", *patterns)
+        if primary.get("line"):
+            return primary
+        read("summary")
+        fallback = link("summary", *patterns)
+        return fallback if fallback.get("line") else (primary or fallback)
+
     checks = [
-        _yesno_check("Entra joined", identity.get("AzureAdJoined", "")),
-        _yesno_check("Entra PRT", identity.get("AzureAdPrt", "")),
+        {**_yesno_check("Entra joined", identity.get("AzureAdJoined", "")),
+         **id_link(r"AzureAdJoined")},
+        {**_yesno_check("Entra PRT", identity.get("AzureAdPrt", "")),
+         **id_link(r"AzureAdPrt")},
     ]
 
     mdm_url = identity.get("MdmUrl", identity.get("MDM URL", ""))
@@ -629,6 +666,7 @@ def build_dashboard(input_dir: Path) -> dict:
         "status": "ok" if "manage.microsoft.com" in mdm_url
                   else "bad" if mdm_url else "unknown",
         "detail": mdm_url or "MDM URL not found",
+        **id_link(r"MdmUrl|MDM URL"),
     })
 
     svc = parse_service_status(read("ime_service"))
@@ -636,6 +674,9 @@ def build_dashboard(input_dir: Path) -> dict:
         "label": "IME service",
         "status": "ok" if svc else "unknown" if svc is None else "bad",
         "detail": "Running" if svc else "status unknown" if svc is None else "Stopped",
+        **link("ime_service",
+               r"intune.*\b(Running|Stopped)\b|\b(Running|Stopped)\b.*intune",
+               r"\b(Running|Stopped)\b"),
     })
 
     endpoints = parse_endpoint_connectivity(read("endpoints"))
@@ -647,6 +688,10 @@ def build_dashboard(input_dir: Path) -> dict:
                       else "warn" if len(down) < len(endpoints) else "bad",
             "detail": (f"{len(endpoints)} reachable" if not down
                        else "unreachable: " + ", ".join(down)),
+            # Point at the first failing row when something is down.
+            **link("endpoints",
+                   *((rf"{re.escape(down[0])}\s.*\bFalse\b",) if down else ()),
+                   r"\b(True|False)\b"),
         })
     else:
         checks.append({"label": "Intune/Entra endpoints", "status": "unknown",
@@ -660,6 +705,8 @@ def build_dashboard(input_dir: Path) -> dict:
             "status": "warn" if expired else "ok",
             "detail": (f"{len(expired)} of {len(certs)} expired" if expired
                        else f"{len(certs)} certificates, none expired"),
+            # Point at the first expired cert when there is one.
+            **link("certs", r"(Expired|Verlopen)\s*:\s*True", r"Subject\s*:"),
         })
     else:
         checks.append({"label": "Machine certificates", "status": "unknown",
@@ -1556,6 +1603,8 @@ DIAG_PAGE = """<!doctype html>
   .st.ok{background:#16a34a}.st.bad{background:#dc2626}
   .st.warn{background:#d97706}.st.unknown{background:#9ca3af}
   .check .det{color:var(--muted);font-size:.85rem;margin-top:.2rem;word-break:break-word}
+  .check[data-file]{cursor:pointer}
+  .check[data-file]:hover,.check[data-file]:focus-visible{border-color:var(--accent)}
   .acard{border:1px solid var(--border);border-radius:10px;padding:.75rem 1rem;
     background:var(--surface);display:flex;align-items:center;gap:.8rem;flex-wrap:wrap}
   .acard pre{margin:.4rem 0 0;width:100%%;max-height:10rem}
@@ -1616,16 +1665,35 @@ DIAG_PAGE = """<!doctype html>
   const side = document.getElementById('side');
   const view = document.getElementById('view');
   const files = [...side.querySelectorAll('.file')];
-  function select(el) {
+  function select(el, line) {
     files.forEach(f => f.classList.toggle('active', f === el));
     view.src = '/result/' + job + '/files/view?file=' +
-               encodeURIComponent(el.dataset.file);
+               encodeURIComponent(el.dataset.file) +
+               (line ? '#L' + encodeURIComponent(line) : '');
   }
   side.addEventListener('click', ev => {
     const f = ev.target.closest('.file');
     if (f && f.dataset.file) select(f);
   });
   (files.find(f => f.dataset.file === first) || null)?.classList.add('active');
+
+  // Health-check cards deep-link to the evidence line in their source file.
+  function openSource(card) {
+    const f = files.find(x => x.dataset.file === card.dataset.file);
+    if (!f) return;
+    // Unfold the tree groups so the highlighted file is visible.
+    for (let d = f.closest('details'); d;
+         d = d.parentElement && d.parentElement.closest('details')) d.open = true;
+    select(f, card.dataset.line);
+    f.scrollIntoView({block: 'nearest'});
+    view.scrollIntoView({behavior: 'smooth', block: 'nearest'});
+  }
+  document.querySelectorAll('.check[data-file]').forEach(card => {
+    card.addEventListener('click', () => openSource(card));
+    card.addEventListener('keydown', ev => {
+      if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); openSource(card); }
+    });
+  });
 
   // While the timeline analysis runs, poll the job status and reload once it
   // settles so the analysis card and summary panel appear without user action.
@@ -1671,6 +1739,12 @@ ERROR_PAGE = """<!doctype html>
 
 def html_escape(s: str) -> str:
     return (s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;"))
+
+
+def attr_escape(s: str) -> str:
+    """Escape for double-quoted HTML attribute values (filenames from
+    untrusted zips can contain quotes)."""
+    return html_escape(s).replace('"', "&quot;")
 
 
 # The upstream script appends an author/branding banner (<footer> with author
@@ -1785,8 +1859,19 @@ def render_dashboard_panel(dash: Optional[dict]) -> str:
         st = c.get("status", "unknown")
         if st not in ("ok", "bad", "warn", "unknown"):
             st = "unknown"
+        # Deep-link to the evidence in the file browser when the parser
+        # recorded a source (older dashboard.json files have none).
+        attrs = ""
+        src = c.get("src")
+        if isinstance(src, str) and src:
+            line = c.get("line")
+            attrs = (f' data-file="{attr_escape(src)}"'
+                     + (f' data-line="{line}"' if isinstance(line, int) else "")
+                     + f' role="link" tabindex="0"'
+                       f' title="Open {attr_escape(src)}"')
         cards.append(
-            f'<div class="check"><span class="lbl"><span class="st {st}"></span>'
+            f'<div class="check"{attrs}>'
+            f'<span class="lbl"><span class="st {st}"></span>'
             f'{html_escape(str(c.get("label", "")))}</span>'
             f'<div class="det">{html_escape(str(c.get("detail", "")))}</div></div>'
         )
@@ -1845,6 +1930,10 @@ _CMTRACE_CSS = """
   tr.err{background:#fef2f2}
   tr.err td.msg{color:#b91c1c;font-weight:600}
   tr.hide{display:none}
+  /* Deep-link target (#L<n> from a dashboard card): highlight and keep the
+     row clear of the sticky filter bar + header. */
+  tr:target td{background:#e0e7ff}
+  tr:target{scroll-margin-top:6rem}
   .legend{display:flex;gap:.6rem;align-items:center;color:#6b7280;white-space:nowrap}
   .legend .sw{display:inline-block;width:.8rem;height:.8rem;border-radius:3px;
     margin-right:.25rem;vertical-align:-1px;border:1px solid rgba(0,0,0,.08)}
@@ -2135,11 +2224,11 @@ def render_cmtrace_view(filename: str, records: List[dict], truncated: bool) -> 
             for c in components
         )
         rows = []
-        for r in records:
+        for i, r in enumerate(records, 1):
             cls = _row_class(r["type"]) if r["structured"] else _plain_class(r["msg"])
             when = (r["date"] + " " + r["time"]).strip()
             rows.append(
-                f'<tr class="{cls}" data-c="{html_escape(r["component"])}">'
+                f'<tr id="L{i}" class="{cls}" data-c="{html_escape(r["component"])}">'
                 f'<td class="msg">{html_escape(r["msg"])}</td>'
                 f'<td class="c">{html_escape(r["component"])}</td>'
                 f'<td class="t">{html_escape(when)}</td>'
@@ -2155,7 +2244,7 @@ def render_cmtrace_view(filename: str, records: List[dict], truncated: bool) -> 
         for i, r in enumerate(records, 1):
             cls = _plain_class(r["msg"])
             rows.append(
-                f'<tr class="{cls}" data-c="">'
+                f'<tr id="L{i}" class="{cls}" data-c="">'
                 f'<td class="ln">{i}</td>'
                 f'<td class="msg">{html_escape(r["msg"])}</td></tr>'
             )
@@ -2179,10 +2268,10 @@ def render_evtx_view(filename: str, records: List[dict], truncated: bool) -> str
         for p in providers
     )
     rows = []
-    for r in records:
+    for i, r in enumerate(records, 1):
         cls = _evtx_row_class(r["level"])
         rows.append(
-            f'<tr class="{cls}" data-c="{html_escape(r["provider"])}">'
+            f'<tr id="L{i}" class="{cls}" data-c="{html_escape(r["provider"])}">'
             f'<td class="msg">{html_escape(r["msg"])}</td>'
             f'<td class="c">{html_escape(r["provider"])}</td>'
             f'<td class="t">{html_escape(r["time"])}</td>'

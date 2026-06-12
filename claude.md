@@ -1,131 +1,110 @@
-# IME Log Analyzer — Web App
+# CLAUDE.md
 
-## Doel
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-Een webapplicatie die Microsoft Intune Management Extension (IME) logbestanden
-analyseert met het bestaande PowerShell-script
-`Get-IntuneManagementExtensionDiagnostics.ps1` (auteur: Petri Paavola,
-https://github.com/petripaavola/Get-IntuneManagementExtensionDiagnostics)
-en het gegenereerde HTML-timelinerapport in de browser toont.
+# Sherlog — IME Log Analyzer
 
-Gebruiker uploadt logs (zip of losse .log-bestanden, bijv. uit
-`C:\ProgramData\Microsoft\IntuneManagementExtension\Logs` of een Intune
-"Collect Diagnostics" export), de server draait het script headless en
-serveert het HTML-rapport.
+Webapp die Microsoft Intune Management Extension (IME) logs analyseert met het
+upstream PowerShell-script `Get-IntuneManagementExtensionDiagnostics.ps1`
+(Petri Paavola) en het HTML-timelinerapport in de browser toont. Eén container:
+FastAPI/uvicorn (poort 8080) + PowerShell Core (`pwsh`) als analyse-engine.
+Deployment: Coolify, build via Dockerfile in de repo-root. Productie:
+sherlog.nl, publiek zonder login (basic auth optioneel via
+`APP_USER`/`APP_PASSWORD`, beide gezet).
 
-Deployment-doel: **Coolify** (self-hosted PaaS), build via Dockerfile in de repo-root.
+## Commands
+
+```bash
+# Tests (volledige suite; de echte-analyse-test wordt geskipt zonder pwsh)
+.venv/bin/python -m pytest tests/test_e2e.py -q
+
+# Eén test
+.venv/bin/python -m pytest tests/test_e2e.py::test_extract_zip_members_nested_and_policy -q
+
+# Lokaal draaien (volledig, incl. pwsh)
+docker compose up --build          # → http://localhost:8080
+
+# Alleen de weblaag lokaal (analyse faalt zonder pwsh, rest werkt)
+JOBS_DIR=./data/jobs .venv/bin/uvicorn app:app --port 8080
+
+# Analyse-engine direct, zonder weblaag (vereist pwsh)
+scripts/run-analysis.sh testdata out
+```
+
+Tests draaien tegen `./testdata/` (echte, geanonimiseerde IME-logs).
+Definitie van "werkt": het script produceert een HTML-rapport met
+Win32App-events uit de testlogs, zonder errors.
 
 ## Architectuur
 
-- **Eén container** met twee lagen:
-  1. **Weblaag**: Python 3 + FastAPI + uvicorn (poort 8080)
-  2. **Analyse-engine**: PowerShell Core (`pwsh`) die het bestaande script aanroept
-- Base image: `mcr.microsoft.com/powershell:lts-ubuntu-22.04`
-- Het script wordt headless aangeroepen als subprocess:
-  ```
-  pwsh -NoProfile -NonInteractive ./Get-IntuneManagementExtensionDiagnostics.ps1 \
-       -LogFilesFolder /data/jobs/<uuid>/input -AllLogEntries -AllLogFiles
-  ```
-  De parameters `-AllLogEntries -AllLogFiles` onderdrukken de interactieve selectie-UI's.
+Alles zit in **`app.py`** (~2900 regels, één module, geen templates-map —
+HTML is inline). Globale volgorde: config (env vars) → parsers → job-runner →
+upload/extractie → auth/middleware → HTML-rendering → routes.
+
+**State = bestandssysteem** (geen DB/Redis): `<JOBS_DIR>/<uuid>/` met
+`input/` (geüpload), `output/` (rapport, `summary.json`, `dashboard.json`) en
+`job.json` (status). `JOBS_DIR` default `/data/jobs`. Retentie via
+achtergrondtaak (`JOB_RETENTION_HOURS`, default 24).
+
+**Drie tools, drie jobkinds** (zelfde job-layout, ander `job.json`):
+
+1. **Timeline** (`/timeline` → `POST /analyze`) — draait
+   `scripts/run-analysis.sh` (wrapper die het upstream-script headless
+   aanroept) als subprocess met timeout (`SCRIPT_TIMEOUT_SECONDS`) en
+   concurrency-cap (`JOB_CONCURRENCY`, semafoor). States:
+   queued|running|done|failed. Na afloop wordt `summary.json` uit het rapport
+   geparst (samenvattingspaneel).
+2. **CMTrace** (`/cmtrace`) — alleen raw logviewer, geen analyse.
+3. **Diagnostics package** (`/diagnostics`) — zip van
+   `Collect-IntuneDiagnostics.ps1`. Top-level state is direct `ready`; de
+   timeline-analyse is een **sub-state** (`analysis`-dict in `job.json`) en
+   mag de diag-job nooit laten falen. Dashboard-checks worden geparst uit
+   o.a. `dsregcmd-status.txt`, `Apps-IME/service-status.txt`,
+   `Network/endpoint-connectivity.txt` en het machinecert-overzicht; parsers
+   zijn totaal: ontbrekend bestand → status `unknown`, nooit een error.
+   File browser per extensie: `.log` → CMTrace-viewer; `.txt/.reg/.xml/...`
+   → tekstviewer met UTF-16-tolerante decodering (PowerShell 5.1 Out-File en
+   `reg export` schrijven UTF-16LE); `.html` → sandboxed iframe; `.evtx` →
+   eventviewer (python-evtx, cap `EVTX_MAX_EVENTS`); `.cab/.etl` → niet
+   uitgepakt, wel disabled in de tree.
+
+**Achtergrondjobs:** start via `spawn_job()` — houdt een sterke referentie
+vast (asyncio houdt alleen weak refs; anders kan een job mid-run GC'd worden
+en blijft "running" hangen). Bij appstart markeert `fail_interrupted_jobs()`
+jobs die door een restart zijn afgebroken als failed, incl. de
+diag-`analysis`-substate.
+
+**Zip-extractie** (`extract_zip_members`): zip-slip-guard, gedeeld
+zip-bomb-budget over geneste zips (precies één niveau diep, voor de
+mdmdiagnosticstool-output), en normalisatie van backslash-entrynamen
+(Windows PowerShell 5.1 `Compress-Archive` schrijft `\` als separator —
+zonder normalisatie extraheert het pakket plat en missen alle path-lookups).
+
+**Security-model:** alle untrusted content (rapport, loginhoud, html uit
+pakketten) wordt in een **sandboxed iframe** geserveerd
+(`Content-Security-Policy: sandbox`). Bestandskeuze in viewers via
+membership-check tegen de echte bestandslijst (geen path traversal).
+Upload-limiet streaming afgedwongen (`MAX_UPLOAD_MB`). `/health` valt altijd
+buiten auth en checkt of `pwsh` beschikbaar is.
 
 ## Harde kaders
 
-- **GEEN** `-ShowLogViewerUI` (gebruikt Out-GridView, Windows-only — werkt niet op Linux)
-- **GEEN** `-Online` parameter in v1 (vereist Graph API credentials; komt later)
-- Uploads: zip of losse `.log` bestanden, max 100 MB per upload
-- Elke analyse is een job: `/data/jobs/<uuid>/input/` (logs) en
-  `/data/jobs/<uuid>/output/` (HTML-rapport)
-- Script-subprocess heeft een timeout van 300 seconden; bij timeout of
-  non-zero exitcode wordt stderr/stdout aan de gebruiker getoond
-- Achtergrondtaak verwijdert jobmappen ouder dan 24 uur (instelbaar via env var)
-- Healthcheck-endpoint op `GET /health` (geen auth) dat 200 teruggeeft en
-  controleert of `pwsh` beschikbaar is
-- Geen externe services (geen database, geen Redis) in v1 — bestandssysteem is de state
-- **CMTrace-viewer**: naast het timeline-rapport kan de gebruiker de ruwe
-  geüploade `.log`-bestanden bekijken in een web-CMTrace-tabel (kolommen tekst,
-  component, datum/tijd, thread; rijen gekleurd op `type` — geel=warning,
-  rood=error; tekst-/componentfilter). Loginhoud is untrusted en wordt daarom in
-  een sandboxed iframe (`Content-Security-Policy: sandbox`) geserveerd, net als het
-  rapport. Bestandskeuze via membership-check (geen path traversal). Rendering
-  gecapt op `CMTRACE_MAX_LINES` (default 50000) regels.
-- **Diagnostics Package-tool**: upload van de zip die
-  `Collect-IntuneDiagnostics.ps1` produceert (precies één `.zip`; Engelse én
-  Nederlandse scriptvariant ondersteund via kandidaat-bestandsnamen). Drie
-  onderdelen:
-  1. **Diagnose-dashboard** — health checks geparst uit o.a.
-     `dsregcmd-status.txt`, `endpoint-connectivity.txt`, `service-status.txt`
-     en het machinecert-overzicht (Entra join/PRT/MDM-URL, IME-service,
-     endpoint-bereikbaarheid, verlopen certs). Parsers zijn totaal:
-     ontbrekend bestand → status `unknown`, nooit een error (het
-     collect-script wrapt alles in Invoke-Safe).
-  2. **Automatische timeline-analyse** op de IME-logs in het pakket
-     (`Apps-IME/Logs`); de analyse is een sub-state (`analysis` in
-     `job.json`, jobkind `diag`) en mag de diag-job nooit laten falen.
-  3. **File browser** voor alle pakketbestanden. Extension policy:
-     `.log` → CMTrace-viewer; `.txt/.reg/.xml/.json/.csv` → tekstviewer met
-     UTF-16-tolerante decodering (PowerShell 5.1 Out-File en `reg export`
-     schrijven UTF-16LE); `.html/.htm` → sandboxed iframe; `.evtx` →
-     eventviewer (python-evtx, gecapt op `EVTX_MAX_EVENTS`); `.cab/.etl` →
-     niet uitgepakt, wel als disabled entry in de tree zichtbaar. Nested
-     zips (mdmdiagnosticstool-output) worden precies één niveau diep
-     uitgepakt met een gedeeld zip-bomb-budget.
-
-## Wijzigingen aan het originele script
-
-- Het originele script is geschreven voor Windows. Patches voor Linux/headless
-  zijn toegestaan, maar:
-  - Houd wijzigingen **minimaal** en documenteer elke patch in `PATCHES.md`
-    (wat, waarom, regelnummers/functienaam), zodat upstream-updates later
-    gemerged kunnen worden
-  - Verander het analysegedrag en rapportformaat niet, alleen compatibiliteit
-    (paden, encoding, Windows-only cmdlets in het non-UI codepad)
-
-## Testdata
-
-- `./testdata/` bevat echte (geanonimiseerde) IME-logs, minimaal
-  `IntuneManagementExtension.log` en `AgentExecutor.log`
-- Gebruik deze data om elke fase end-to-end te verifiëren
-- Definitie van "werkt": het script produceert een HTML-rapport met een
-  timeline die Win32App-events uit de testlogs bevat, zonder errors
+- **GEEN** `-ShowLogViewerUI` (Out-GridView, Windows-only) en **GEEN**
+  `-Online` (vereist Graph-credentials) bij het aanroepen van het upstream-script.
+- Wijzigingen aan `Get-IntuneManagementExtensionDiagnostics.ps1`: alleen
+  Linux/headless-compatibiliteit, minimaal houden, en **elke patch
+  documenteren in `PATCHES.md`** (wat, waarom, functienaam) zodat
+  upstream-updates gemerged kunnen worden. Analysegedrag en rapportformaat
+  nooit veranderen. De headless aanroepvlaggen staan (met motivatie) in
+  `scripts/run-analysis.sh`.
+- IME-logs zijn vertrouwelijk: geen logbestand-inhoud naar stdout loggen.
+- Geen externe services; alle configuratie via env vars met veilige defaults
+  (zie de docstring boven in `app.py` en de tabel in `README.md`).
 
 ## Conventies
 
-- Python: type hints, geen onnodige dependencies (FastAPI, uvicorn,
-  python-multipart; python-evtx voor de .evtx-viewer)
-- Alle configuratie via environment variables met veilige defaults:
-  - `MAX_UPLOAD_MB` (default 100)
-  - `JOB_RETENTION_HOURS` (default 24)
-  - `SCRIPT_TIMEOUT_SECONDS` (default 300)
-  - `CMTRACE_MAX_LINES` (default 50000)
-  - `EVTX_MAX_EVENTS` (default 2000)
-- Logging naar stdout (Coolify/Docker vangt dit op)
-- Commit per afgeronde fase met duidelijke commit message
-
-## Repo-structuur (doel)
-
-```
-/
-├── CLAUDE.md
-├── PATCHES.md
-├── README.md                  # incl. Coolify-deployinstructies
-├── Dockerfile
-├── docker-compose.yml         # alternatief voor lokaal testen
-├── Get-IntuneManagementExtensionDiagnostics.ps1
-├── app.py                     # FastAPI-app
-├── requirements.txt
-├── templates/                 # upload- en resultaatpagina's (indien nodig)
-├── tests/
-│   └── test_e2e.py            # volledige flow tegen ./testdata
-└── testdata/
-    ├── IntuneManagementExtension.log
-    └── AgentExecutor.log
-```
-
-## Security & privacy
-
-- IME-logs bevatten gevoelige informatie (devicenamen, gebruikersnamen,
-  app-GUID's, soms script-output). Behandel uploads als vertrouwelijk:
-  korte retentie, geen logs van logbestand-inhoud naar stdout
-- Valideer uploads: alleen .log en .zip, zip veilig uitpakken
-  (bescherm tegen zip-slip/path traversal), grootte-limiet afdwingen
-- Run de container niet als root waar mogelijk
+- Python: type hints; dependencies beperkt tot FastAPI, uvicorn,
+  python-multipart, python-evtx (en httpx/pytest voor tests).
+- Tests in `tests/test_e2e.py` gebruiken een fixture die env vars zet en
+  `app` herlaadt (module-level config), met `TestClient`.
+- Logging naar stdout. Commit per afgeronde fase met duidelijke message.

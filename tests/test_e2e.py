@@ -278,8 +278,8 @@ def test_cmtrace_severity_filter_and_legend():
     html = app_module.render_cmtrace_view("ime.log", records, False)
     assert 'id="sev"' in html                  # severity dropdown
     assert 'class="legend"' in html            # colour legend in the bar
-    assert '<tr class="warn"' in html
-    assert '<tr class="err"' in html
+    assert 'class="warn"' in html
+    assert 'class="err"' in html
 
     # Plain (non-CMTrace) view keeps the severity filter too.
     plain, _ = app_module.parse_cmtrace("ERROR: boom\nall good\n")
@@ -747,6 +747,36 @@ def test_build_dashboard_dutch_names(tmp_path):
     assert by_label["Machine certificates"]["status"] == "warn"
 
 
+def test_dashboard_source_links(tmp_path):
+    """Checks carry src + line pointing at the evidence row as the file
+    viewer numbers it (blank lines are skipped by the viewer)."""
+    import app as app_module
+    (tmp_path / "Identity").mkdir()
+    (tmp_path / "Apps-IME").mkdir()
+    (tmp_path / "Identity" / "dsregcmd-status.txt").write_text(
+        "\n\nDevice State\n\n     AzureAdJoined : YES\n     AzureAdPrt : NO\n",
+        encoding="utf-8")
+    (tmp_path / "Apps-IME" / "service-status.txt").write_text(
+        "\nName Status StartType\n---- ------ ---------\n"
+        "IntuneManagementExtension Running Automatic\n", encoding="utf-8")
+
+    dash = app_module.build_dashboard(tmp_path)
+    by_label = {c["label"]: c for c in dash["checks"]}
+
+    joined = by_label["Entra joined"]
+    assert joined["src"] == "Identity/dsregcmd-status.txt"
+    assert joined["line"] == 2  # "Device State" is viewer row 1, blanks skipped
+
+    svc = by_label["IME service"]
+    assert svc["src"] == "Apps-IME/service-status.txt"
+    assert svc["line"] == 3  # header + separator rows precede the service row
+
+    # Missing source file -> no link, status unknown (total parsers).
+    endpoints = by_label["Intune/Entra endpoints"]
+    assert endpoints["status"] == "unknown"
+    assert "src" not in endpoints
+
+
 def test_extract_zip_members_nested_and_policy(tmp_path):
     import app as app_module
     nested2 = io.BytesIO()
@@ -880,7 +910,7 @@ def test_render_evtx_view():
     rec = app_module.evtx_xml_to_record(_EVTX_XML)
     html = app_module.render_evtx_view("EventLogs/System.evtx", [rec], True)
     assert "All providers" in html
-    assert '<tr class="err"' in html             # level 2 -> error colouring
+    assert 'class="err"' in html                 # level 2 -> error colouring
     assert "0x87D1041C" in html
     assert "EVTX_MAX_EVENTS" in html             # truncation note
     assert 'id="detail"' in html                 # shared detail panel
