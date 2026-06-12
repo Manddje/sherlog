@@ -2820,7 +2820,7 @@ async def timeline_upload_page() -> HTMLResponse:
     return render_upload_page(
         title="Timeline Analyzer",
         heading="Build a Win32App timeline",
-        intro=("Upload your IME logs and get an interactive Win32App "
+        intro=("Upload your IME logs and get an interactive "
                "<strong>timeline</strong> report &mdash; right in your browser."),
         action="/analyze",
         button="Build timeline",
