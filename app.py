@@ -379,6 +379,7 @@ _DOWNLOAD_COLS = ("app_type", "app_name", "dl_sec", "size_mb", "mbps", "do_pct")
 _CELL_CAP = 1000  # bound memory per parsed cell
 SUMMARY_DETAIL_CAP = 300
 SUMMARY_MAX_FAILED_ITEMS = 50
+SUMMARY_MAX_ITEMS = 500
 
 
 @dataclass
@@ -482,6 +483,7 @@ def summarize(summary: ReportSummary) -> dict:
     """Reduce a parsed report to the model rendered on the result page."""
     counts: dict[str, dict[str, int]] = {}
     failed_items: list[dict] = []
+    items: list[dict] = []
     code_counter: Counter[str] = Counter()
     warnings = 0
     not_detected = 0
@@ -505,6 +507,16 @@ def summarize(summary: ReportSummary) -> dict:
                 "intent": row["intent"],
                 "detail": row["detail"][:SUMMARY_DETAIL_CAP],
             })
+        # Per-type drill-down behind the summary chips: keep every outcome
+        # row, success included (failed_items above stays for old jobs).
+        if status in ("Success", "Failed", "Not Detected", "Warning"):
+            items.append({
+                "date": row["date"],
+                "type": rtype,
+                "intent": row["intent"],
+                "status": status,
+                "detail": row["detail"][:SUMMARY_DETAIL_CAP],
+            })
 
     return {
         "parse_ok": summary.parse_ok,
@@ -512,6 +524,7 @@ def summarize(summary: ReportSummary) -> dict:
         "warnings": warnings,
         "not_detected": not_detected,
         "failed_items": failed_items[:SUMMARY_MAX_FAILED_ITEMS],
+        "items": items[:SUMMARY_MAX_ITEMS],
         "top_errors": [
             {"code": code, "count": n, "explanation": ERROR_CODES[code]}
             for code, n in code_counter.most_common(10)
@@ -1636,6 +1649,13 @@ REPORT_PAGE = """<!doctype html>
   details.summary th,details.summary td{text-align:left;padding:.25rem .6rem;
     border-bottom:1px solid var(--border);vertical-align:top}
   details.summary .code{margin:.2rem 0}
+  .sum-chip[data-type],.sum-chip[data-status]{cursor:pointer}
+  .sum-chip[data-type]:hover,.sum-chip[data-status]:hover{border-color:var(--accent)}
+  .sum-chip.active{border-color:var(--accent);background:rgba(37,99,235,.08)}
+  details.summary .st-ok{color:#1a7f37;font-weight:600}
+  details.summary .st-bad{color:#c33;font-weight:600}
+  details.summary .st-warn{color:#9a6700;font-weight:600}
+  details.summary .st-nd{color:#6b7280;font-weight:600}
 </style></head><body>
   <div class="topbar">
     <a class="brand" href="/">%(logo)s Sherlog</a>
@@ -1746,6 +1766,13 @@ DIAG_PAGE = """<!doctype html>
   details.summary th,details.summary td{text-align:left;padding:.25rem .6rem;
     border-bottom:1px solid var(--border);vertical-align:top}
   details.summary .code{margin:.2rem 0}
+  .sum-chip[data-type],.sum-chip[data-status]{cursor:pointer}
+  .sum-chip[data-type]:hover,.sum-chip[data-status]:hover{border-color:var(--accent)}
+  .sum-chip.active{border-color:var(--accent);background:rgba(37,99,235,.08)}
+  details.summary .st-ok{color:#1a7f37;font-weight:600}
+  details.summary .st-bad{color:#c33;font-weight:600}
+  details.summary .st-warn{color:#9a6700;font-weight:600}
+  details.summary .st-nd{color:#6b7280;font-weight:600}
   .browser{display:flex;height:75vh;border-top:1px solid var(--border)}
   .side{width:300px;flex:none;overflow:auto;border-right:1px solid var(--border);
     background:var(--surface);padding:.5rem .35rem;font-size:.86rem}
@@ -1879,6 +1906,67 @@ def strip_branding(html: str) -> str:
     return _BRANDING_FOOTER.sub("", html, count=1)
 
 
+_SUMMARY_STATUS_CLASS = {"Success": "st-ok", "Failed": "st-bad",
+                         "Warning": "st-warn", "Not Detected": "st-nd"}
+
+_SUMMARY_ITEMS_JS = """<script>
+(function () {
+  const root = document.currentScript.closest('details');
+  const rows = [...root.querySelectorAll('tr.it')];
+  const chips = [...root.querySelectorAll('.sum-chip[data-type],.sum-chip[data-status]')];
+  const heading = root.querySelector('.items-h');
+  const table = root.querySelector('.items-t');
+  let active = null;  // null = default failed-only view
+  function key(el) { return el.dataset.type || el.dataset.status; }
+  function apply() {
+    let shown = 0;
+    for (const r of rows) {
+      const on = active === null ? r.dataset.status === 'Failed'
+               : active.type ? r.dataset.type === active.type
+                             : r.dataset.status === active.status;
+      r.style.display = on ? '' : 'none';
+      if (on) shown++;
+    }
+    heading.textContent = active === null ? 'Failed items'
+      : (active.type || active.status) + ' \\u2014 ' + shown + ' item(s)';
+    heading.style.display = table.style.display = shown ? '' : 'none';
+    chips.forEach(c => c.classList.toggle('active',
+      active !== null && key(c) === (active.type || active.status)));
+  }
+  chips.forEach(c => c.addEventListener('click', () => {
+    const sel = {type: c.dataset.type || '', status: c.dataset.status || ''};
+    active = (active && key(c) === (active.type || active.status)) ? null : sel;
+    apply();
+  }));
+  apply();
+})();
+</script>"""
+
+
+def _render_summary_items(items: List[dict]) -> str:
+    """Drill-down table behind the summary chips: every outcome row, filtered
+    client-side (default: failed only; chip click: everything of that type)."""
+    rows = []
+    for i in items:
+        status = str(i.get("status", ""))
+        cls = _SUMMARY_STATUS_CLASS.get(status, "")
+        rows.append(
+            f'<tr class="it" data-type="{attr_escape(str(i.get("type", "")))}"'
+            f' data-status="{attr_escape(status)}">'
+            f"<td>{html_escape(str(i.get('date', '')))}</td>"
+            f"<td>{html_escape(str(i.get('type', '')))}</td>"
+            f"<td>{html_escape(str(i.get('intent', '')))}</td>"
+            f'<td class="{cls}">{html_escape(status)}</td>'
+            f"<td>{html_escape(str(i.get('detail', '')))}</td></tr>"
+        )
+    return (
+        '<h3 class="items-h">Failed items</h3>'
+        '<table class="items-t"><tr><th>Date</th><th>Type</th><th>Intent</th>'
+        f'<th>Status</th><th>Detail</th></tr>{"".join(rows)}</table>'
+        + _SUMMARY_ITEMS_JS
+    )
+
+
 def render_summary_panel(summary: Optional[dict]) -> str:
     """Collapsible summary panel for the result page.
 
@@ -1892,6 +1980,7 @@ def render_summary_panel(summary: Optional[dict]) -> str:
     warnings = summary.get("warnings", 0)
     not_detected = summary.get("not_detected", 0)
     failed_items = summary.get("failed_items", [])
+    items = summary.get("items") or []  # absent in pre-drilldown summary.json
     top_errors = summary.get("top_errors", [])
     downloads = summary.get("downloads", [])
     if not (counts or warnings or not_detected or failed_items or downloads):
@@ -1900,19 +1989,24 @@ def render_summary_panel(summary: Optional[dict]) -> str:
     total_failed = sum(c.get("failed", 0) for c in counts)
     total_success = sum(c.get("success", 0) for c in counts)
 
+    def chip(label_html: str, **data: str) -> str:
+        attrs = "".join(f' data-{k}="{attr_escape(v)}"' for k, v in data.items()
+                        if items)  # only clickable when there is a drill-down
+        return f'<span class="sum-chip"{attrs}>{label_html}</span>'
+
     chips = []
     for c in counts:
-        chips.append(
-            f'<span class="sum-chip">{html_escape(c["type"])}: '
+        chips.append(chip(
+            f'{html_escape(c["type"])}: '
             f'<span class="ok">{c.get("success", 0)} ok</span> / '
-            f'<span class="bad">{c.get("failed", 0)} failed</span></span>'
-        )
+            f'<span class="bad">{c.get("failed", 0)} failed</span>',
+            type=str(c["type"])))
     if warnings:
-        chips.append(f'<span class="sum-chip"><span class="warn">{warnings} '
-                     f'warning(s)</span></span>')
+        chips.append(chip(f'<span class="warn">{warnings} warning(s)</span>',
+                          status="Warning"))
     if not_detected:
-        chips.append(f'<span class="sum-chip"><span class="bad">{not_detected} '
-                     f'not detected</span></span>')
+        chips.append(chip(f'<span class="bad">{not_detected} not detected</span>',
+                          status="Not Detected"))
 
     parts = [f'<div class="sum-chips">{"".join(chips)}</div>']
 
@@ -1924,7 +2018,9 @@ def render_summary_panel(summary: Optional[dict]) -> str:
         )
         parts.append(f"<h3>Known error codes</h3>{rows}")
 
-    if failed_items:
+    if items:
+        parts.append(_render_summary_items(items))
+    elif failed_items:
         rows = "".join(
             f"<tr><td>{html_escape(i['date'])}</td>"
             f"<td>{html_escape(i['type'])}</td>"

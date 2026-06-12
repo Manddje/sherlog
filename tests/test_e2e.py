@@ -409,6 +409,10 @@ def test_parse_report_summary_synthetic():
     assert len(model["failed_items"]) == 2
     codes = {e["code"] for e in model["top_errors"]}
     assert "0x87D1041C" in codes and "1603" in codes
+    # Drill-down items keep every outcome row, success and warnings included.
+    statuses = [i["status"] for i in model["items"]]
+    assert statuses.count("Failed") == 2
+    assert "Success" in statuses and "Warning" in statuses
 
 
 def test_parse_report_summary_garbage_degrades():
@@ -445,6 +449,38 @@ def test_render_summary_panel_escapes():
     assert "<script>alert(1)</script>" not in html
     assert "&lt;script&gt;" in html
     assert 'class="summary" open' in html
+    # Legacy model (no `items`): chips not clickable, failed table rendered.
+    assert "data-type=" not in html
+    assert "Failed items" in html
+
+
+def test_render_summary_panel_drilldown():
+    import app as app_module
+
+    model = {
+        "parse_ok": True,
+        "counts": [{"type": "Powershell script", "success": 9, "failed": 3}],
+        "warnings": 0, "not_detected": 2,
+        "failed_items": [],
+        "items": [
+            {"date": "d1", "type": "Powershell script", "intent": "Execute",
+             "status": "Success", "detail": "ok"},
+            {"date": "d2", "type": "Powershell script", "intent": "Execute",
+             "status": "Failed", "detail": "boom"},
+            {"date": "d3", "type": "Win32App", "intent": "Install",
+             "status": "Not Detected", "detail": "gone"},
+        ],
+        "top_errors": [], "downloads": [],
+    }
+    html = app_module.render_summary_panel(model)
+    # Chips carry the drill-down filters.
+    assert 'data-type="Powershell script"' in html
+    assert 'data-status="Not Detected"' in html
+    # The items table holds every outcome row, success included.
+    assert 'class="st-ok">Success' in html
+    assert 'class="st-bad">Failed' in html
+    assert 'class="st-nd">Not Detected' in html
+    assert html.count('<tr class="it"') == 3
 
 
 def test_error_codes_shape_and_coverage():
