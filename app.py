@@ -1592,7 +1592,7 @@ def history_record_js(job_id: str, tool: str, state: str, files: List[str]) -> s
 
 LANDING_PAGE = """<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
-<script>(function(){function a(d){document.documentElement.classList.toggle('dark',d);document.documentElement.style.colorScheme=d?'dark':'light'}var t=null;try{t=localStorage.getItem('sherlog.theme')}catch(e){}a(t==='dark'||(t!=='light'&&matchMedia('(prefers-color-scheme: dark)').matches));window.sherlogTheme=function(){var d=!document.documentElement.classList.contains('dark');a(d);try{localStorage.setItem('sherlog.theme',d?'dark':'light')}catch(e){}}})()</script>
+<script>(function(){var de=document.documentElement;function a(d){de.classList.toggle('dark',d);de.style.colorScheme=d?'dark':'light'}function cur(){return de.classList.contains('dark')}function tell(w){try{w.postMessage({sherlogTheme:cur()?'dark':'light'},'*')}catch(e){}}var t=null;try{t=localStorage.getItem('sherlog.theme')}catch(e){}a(t==='dark'||(t!=='light'&&matchMedia('(prefers-color-scheme: dark)').matches));window.sherlogTheme=function(){a(!cur());try{localStorage.setItem('sherlog.theme',cur()?'dark':'light')}catch(e){}var fs=document.querySelectorAll('iframe');for(var i=0;i<fs.length;i++)tell(fs[i].contentWindow)};window.addEventListener('load',function(e){if(e.target&&e.target.tagName==='IFRAME')tell(e.target.contentWindow)},true);window.addEventListener('message',function(e){var v=e.data&&e.data.sherlogTheme;if(v==='dark'||v==='light')a(v==='dark')})})()</script>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Sherlog &mdash; IME log analyzer</title><style>%(css)s</style></head>
 <body>
@@ -1683,7 +1683,7 @@ LANDING_PAGE = """<!doctype html>
 
 UPLOAD_PAGE = """<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
-<script>(function(){function a(d){document.documentElement.classList.toggle('dark',d);document.documentElement.style.colorScheme=d?'dark':'light'}var t=null;try{t=localStorage.getItem('sherlog.theme')}catch(e){}a(t==='dark'||(t!=='light'&&matchMedia('(prefers-color-scheme: dark)').matches));window.sherlogTheme=function(){var d=!document.documentElement.classList.contains('dark');a(d);try{localStorage.setItem('sherlog.theme',d?'dark':'light')}catch(e){}}})()</script>
+<script>(function(){var de=document.documentElement;function a(d){de.classList.toggle('dark',d);de.style.colorScheme=d?'dark':'light'}function cur(){return de.classList.contains('dark')}function tell(w){try{w.postMessage({sherlogTheme:cur()?'dark':'light'},'*')}catch(e){}}var t=null;try{t=localStorage.getItem('sherlog.theme')}catch(e){}a(t==='dark'||(t!=='light'&&matchMedia('(prefers-color-scheme: dark)').matches));window.sherlogTheme=function(){a(!cur());try{localStorage.setItem('sherlog.theme',cur()?'dark':'light')}catch(e){}var fs=document.querySelectorAll('iframe');for(var i=0;i<fs.length;i++)tell(fs[i].contentWindow)};window.addEventListener('load',function(e){if(e.target&&e.target.tagName==='IFRAME')tell(e.target.contentWindow)},true);window.addEventListener('message',function(e){var v=e.data&&e.data.sherlogTheme;if(v==='dark'||v==='light')a(v==='dark')})})()</script>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Sherlog &mdash; %(title)s</title><style>%(css)s</style></head>
 <body>
@@ -1791,7 +1791,7 @@ UPLOAD_PAGE = """<!doctype html>
 
 BUSY_PAGE = """<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
-<script>(function(){function a(d){document.documentElement.classList.toggle('dark',d);document.documentElement.style.colorScheme=d?'dark':'light'}var t=null;try{t=localStorage.getItem('sherlog.theme')}catch(e){}a(t==='dark'||(t!=='light'&&matchMedia('(prefers-color-scheme: dark)').matches));window.sherlogTheme=function(){var d=!document.documentElement.classList.contains('dark');a(d);try{localStorage.setItem('sherlog.theme',d?'dark':'light')}catch(e){}}})()</script>
+<script>(function(){var de=document.documentElement;function a(d){de.classList.toggle('dark',d);de.style.colorScheme=d?'dark':'light'}function cur(){return de.classList.contains('dark')}function tell(w){try{w.postMessage({sherlogTheme:cur()?'dark':'light'},'*')}catch(e){}}var t=null;try{t=localStorage.getItem('sherlog.theme')}catch(e){}a(t==='dark'||(t!=='light'&&matchMedia('(prefers-color-scheme: dark)').matches));window.sherlogTheme=function(){a(!cur());try{localStorage.setItem('sherlog.theme',cur()?'dark':'light')}catch(e){}var fs=document.querySelectorAll('iframe');for(var i=0;i<fs.length;i++)tell(fs[i].contentWindow)};window.addEventListener('load',function(e){if(e.target&&e.target.tagName==='IFRAME')tell(e.target.contentWindow)},true);window.addEventListener('message',function(e){var v=e.data&&e.data.sherlogTheme;if(v==='dark'||v==='light')a(v==='dark')})})()</script>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta http-equiv="refresh" content="3">
 <title>Analyzing…</title><style>%(css)s</style></head>
@@ -1809,7 +1809,7 @@ BUSY_PAGE = """<!doctype html>
 
 REPORT_PAGE = """<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
-<script>(function(){function a(d){document.documentElement.classList.toggle('dark',d);document.documentElement.style.colorScheme=d?'dark':'light'}var t=null;try{t=localStorage.getItem('sherlog.theme')}catch(e){}a(t==='dark'||(t!=='light'&&matchMedia('(prefers-color-scheme: dark)').matches));window.sherlogTheme=function(){var d=!document.documentElement.classList.contains('dark');a(d);try{localStorage.setItem('sherlog.theme',d?'dark':'light')}catch(e){}}})()</script>
+<script>(function(){var de=document.documentElement;function a(d){de.classList.toggle('dark',d);de.style.colorScheme=d?'dark':'light'}function cur(){return de.classList.contains('dark')}function tell(w){try{w.postMessage({sherlogTheme:cur()?'dark':'light'},'*')}catch(e){}}var t=null;try{t=localStorage.getItem('sherlog.theme')}catch(e){}a(t==='dark'||(t!=='light'&&matchMedia('(prefers-color-scheme: dark)').matches));window.sherlogTheme=function(){a(!cur());try{localStorage.setItem('sherlog.theme',cur()?'dark':'light')}catch(e){}var fs=document.querySelectorAll('iframe');for(var i=0;i<fs.length;i++)tell(fs[i].contentWindow)};window.addEventListener('load',function(e){if(e.target&&e.target.tagName==='IFRAME')tell(e.target.contentWindow)},true);window.addEventListener('message',function(e){var v=e.data&&e.data.sherlogTheme;if(v==='dark'||v==='light')a(v==='dark')})})()</script>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Sherlog &mdash; timeline report</title>
 <style>%(css)s
@@ -1855,7 +1855,7 @@ REPORT_PAGE = """<!doctype html>
 
 CMTRACE_PAGE = """<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
-<script>(function(){function a(d){document.documentElement.classList.toggle('dark',d);document.documentElement.style.colorScheme=d?'dark':'light'}var t=null;try{t=localStorage.getItem('sherlog.theme')}catch(e){}a(t==='dark'||(t!=='light'&&matchMedia('(prefers-color-scheme: dark)').matches));window.sherlogTheme=function(){var d=!document.documentElement.classList.contains('dark');a(d);try{localStorage.setItem('sherlog.theme',d?'dark':'light')}catch(e){}}})()</script>
+<script>(function(){var de=document.documentElement;function a(d){de.classList.toggle('dark',d);de.style.colorScheme=d?'dark':'light'}function cur(){return de.classList.contains('dark')}function tell(w){try{w.postMessage({sherlogTheme:cur()?'dark':'light'},'*')}catch(e){}}var t=null;try{t=localStorage.getItem('sherlog.theme')}catch(e){}a(t==='dark'||(t!=='light'&&matchMedia('(prefers-color-scheme: dark)').matches));window.sherlogTheme=function(){a(!cur());try{localStorage.setItem('sherlog.theme',cur()?'dark':'light')}catch(e){}var fs=document.querySelectorAll('iframe');for(var i=0;i<fs.length;i++)tell(fs[i].contentWindow)};window.addEventListener('load',function(e){if(e.target&&e.target.tagName==='IFRAME')tell(e.target.contentWindow)},true);window.addEventListener('message',function(e){var v=e.data&&e.data.sherlogTheme;if(v==='dark'||v==='light')a(v==='dark')})})()</script>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Sherlog &mdash; raw logs (CMTrace)</title>
 <style>%(css)s
@@ -1911,7 +1911,7 @@ CMTRACE_PAGE = """<!doctype html>
 
 DIAG_PAGE = """<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
-<script>(function(){function a(d){document.documentElement.classList.toggle('dark',d);document.documentElement.style.colorScheme=d?'dark':'light'}var t=null;try{t=localStorage.getItem('sherlog.theme')}catch(e){}a(t==='dark'||(t!=='light'&&matchMedia('(prefers-color-scheme: dark)').matches));window.sherlogTheme=function(){var d=!document.documentElement.classList.contains('dark');a(d);try{localStorage.setItem('sherlog.theme',d?'dark':'light')}catch(e){}}})()</script>
+<script>(function(){var de=document.documentElement;function a(d){de.classList.toggle('dark',d);de.style.colorScheme=d?'dark':'light'}function cur(){return de.classList.contains('dark')}function tell(w){try{w.postMessage({sherlogTheme:cur()?'dark':'light'},'*')}catch(e){}}var t=null;try{t=localStorage.getItem('sherlog.theme')}catch(e){}a(t==='dark'||(t!=='light'&&matchMedia('(prefers-color-scheme: dark)').matches));window.sherlogTheme=function(){a(!cur());try{localStorage.setItem('sherlog.theme',cur()?'dark':'light')}catch(e){}var fs=document.querySelectorAll('iframe');for(var i=0;i<fs.length;i++)tell(fs[i].contentWindow)};window.addEventListener('load',function(e){if(e.target&&e.target.tagName==='IFRAME')tell(e.target.contentWindow)},true);window.addEventListener('message',function(e){var v=e.data&&e.data.sherlogTheme;if(v==='dark'||v==='light')a(v==='dark')})})()</script>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Sherlog &mdash; diagnostics package</title>
 <style>%(css)s
@@ -2050,7 +2050,7 @@ DIAG_PAGE = """<!doctype html>
 
 ERROR_PAGE = """<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
-<script>(function(){function a(d){document.documentElement.classList.toggle('dark',d);document.documentElement.style.colorScheme=d?'dark':'light'}var t=null;try{t=localStorage.getItem('sherlog.theme')}catch(e){}a(t==='dark'||(t!=='light'&&matchMedia('(prefers-color-scheme: dark)').matches));window.sherlogTheme=function(){var d=!document.documentElement.classList.contains('dark');a(d);try{localStorage.setItem('sherlog.theme',d?'dark':'light')}catch(e){}}})()</script>
+<script>(function(){var de=document.documentElement;function a(d){de.classList.toggle('dark',d);de.style.colorScheme=d?'dark':'light'}function cur(){return de.classList.contains('dark')}function tell(w){try{w.postMessage({sherlogTheme:cur()?'dark':'light'},'*')}catch(e){}}var t=null;try{t=localStorage.getItem('sherlog.theme')}catch(e){}a(t==='dark'||(t!=='light'&&matchMedia('(prefers-color-scheme: dark)').matches));window.sherlogTheme=function(){a(!cur());try{localStorage.setItem('sherlog.theme',cur()?'dark':'light')}catch(e){}var fs=document.querySelectorAll('iframe');for(var i=0;i<fs.length;i++)tell(fs[i].contentWindow)};window.addEventListener('load',function(e){if(e.target&&e.target.tagName==='IFRAME')tell(e.target.contentWindow)},true);window.addEventListener('message',function(e){var v=e.data&&e.data.sherlogTheme;if(v==='dark'||v==='light')a(v==='dark')})})()</script>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Analysis failed</title><style>%(css)s</style></head>
 <body>
@@ -2307,58 +2307,77 @@ def render_analysis_card(job_id: str, analysis: dict) -> str:
 
 # Standalone styles: the view is served inside a sandboxed iframe (separate
 # origin), so it cannot share the app's stylesheet — keep it self-contained.
+# Dark mode: the sandbox has no localStorage, so the head script falls back
+# to prefers-color-scheme and the parent page syncs its toggle via
+# postMessage (both set .dark on <html>).
 _CMTRACE_CSS = """
+  :root{ --bg:#ffffff; --fg:#1f2937; --muted:#6b7280; --faint:#9ca3af;
+    --surface:#f9fafb; --surface2:#f3f4f6; --border:#e5e7eb; --border2:#d1d5db;
+    --row-border:#f1f5f9; --hl:#e0e7ff; --accent:#2563eb;
+    --warn-bg:#fffbeb; --warn-fg:#92400e; --warn-border:#fde68a;
+    --err-bg:#fef2f2; --err-fg:#b91c1c; --err-border:#fecaca;
+    --info-bg:#eff6ff; --info-fg:#1d4ed8; --note-bg:#fef3c7; }
+  html.dark{ --bg:#0f172a; --fg:#e2e8f0; --muted:#94a3b8; --faint:#64748b;
+    --surface:#16202f; --surface2:#1e293b; --border:#293548; --border2:#334155;
+    --row-border:#1c2638; --hl:#1e3a8a; --accent:#3b82f6;
+    --warn-bg:#27200c; --warn-fg:#fbbf24; --warn-border:#5b4708;
+    --err-bg:#2c1517; --err-fg:#f87171; --err-border:#7f1d1d;
+    --info-bg:#172554; --info-fg:#93c5fd; --note-bg:#27200c; }
   *{box-sizing:border-box}
   body{font:13px/1.45 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
-    margin:0;color:#1f2937;background:#fff}
+    margin:0;color:var(--fg);background:var(--bg)}
   .bar{position:sticky;top:0;display:flex;gap:.5rem;align-items:center;
-    padding:.5rem .75rem;background:#f9fafb;border-bottom:1px solid #e5e7eb;z-index:2}
-  .bar input,.bar select{font:inherit;padding:.3rem .5rem;border:1px solid #d1d5db;
-    border-radius:6px}
+    padding:.5rem .75rem;background:var(--surface);
+    border-bottom:1px solid var(--border);z-index:2}
+  .bar input,.bar select{font:inherit;padding:.3rem .5rem;
+    border:1px solid var(--border2);border-radius:6px;
+    background:var(--bg);color:var(--fg)}
   .bar input{flex:1;min-width:8rem}
-  .count{color:#6b7280;white-space:nowrap}
-  .note{padding:.5rem .75rem;color:#92400e;background:#fef3c7;
-    border-bottom:1px solid #fde68a}
+  .count{color:var(--muted);white-space:nowrap}
+  .note{padding:.5rem .75rem;color:var(--warn-fg);background:var(--note-bg);
+    border-bottom:1px solid var(--warn-border)}
   table{border-collapse:collapse;width:100%;table-layout:fixed}
-  th,td{text-align:left;padding:.25rem .6rem;border-bottom:1px solid #f1f5f9;
+  th,td{text-align:left;padding:.25rem .6rem;
+    border-bottom:1px solid var(--row-border);
     vertical-align:top;word-break:break-word;white-space:pre-wrap}
-  th{position:sticky;top:2.6rem;background:#f3f4f6;font-weight:600;z-index:1}
+  th{position:sticky;top:2.6rem;background:var(--surface2);font-weight:600;z-index:1}
   td.msg{width:auto}
-  td.c,td.t,td.th{width:9rem;color:#6b7280;white-space:nowrap}
+  td.c,td.t,td.th{width:9rem;color:var(--muted);white-space:nowrap}
   td.th{width:4rem}
-  td.ln,th.ln{width:4rem;color:#9ca3af;text-align:right;
+  td.ln,th.ln{width:4rem;color:var(--faint);text-align:right;
     font-variant-numeric:tabular-nums;user-select:none}
-  tr.warn{background:#fffbeb}
-  tr.warn td.msg{color:#92400e}
-  tr.err{background:#fef2f2}
-  tr.err td.msg{color:#b91c1c;font-weight:600}
+  tr.warn{background:var(--warn-bg)}
+  tr.warn td.msg{color:var(--warn-fg)}
+  tr.err{background:var(--err-bg)}
+  tr.err td.msg{color:var(--err-fg);font-weight:600}
   tr.hide{display:none}
   /* Deep-link target (#L<n> from a dashboard card): highlight and keep the
      row clear of the sticky filter bar + header. */
-  tr:target td{background:#e0e7ff}
+  tr:target td{background:var(--hl)}
   tr:target{scroll-margin-top:6rem}
-  .legend{display:flex;gap:.6rem;align-items:center;color:#6b7280;white-space:nowrap}
+  .legend{display:flex;gap:.6rem;align-items:center;color:var(--muted);
+    white-space:nowrap}
   .legend .sw{display:inline-block;width:.8rem;height:.8rem;border-radius:3px;
     margin-right:.25rem;vertical-align:-1px;border:1px solid rgba(0,0,0,.08)}
-  .sw.w{background:#fffbeb;border-color:#fde68a}
-  .sw.e{background:#fef2f2;border-color:#fecaca}
+  .sw.w{background:var(--warn-bg);border-color:var(--warn-border)}
+  .sw.e{background:var(--err-bg);border-color:var(--err-border)}
   #body tr{cursor:pointer}
-  tr.sel,tr.sel.warn,tr.sel.err{background:#e0e7ff}
+  tr.sel,tr.sel.warn,tr.sel.err{background:var(--hl)}
   #detail{position:fixed;bottom:0;left:0;right:0;max-height:45%;overflow:auto;
-    background:#fff;border-top:2px solid #d1d5db;
+    background:var(--bg);border-top:2px solid var(--border2);
     box-shadow:0 -6px 16px rgba(0,0,0,.1);padding:.6rem 1rem;z-index:3}
   .d-bar{display:flex;justify-content:space-between;align-items:center;gap:.5rem}
-  #d-close{font:inherit;border:1px solid #d1d5db;background:#f9fafb;
-    border-radius:6px;cursor:pointer;padding:.05rem .55rem}
-  #d-close:hover{background:#f3f4f6}
+  #d-close{font:inherit;border:1px solid var(--border2);background:var(--surface);
+    color:var(--fg);border-radius:6px;cursor:pointer;padding:.05rem .55rem}
+  #d-close:hover{background:var(--surface2)}
   #d-msg{margin:.45rem 0;white-space:pre-wrap;word-break:break-word}
-  .d-meta{color:#6b7280;margin-bottom:.4rem}
+  .d-meta{color:var(--muted);margin-bottom:.4rem}
   .sev{font-weight:600;padding:.1rem .55rem;border-radius:999px}
-  .sev.e{background:#fef2f2;color:#b91c1c}
-  .sev.w{background:#fffbeb;color:#92400e}
-  .sev.i{background:#eff6ff;color:#1d4ed8}
-  #d-explain .code{margin:.35rem 0;padding:.45rem .6rem;background:#eff6ff;
-    border-left:3px solid #2563eb;border-radius:0 6px 6px 0}
+  .sev.e{background:var(--err-bg);color:var(--err-fg)}
+  .sev.w{background:var(--warn-bg);color:var(--warn-fg)}
+  .sev.i{background:var(--info-bg);color:var(--info-fg)}
+  #d-explain .code{margin:.35rem 0;padding:.45rem .6rem;background:var(--info-bg);
+    border-left:3px solid var(--accent);border-radius:0 6px 6px 0}
 """
 
 
@@ -2697,7 +2716,7 @@ def _render_records_page(filename: str, head: str, rows: List[str],
     severity legend, colored rows and the click-for-detail panel with error
     code explanations."""
     return """<!doctype html><html lang="en"><head><meta charset="utf-8">
-<script>(function(){function a(d){document.documentElement.classList.toggle('dark',d);document.documentElement.style.colorScheme=d?'dark':'light'}var t=null;try{t=localStorage.getItem('sherlog.theme')}catch(e){}a(t==='dark'||(t!=='light'&&matchMedia('(prefers-color-scheme: dark)').matches));window.sherlogTheme=function(){var d=!document.documentElement.classList.contains('dark');a(d);try{localStorage.setItem('sherlog.theme',d?'dark':'light')}catch(e){}}})()</script>
+<script>(function(){var de=document.documentElement;function a(d){de.classList.toggle('dark',d);de.style.colorScheme=d?'dark':'light'}function cur(){return de.classList.contains('dark')}function tell(w){try{w.postMessage({sherlogTheme:cur()?'dark':'light'},'*')}catch(e){}}var t=null;try{t=localStorage.getItem('sherlog.theme')}catch(e){}a(t==='dark'||(t!=='light'&&matchMedia('(prefers-color-scheme: dark)').matches));window.sherlogTheme=function(){a(!cur());try{localStorage.setItem('sherlog.theme',cur()?'dark':'light')}catch(e){}var fs=document.querySelectorAll('iframe');for(var i=0;i<fs.length;i++)tell(fs[i].contentWindow)};window.addEventListener('load',function(e){if(e.target&&e.target.tagName==='IFRAME')tell(e.target.contentWindow)},true);window.addEventListener('message',function(e){var v=e.data&&e.data.sherlogTheme;if(v==='dark'||v==='light')a(v==='dark')})})()</script>
 <title>%(file)s</title><style>%(css)s</style></head><body>
   <div class="bar">
     <input id="q" type="search" placeholder="Filter text…" autocomplete="off">

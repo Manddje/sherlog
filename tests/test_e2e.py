@@ -740,6 +740,7 @@ def test_diag_full_flow(client):
     assert view.status_code == 200
     assert "Windows Registry Editor" in view.text
     assert "sandbox" in view.headers.get("content-security-policy", "")
+    assert "html.dark{" in view.text  # sandboxed viewer ships the dark palette
 
     html_view = client.get(f"/result/{job_id}/files/view",
                            params={"file": "System/battery-report.html"})
