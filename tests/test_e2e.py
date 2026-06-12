@@ -777,6 +777,27 @@ def test_extract_zip_members_nested_and_policy(tmp_path):
     assert not (dest / "MDM" / "nested.zip").exists()  # temp zip removed
 
 
+def test_extract_zip_members_backslash_separators(tmp_path):
+    """Windows PowerShell 5.1 Compress-Archive writes `\\` separators in zip
+    entry names; they must extract as directories, not flat backslash files."""
+    import app as app_module
+    z = tmp_path / "diag.zip"
+    with zipfile.ZipFile(z, "w") as zf:
+        zf.writestr("_SUMMARY.txt", "Device : X\n")
+        zf.writestr("Apps-IME\\service-status.txt", "Running")
+        zf.writestr("Apps-IME\\Logs\\IntuneManagementExtension.log", "log")
+    dest = tmp_path / "out"
+    count, _skipped = app_module.extract_zip_members(
+        z, dest, app_module.DIAG_KEEP_EXTS)
+    assert count == 3
+    assert (dest / "Apps-IME" / "service-status.txt").is_file()
+    assert (dest / "Apps-IME" / "Logs" / "IntuneManagementExtension.log").is_file()
+    assert app_module.find_ime_log_dir(dest) == dest / "Apps-IME" / "Logs"
+    by_label = {c["label"]: c
+                for c in app_module.build_dashboard(dest)["checks"]}
+    assert by_label["IME service"]["status"] == "ok"
+
+
 def test_extract_zip_members_nested_zip_slip(tmp_path):
     import app as app_module
     evil_inner = io.BytesIO()

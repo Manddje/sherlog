@@ -880,7 +880,11 @@ def extract_zip_members(zip_path: Path, dest_dir: Path, keep_exts: set,
         for info in zf.infolist():
             if info.is_dir():
                 continue
-            member = info.filename
+            # Windows PowerShell 5.1 Compress-Archive writes backslash
+            # separators in entry names (against the zip spec); without
+            # normalisation the package extracts as flat files with literal
+            # backslashes and every path-based lookup misses.
+            member = info.filename.replace("\\", "/")
             ext = Path(member).suffix.lower()
             nested_zip = ext == ".zip" and depth == 0
             if ext not in keep_exts and not nested_zip:
@@ -1034,6 +1038,18 @@ async def cleanup_loop() -> None:
         except Exception:  # pragma: no cover
             log.exception("cleanup loop error")
         await asyncio.sleep(3600)
+
+
+# asyncio only holds weak references to tasks; without a strong reference a
+# job task can be garbage-collected mid-run, leaving job.json on "running"
+# forever. Keep tasks alive until they finish.
+_bg_tasks: set = set()
+
+
+def spawn_job(coro) -> None:
+    task = asyncio.create_task(coro)
+    _bg_tasks.add(task)
+    task.add_done_callback(_bg_tasks.discard)
 
 
 # --- App lifespan ------------------------------------------------------------
@@ -2504,7 +2520,7 @@ async def analyze(request: Request) -> Response:
 
     # Stored before the job task starts; run_job merges its state into this.
     write_status(job_id, state="queued", uploads=names[:5])
-    asyncio.create_task(run_job(job_id, input_dir, output_dir))
+    spawn_job(run_job(job_id, input_dir, output_dir))
     return RedirectResponse(url=f"/result/{job_id}", status_code=303)
 
 
@@ -2565,8 +2581,8 @@ async def diagnostics_analyze(request: Request) -> Response:
                  skipped=skipped[:_MAX_SKIPPED_LISTED],
                  analysis={"state": "queued" if ime_dir else "none"})
     if ime_dir is not None:
-        asyncio.create_task(run_job(job_id, ime_dir, output_dir,
-                                    _diag_state_writer(job_id)))
+        spawn_job(run_job(job_id, ime_dir, output_dir,
+                            _diag_state_writer(job_id)))
     return RedirectResponse(url=f"/result/{job_id}", status_code=303)
 
 
