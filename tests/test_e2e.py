@@ -80,6 +80,9 @@ def test_landing_shows_both_tools(client):
     assert "Which tool do I need?" in r.text
     assert '/static/timeline.png' in r.text
     assert "enctype" not in r.text  # landing has no upload form
+    # Cross-promo link in the header, opened safely in a new tab.
+    assert 'https://payloadkit.app' in r.text
+    assert 'rel="noopener"' in r.text
 
 
 def test_static_screenshots_served(client):

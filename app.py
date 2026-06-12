@@ -1193,6 +1193,8 @@ PAGE_CSS = """
   .dot{ width:1.7rem; height:1.7rem; border-radius:7px; background:var(--accent);
     display:inline-flex; align-items:center; justify-content:center; }
   .navlink{ color:var(--muted); font-size:.92rem; margin-left:1.4rem; }
+  /* External cross-promo link: visually separated from the tool tabs. */
+  .navlink.ext{ border-left:1px solid var(--border); padding-left:1.4rem; }
   .wrap{ max-width:880px; margin:0 auto; padding:0 1.25rem; }
   .hero{ text-align:center; padding:3.5rem 0 2rem; }
   .hero h1{ font-size:2.4rem; line-height:1.15; letter-spacing:-.02em; margin:0 0 .9rem; }
@@ -1286,6 +1288,10 @@ NAV = ("""<header><nav class="nav">
     <a class="navlink" href="/timeline">Timeline</a>
     <a class="navlink" href="/cmtrace">CMTrace</a>
     <a class="navlink" href="/diagnostics">Diagnostics</a>
+    <a class="navlink ext" href="https://payloadkit.app" target="_blank"
+       rel="noopener" title="PayloadKit &mdash; browse &amp; build Apple
+       Configuration Profiles for macOS, iOS and tvOS, by the maker of
+       Sherlog">PayloadKit&nbsp;&#8599;</a>
   </span>
 </nav></header>""" % {"logo": _LOGO})
 
