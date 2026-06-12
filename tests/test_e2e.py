@@ -748,6 +748,98 @@ def test_diag_full_flow(client):
     assert "Win32App" in report.text
 
 
+def _make_cab(files: dict) -> bytes:
+    """Minimal single-folder, uncompressed .cab (cabextract-compatible).
+
+    Member names use the cab-native backslash separator for subdirectories.
+    """
+    import struct
+    data = b"".join(files.values())
+    cffile_block = b""
+    off = 0
+    for name, raw in files.items():
+        cffile_block += struct.pack("<IIHHHH", len(raw), off, 0,
+                                    0x54AB, 0x5C00, 0x20) + name.encode() + b"\x00"
+        off += len(raw)
+    files_off = 36 + 8                      # CFHEADER + one CFFOLDER
+    data_off = files_off + len(cffile_block)
+    cfdata = struct.pack("<IHH", 0, len(data), len(data)) + data
+    header = b"MSCF" + struct.pack(
+        "<IIIIIBBHHHHH", 0, data_off + len(cfdata), 0, files_off,
+        0, 3, 1, 1, len(files), 0, 0x1234, 0)
+    folder = struct.pack("<IHH", data_off, 1, 0)
+    return header + folder + cffile_block + cfdata
+
+
+def _zip_with_cab(cab: bytes) -> bytes:
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr("Identity/dsregcmd-status.txt", _u16(_DSREGCMD))
+        zf.writestr("Defender/MpSupportFiles.cab", cab)
+    return buf.getvalue()
+
+
+def _upload_diag(client, payload: bytes) -> str:
+    r = client.post(
+        "/diagnostics-analyze",
+        files={"files": ("diag.zip", payload, "application/zip")},
+        follow_redirects=False,
+    )
+    assert r.status_code == 303
+    return r.headers["location"].rstrip("/").rsplit("/", 1)[-1]
+
+
+@pytest.mark.skipif(not __import__("shutil").which("cabextract"),
+                    reason="cabextract not installed")
+def test_diag_cab_expanded(client):
+    cab = _make_cab({
+        "MPLog-1.log": b"<![LOG[defender says hi]LOG]!"
+                       b"<time=\"10:00:00.000+000\" date=\"06-11-2026\" "
+                       b"component=\"MP\" context=\"\" type=\"1\" "
+                       b"thread=\"1\" file=\"x\">\n",
+        "Support\\trace.etl": b"\x00etl\x00",
+    })
+    job_id = _upload_diag(client, _zip_with_cab(cab))
+
+    page = client.get(f"/result/{job_id}")
+    # Cab replaced by a folder with its viewable contents …
+    assert "MPLog-1.log" in page.text
+    assert 'data-file="Defender/MpSupportFiles.cab"' not in page.text
+    # … and the unviewable .etl inside is listed (disabled) as skipped.
+    import app as app_module
+    status = app_module.read_status(job_id)
+    skipped = {s["name"] for s in status["skipped"]}
+    assert "Defender/MpSupportFiles.cab!/Support/trace.etl" in skipped
+
+    view = client.get(f"/result/{job_id}/files/view",
+                      params={"file": "Defender/MpSupportFiles/MPLog-1.log"})
+    assert view.status_code == 200
+    assert "defender says hi" in view.text
+
+
+def test_diag_corrupt_cab_skipped_not_fatal(client):
+    job_id = _upload_diag(client, _zip_with_cab(b"\x00not a cab\x00"))
+    page = client.get(f"/result/{job_id}")
+    assert page.status_code == 200
+    assert "MpSupportFiles.cab" in page.text        # listed …
+    assert 'class="file disabled"' in page.text     # … but not clickable
+    import app as app_module
+    status = app_module.read_status(job_id)
+    assert "Defender/MpSupportFiles.cab" in {s["name"] for s in status["skipped"]}
+
+
+def test_diag_cab_without_cabextract_skipped(client, monkeypatch):
+    import app as app_module
+    monkeypatch.setattr(app_module, "CABEXTRACT", None)
+    cab = _make_cab({"MPLog-1.log": b"hello"})
+    job_id = _upload_diag(client, _zip_with_cab(cab))
+    page = client.get(f"/result/{job_id}")
+    assert "MpSupportFiles.cab" in page.text
+    assert "MPLog-1.log" not in page.text           # nothing expanded
+    status = app_module.read_status(job_id)
+    assert "Defender/MpSupportFiles.cab" in {s["name"] for s in status["skipped"]}
+
+
 def test_interrupted_jobs_marked_failed(client):
     # Simulate jobs left behind by a previous process: a timeline job stuck
     # on "running" and a diag job whose analysis is stuck on "queued".

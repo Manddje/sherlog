@@ -9,13 +9,15 @@
 # Run:    docker run -p 8080:8080 -v "$PWD/data:/data" ime-analyzer
 FROM mcr.microsoft.com/powershell:lts-ubuntu-22.04
 
-# python3 + pip to run the web layer, unzip as a safety net for the engine.
+# python3 + pip to run the web layer, unzip as a safety net for the engine,
+# cabextract to expand .cab files (Defender/MDM) in diagnostics packages.
 # Clean the apt cache in the same layer to keep the image small.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         python3 \
         python3-pip \
         unzip \
+        cabextract \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app

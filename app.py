@@ -31,6 +31,7 @@ import os
 import re
 import secrets
 import shutil
+import subprocess
 import time
 import uuid
 import xml.etree.ElementTree as ET
@@ -87,10 +88,18 @@ EVTX_MAX_EVENTS = max(1, int(os.environ.get("EVTX_MAX_EVENTS", "2000")))
 
 # Diagnostics-package extension policy. Text-ish files get the line viewer,
 # .log the CMTrace viewer, .html a sandboxed iframe, .evtx the event viewer.
-# .cab/.etl are binary and unparseable on Linux: they are not extracted but
-# still listed (disabled) in the file tree so the user knows they exist.
+# .cab archives (Defender MpSupportFiles.cab, LicensingDiag.cab) are expanded
+# with cabextract when it is installed (handles MSZIP and LZX, which pure
+# Python does not); without cabextract they stay listed (disabled) in the
+# file tree. .etl is binary and unparseable on Linux: never extracted.
 DIAG_TEXT_EXTS = {".txt", ".reg", ".xml", ".json", ".csv"}
 DIAG_KEEP_EXTS = {".log", ".html", ".htm", ".evtx"} | DIAG_TEXT_EXTS
+
+# cabextract binary (in the Docker image via apt). None → .cab not expanded.
+CABEXTRACT = shutil.which("cabextract")
+# A single .cab never takes longer than this to list or extract; a corrupt
+# or hostile cab is treated as unexpandable instead of hanging the upload.
+CAB_TIMEOUT_SECONDS = 120
 
 # Bounds the number of analysis subprocesses running at once.
 _job_sem = asyncio.Semaphore(JOB_CONCURRENCY)
@@ -954,10 +963,20 @@ async def save_diag_upload(files: List[UploadFile], input_dir: Path) -> tuple[in
                 raise UploadError(413, f"Upload exceeds {MAX_UPLOAD_MB} MB limit.")
             fh.write(chunk)
 
+    # Keep .cab members only when cabextract can expand them afterwards;
+    # otherwise they are skipped (and listed disabled) as before.
+    keep_exts = DIAG_KEEP_EXTS | ({".cab"} if CABEXTRACT else set())
+    budget = [0]
     try:
-        count, skipped = extract_zip_members(dest, input_dir, DIAG_KEEP_EXTS)
+        count, skipped = extract_zip_members(dest, input_dir, keep_exts,
+                                             budget=budget)
     except zipfile.BadZipFile:
         raise UploadError(400, "The uploaded file is not a valid zip archive.")
+    if CABEXTRACT:
+        cab_kept, cab_count, cab_skipped = await asyncio.to_thread(
+            expand_cab_files, input_dir, DIAG_KEEP_EXTS, budget)
+        count += cab_kept - cab_count  # cabs are replaced by their contents
+        skipped.extend(cab_skipped)
     if count == 0:
         raise UploadError(400, "No viewable files found in the diagnostics zip.")
     return count, skipped
@@ -1021,6 +1040,86 @@ def extract_zip_members(zip_path: Path, dest_dir: Path, keep_exts: set,
             else:
                 count += 1
     return count, skipped
+
+
+def _cab_member_sizes(cab: Path) -> Optional[List[int]]:
+    """Member sizes from `cabextract -l`, or None when the cab is unreadable.
+
+    Listing first lets the zip-bomb budget be checked *before* anything is
+    written to disk. Output rows look like:
+    `      1234 | 27.05.2026 14:36:11 | EventLogs/System.evtx`
+    """
+    try:
+        proc = subprocess.run([CABEXTRACT, "-l", str(cab)],
+                              capture_output=True, text=True,
+                              timeout=CAB_TIMEOUT_SECONDS)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if proc.returncode != 0:
+        return None
+    sizes: List[int] = []
+    for line in proc.stdout.splitlines():
+        parts = line.split("|")
+        if len(parts) >= 3 and parts[0].strip().isdigit():
+            sizes.append(int(parts[0].strip()))
+    return sizes
+
+
+def expand_cab_files(root: Path, keep_exts: set,
+                     budget: list) -> tuple[int, int, list]:
+    """Expand every .cab under `root` in place (one pass, no recursion).
+
+    Each `<dir>/<name>.cab` becomes `<dir>/<name>/` holding only members
+    with a kept extension; the .cab itself is always removed afterwards.
+    `budget` is the shared zip-bomb byte counter from the zip extraction.
+    A cab that cannot be expanded (corrupt, over budget, cabextract error
+    or timeout) is reported as skipped — never an upload failure, so one
+    bad cab cannot sink the diagnostics job. Returns
+    (kept_count, cab_count, skipped).
+    """
+    base = root.resolve()
+    kept = 0
+    cabs = 0
+    skipped: list = []
+    for cab in sorted(root.rglob("*.cab")):
+        cabs += 1
+        rel = cab.relative_to(root).as_posix()
+        cab_entry = {"name": rel, "size": cab.stat().st_size}
+        dest = cab.parent / cab.stem
+        sizes = _cab_member_sizes(cab)
+        if sizes is None or budget[0] + sum(sizes) > MAX_UNCOMPRESSED_BYTES:
+            skipped.append(cab_entry)
+            cab.unlink(missing_ok=True)
+            continue
+        budget[0] += sum(sizes)
+        try:
+            proc = subprocess.run(
+                [CABEXTRACT, "-q", "-d", str(dest), str(cab)],
+                capture_output=True, timeout=CAB_TIMEOUT_SECONDS)
+            ok = proc.returncode == 0
+        except (OSError, subprocess.TimeoutExpired):
+            ok = False
+        cab.unlink(missing_ok=True)
+        if not ok:
+            shutil.rmtree(dest, ignore_errors=True)
+            skipped.append(cab_entry)
+            continue
+        for f in sorted(dest.rglob("*")):
+            if not f.is_file():
+                continue
+            # Defence in depth on top of cabextract's own name sanitising:
+            # anything resolving outside the input dir is dropped.
+            resolved = f.resolve()
+            if base != resolved and base not in resolved.parents:
+                f.unlink(missing_ok=True)
+                continue
+            if f.suffix.lower() not in keep_exts:
+                skipped.append({"name": f"{rel}!/{f.relative_to(dest).as_posix()}",
+                                "size": f.stat().st_size})
+                f.unlink(missing_ok=True)
+            else:
+                kept += 1
+    return kept, cabs, skipped
 
 
 def extract_zip_logs(zip_path: Path, input_dir: Path) -> int:

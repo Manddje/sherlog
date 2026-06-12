@@ -70,8 +70,10 @@ een bestaande demo-job (`demo: true` in `job.json`) wordt hergebruikt.
    File browser per extensie: `.log` → CMTrace-viewer; `.txt/.reg/.xml/...`
    → tekstviewer met UTF-16-tolerante decodering (PowerShell 5.1 Out-File en
    `reg export` schrijven UTF-16LE); `.html` → sandboxed iframe; `.evtx` →
-   eventviewer (python-evtx, cap `EVTX_MAX_EVENTS`); `.cab/.etl` → niet
-   uitgepakt, wel disabled in de tree.
+   eventviewer (python-evtx, cap `EVTX_MAX_EVENTS`); `.cab` → uitgepakt met
+   `cabextract` (in Docker-image; zonder cabextract, of bij corrupte/
+   over-budget cab → skipped/disabled in de tree, nooit een upload-fout);
+   `.etl` → niet uitgepakt, wel disabled in de tree.
 
 **Achtergrondjobs:** start via `spawn_job()` — houdt een sterke referentie
 vast (asyncio houdt alleen weak refs; anders kan een job mid-run GC'd worden

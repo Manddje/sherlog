@@ -49,8 +49,10 @@ en biedt drie dingen in één resultaatpagina:
    `.log` in de CMTrace-viewer, tekstbestanden (`.txt`, `.reg`, `.xml`, …)
    met UTF-16-detectie, `.html` in een sandboxed frame en `.evtx` in een
    eventviewer (tijd, event-ID, level, provider; gecapt op
-   `EVTX_MAX_EVENTS`). Binaire `.cab`/`.etl`-bestanden worden niet
-   uitgepakt maar wel (grijs) in de bestandsboom getoond.
+   `EVTX_MAX_EVENTS`). `.cab`-archieven (o.a. Defender `MpSupportFiles.cab`)
+   worden met `cabextract` uitgepakt en de inhoud is per type te bekijken;
+   binaire `.etl`-bestanden worden niet uitgepakt maar wel (grijs) in de
+   bestandsboom getoond.
 
 **Recente uploads** worden alleen in je eigen browser bewaard (localStorage) —
 niet op de server, geen cookies of login. De lijst staat op de homepage en de
