@@ -1415,12 +1415,12 @@ NAV = ("""<header><nav class="nav">
     <a class="navlink" href="/timeline">Timeline</a>
     <a class="navlink" href="/cmtrace">CMTrace</a>
     <a class="navlink" href="/diagnostics">Diagnostics</a>
-    <a class="navlink" href="#about"
-       onclick="document.getElementById('about').showModal();return false">About</a>
     <a class="navlink ext" href="https://payloadkit.app" target="_blank"
        rel="noopener" title="PayloadKit &mdash; browse &amp; build Apple
        Configuration Profiles for macOS, iOS and tvOS, by the maker of
        Sherlog">PayloadKit&nbsp;&#8599;</a>
+    <a class="navlink" href="#about"
+       onclick="document.getElementById('about').showModal();return false">About</a>
   </span>
 </nav>
 <dialog id="about" class="about" aria-label="About the maintainer of Sherlog">
