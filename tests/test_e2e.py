@@ -814,6 +814,34 @@ def test_dashboard_source_links(tmp_path):
     endpoints = by_label["Intune/Entra endpoints"]
     assert endpoints["status"] == "unknown"
     assert "src" not in endpoints
+    assert by_label["Installed apps"]["status"] == "unknown"
+
+
+def test_dashboard_installed_apps(tmp_path):
+    import app as app_module
+    (tmp_path / "Apps-IME").mkdir()
+    (tmp_path / "Apps-IME" / "installed-apps.txt").write_text(
+        "\n"
+        "DisplayName        DisplayVersion Publisher             InstallDate\n"
+        "-----------        -------------- ---------             -----------\n"
+        "7-Zip 23.01 (x64)  23.01          Igor Pavlov           20230815\n"
+        "Company Portal     11.2.205.0     Microsoft Corporation\n"
+        "\n"
+        "Notepad++ (64-bit) 8.6            Notepad++ Team        20240101\n",
+        encoding="utf-8")
+
+    apps = app_module.parse_installed_apps(
+        (tmp_path / "Apps-IME" / "installed-apps.txt").read_text())
+    assert len(apps) == 3
+    assert apps[0]["DisplayName"] == "7-Zip 23.01 (x64)"
+    assert apps[1]["Publisher"] == "Microsoft Corporation"
+
+    dash = app_module.build_dashboard(tmp_path)
+    by_label = {c["label"]: c for c in dash["checks"]}
+    card = by_label["Installed apps"]
+    assert card["status"] == "ok"
+    assert card["detail"].startswith("3 apps")
+    assert card["src"] == "Apps-IME/installed-apps.txt"
 
 
 def test_extract_zip_members_nested_and_policy(tmp_path):

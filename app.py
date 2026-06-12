@@ -561,6 +561,35 @@ def parse_service_status(text: str) -> Optional[bool]:
     return m.group(1) == "Running" if m else None
 
 
+def parse_installed_apps(text: str) -> List[dict]:
+    """Rows of the installed-apps Format-Table dump (header + dashes + rows).
+
+    Column boundaries come from the dash runs under the header; the last
+    column runs to the end of the line. Total: returns [] when the table
+    (or the whole file) is missing.
+    """
+    lines = text.splitlines()
+    for i, line in enumerate(lines):
+        if i == 0 or not re.match(r"^\s*-{2,}[\s-]*$", line):
+            continue
+        # The dash runs mark column *starts*; a column ends where the next
+        # one starts (the dashes themselves are only as wide as the header).
+        starts = [m.start() for m in re.finditer(r"-+", line)]
+        bounds = list(zip(starts, starts[1:] + [None]))
+        header = lines[i - 1]
+        keys = [header[s:e].strip() or f"col{n}"
+                for n, (s, e) in enumerate(bounds)]
+        apps = []
+        for row in lines[i + 1:]:
+            if not row.strip():
+                continue
+            vals = [row[s:e].strip() for s, e in bounds]
+            if any(vals):
+                apps.append(dict(zip(keys, vals)))
+        return apps
+    return []
+
+
 def parse_cert_overview(text: str) -> List[dict]:
     """Format-List blocks (blank-line separated) of the machine cert overview."""
     certs = []
@@ -586,6 +615,7 @@ _DASH_SOURCES = {
     "ime_service": ("Apps-IME/service-status.txt",),
     "certs": ("Identity/certs-machine-overview.txt",
               "Identity/certs-machine-overzicht.txt"),
+    "apps": ("Apps-IME/installed-apps.txt",),
 }
 
 
@@ -712,6 +742,19 @@ def build_dashboard(input_dir: Path) -> dict:
     else:
         checks.append({"label": "Machine certificates", "status": "unknown",
                        "detail": "no certificate overview found"})
+
+    apps = parse_installed_apps(read("apps"))
+    if apps:
+        checks.append({
+            "label": "Installed apps",
+            "status": "ok",
+            "detail": f"{len(apps)} apps — click for the inventory",
+            # No line: the card opens the inventory file itself.
+            **link("apps"),
+        })
+    else:
+        checks.append({"label": "Installed apps", "status": "unknown",
+                       "detail": "no app inventory found"})
 
     device = {
         "name": identity.get("Device", ""),
