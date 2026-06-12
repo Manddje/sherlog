@@ -85,6 +85,15 @@ def test_landing_shows_both_tools(client):
     assert 'rel="noopener"' in r.text
 
 
+def test_csp_allows_same_origin_fetch_and_images(client):
+    """The diag page polls /status with fetch() and the landing page loads
+    /static screenshots; both need an explicit CSP allowance because
+    default-src is 'none'."""
+    csp = client.get("/").headers["content-security-policy"]
+    assert "connect-src 'self'" in csp
+    assert "img-src 'self'" in csp
+
+
 def test_static_screenshots_served(client):
     r = client.get("/static/timeline.png")
     assert r.status_code == 200

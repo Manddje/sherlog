@@ -1040,8 +1040,8 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
             "Content-Security-Policy",
             "default-src 'none'; script-src 'unsafe-inline'; "
             "style-src 'unsafe-inline'; img-src 'self' data:; "
-            "frame-src 'self'; form-action 'self'; base-uri 'none'; "
-            "frame-ancestors 'self'",
+            "connect-src 'self'; frame-src 'self'; form-action 'self'; "
+            "base-uri 'none'; frame-ancestors 'self'",
         )
         return resp
 
