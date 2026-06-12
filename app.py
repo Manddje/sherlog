@@ -1387,6 +1387,21 @@ PAGE_CSS = """
   .recent .rm{ border:0; background:none; color:var(--muted); cursor:pointer;
     font-size:1rem; padding:.1rem .3rem; }
   .recent .rm:hover{ color:var(--fg); }
+  /* About-me dialog (nav "About"), same content as on payloadkit.app. */
+  dialog.about{ position:relative; border:1px solid var(--border); border-radius:12px;
+    padding:2rem; max-width:26rem; width:calc(100vw - 2.5rem);
+    box-shadow:0 10px 40px rgba(0,0,0,.15); color:var(--fg); }
+  dialog.about::backdrop{ background:rgba(15,23,42,.45); }
+  .about .close{ position:absolute; top:.55rem; right:.8rem; border:0; background:none;
+    font-size:1.35rem; line-height:1; color:var(--muted); cursor:pointer; }
+  .about .close:hover{ color:var(--fg); }
+  .about .head{ text-align:center; margin-bottom:1.1rem; }
+  .about .head img{ width:6.5rem; height:6.5rem; border-radius:50%; object-fit:cover;
+    display:block; margin:0 auto .8rem; border:1px solid var(--border); }
+  .about h2{ margin:0; font-size:1.2rem; }
+  .about .role{ color:var(--muted); font-size:.9rem; margin:.2rem 0 0; }
+  .about p{ font-size:.92rem; margin:.8rem 0; }
+  .about .links{ display:flex; justify-content:center; gap:.7rem; margin-top:1.25rem; }
 """
 
 _LOGO = ('<span class="dot"><svg width="15" height="15" viewBox="0 0 24 24" '
@@ -1400,12 +1415,45 @@ NAV = ("""<header><nav class="nav">
     <a class="navlink" href="/timeline">Timeline</a>
     <a class="navlink" href="/cmtrace">CMTrace</a>
     <a class="navlink" href="/diagnostics">Diagnostics</a>
+    <a class="navlink" href="#about"
+       onclick="document.getElementById('about').showModal();return false">About</a>
     <a class="navlink ext" href="https://payloadkit.app" target="_blank"
        rel="noopener" title="PayloadKit &mdash; browse &amp; build Apple
        Configuration Profiles for macOS, iOS and tvOS, by the maker of
        Sherlog">PayloadKit&nbsp;&#8599;</a>
   </span>
-</nav></header>""" % {"logo": _LOGO})
+</nav>
+<dialog id="about" class="about" aria-label="About the maintainer of Sherlog">
+  <button class="close" aria-label="Close"
+          onclick="this.closest('dialog').close()">&times;</button>
+  <div class="head">
+    <img src="/static/kris.jpeg" alt="Kris Mandemaker">
+    <h2>Kris Mandemaker</h2>
+    <p class="role">Senior Workspace Consultant @ Mand-IT</p>
+  </div>
+  <p>I'm a freelance Senior Workspace Consultant operating as Mand-IT,
+     based in Alkmaar, Netherlands.</p>
+  <p>My day job centres on the Microsoft ecosystem &mdash; Intune, Entra ID,
+     Azure Virtual Desktop, and modern workplace design.</p>
+  <p>Sherlog is a side project &mdash; I spend a lot of time digging through
+     Intune Management Extension logs and wanted the timeline analysis and a
+     CMTrace-style viewer one drag-and-drop away, right in the browser.</p>
+  <div class="links">
+    <a class="btn" href="https://www.linkedin.com/in/kris-mandemaker/"
+       target="_blank" rel="noopener">LinkedIn</a>
+    <a class="btn btn-ghost" href="https://mand-it.nl"
+       target="_blank" rel="noopener">Mand-IT</a>
+  </div>
+</dialog>
+<script>
+(function () {
+  // Close the about dialog on a backdrop click (native <dialog> only closes
+  // on Esc by itself).
+  var d = document.getElementById('about');
+  d.addEventListener('click', function (e) { if (e.target === d) d.close(); });
+})();
+</script>
+</header>""" % {"logo": _LOGO})
 
 FOOTER = ("""<footer>
   <span>Sherlog &middot; sherlog.nl

@@ -640,6 +640,18 @@ def test_landing_and_nav_show_diagnostics(client):
     assert 'href="/diagnostics"' in r.text
 
 
+def test_about_dialog_on_every_page(client):
+    for path in ("/", "/timeline", "/cmtrace", "/diagnostics"):
+        page = client.get(path)
+        assert 'id="about"' in page.text
+        assert "Kris Mandemaker" in page.text
+        assert "linkedin.com/in/kris-mandemaker" in page.text
+        assert "mand-it.nl" in page.text
+    photo = client.get("/static/kris.jpeg")
+    assert photo.status_code == 200
+    assert photo.headers["content-type"].startswith("image/")
+
+
 def test_diag_upload_requires_single_zip(client):
     r = client.post(
         "/diagnostics-analyze",
