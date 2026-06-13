@@ -1311,3 +1311,60 @@ def test_errorcodes_page(client):
 
 def test_nav_links_errorcodes(client):
     assert "/errorcodes" in client.get("/").text
+
+
+# --- RSOP settings -> Intune/CSP setting name (OMA-URI + Learn deep-link) ---
+
+_PM_REG = (
+    "[HKLM\\SOFTWARE\\Microsoft\\PolicyManager\\current\\device\\AboveLock]\r\n"
+    "\"AllowCortanaAboveLock\"=dword:00000000\r\n"
+    "\"AllowCortanaAboveLock_ProviderSet\"=dword:00000001\r\n"
+    "\"AllowCortanaAboveLock_WinningProvider\"=\"{11111111-1111-1111-1111-111111111111}\"\r\n"
+    "[HKLM\\SOFTWARE\\Microsoft\\PolicyManager\\current\\device\\ADMX_CredUI]\r\n"
+    "\"NoLocalPasswordResetQuestions_ProviderSet\"=dword:00000001\r\n"
+    "\"NoLocalPasswordResetQuestions_WinningProvider\"=\"{11111111-1111-1111-1111-111111111111}\"\r\n"
+    "\"NoLocalPasswordResetQuestions_ADMXInstanceData\"=\"Software\\\\X\"\r\n"
+)
+
+
+def test_policy_oma_uri_and_doc_url():
+    import app as app_module
+    assert app_module.policy_oma_uri("device", "AboveLock", "AllowCortanaAboveLock") == \
+        "./Device/Vendor/MSFT/Policy/Config/AboveLock/AllowCortanaAboveLock"
+    assert app_module.policy_oma_uri("user", "X", "Y").startswith("./User/")
+    assert app_module.policy_doc_url("AboveLock", "AllowCortanaAboveLock") == \
+        ("https://learn.microsoft.com/windows/client-management/mdm/"
+         "policy-csp-abovelock#allowcortanaabovelock")
+    assert app_module.policy_doc_url("ADMX_CredUI", "NoLocalPasswordResetQuestions") == ""
+
+
+def test_parse_policymanager_settings_couples_csp_name():
+    import app as app_module
+    rows = app_module.parse_policymanager_settings(app_module.parse_reg(_PM_REG))
+    assert len(rows) == 2
+    by = {r["setting"]: r for r in rows}
+    csp = by["AllowCortanaAboveLock"]
+    assert csp["value"] == "0"
+    assert csp["admx"] is False
+    assert csp["oma_uri"].endswith("/AboveLock/AllowCortanaAboveLock")
+    assert csp["doc_url"].endswith("#allowcortanaabovelock")
+    admx = by["NoLocalPasswordResetQuestions"]
+    assert admx["admx"] is True            # flagged via *_ADMXInstanceData
+    assert admx["doc_url"] == ""           # no reliable anchor for ADMX
+    assert admx["oma_uri"]                 # OMA-URI still built
+
+
+def test_build_dashboard_policy_settings_section(tmp_path):
+    import app as app_module
+    inp = tmp_path / "pkg"
+    _write_utf16(inp / "Registry" / "PolicyManager-Current.reg", _PM_REG)
+    dash = app_module.build_dashboard(inp)
+    sec = next(s for s in dash["sections"] if s["title"].startswith("Policy settings"))
+    assert sec["columns"][-1] == "OMA-URI / Intune name"
+    # The CSP setting carries a dict link cell; the ADMX one stays plain text.
+    cells = [row[-1] for row in sec["rows"]]
+    assert any(isinstance(c, dict) and "policy-csp-abovelock" in c["href"] for c in cells)
+    assert any(isinstance(c, str) and "(ADMX)" in c for c in cells)
+    html = app_module.render_dashboard_panel(dash)
+    assert 'href="https://learn.microsoft.com/windows/client-management/mdm/policy-csp-' in html
+    assert 'rel="noopener"' in html

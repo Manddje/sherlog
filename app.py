@@ -830,6 +830,64 @@ def parse_policymanager(reg: dict) -> dict:
             "provider_count": len(providers), "areas": sorted(areas.items())}
 
 
+_POLICY_DOC_BASE = "https://learn.microsoft.com/windows/client-management/mdm/policy-csp-"
+
+
+def policy_oma_uri(scope: str, area: str, setting: str) -> str:
+    """Canonical Policy CSP OMA-URI for a PolicyManager registry setting.
+
+    The registry scope segment is `device` (or `user`/a user SID); the CSP
+    path uses `Device`/`User`. This is the same name Intune uses in a custom
+    OMA-URI profile and in the Policy CSP reference.
+    """
+    csp_scope = "Device" if scope.lower() == "device" else "User"
+    return f"./{csp_scope}/Vendor/MSFT/Policy/Config/{area}/{setting}"
+
+
+def policy_doc_url(area: str, setting: str) -> str:
+    """Deep-link to the Policy CSP doc for a setting, or '' for ADMX-backed
+    areas (Group-Policy ingested — no reliable per-setting anchor)."""
+    if area.upper().startswith("ADMX_"):
+        return ""
+    return f"{_POLICY_DOC_BASE}{area.lower()}#{setting.lower()}"
+
+
+def parse_policymanager_settings(reg: dict, limit: int = 5000) -> List[dict]:
+    """One row per applied PolicyManager setting, coupled to its CSP name.
+
+    A setting is any `<Setting>_WinningProvider` value under
+    `…\\PolicyManager\\current\\<scope>\\<area>`; the bare `<Setting>` value
+    holds the data (absent for ADMX-node settings). Each row carries the
+    OMA-URI and a Microsoft Learn deep-link (the Intune setting name).
+    """
+    rx = re.compile(r"\\PolicyManager\\current\\([^\\]+)\\([^\\]+)$", re.IGNORECASE)
+    out: List[dict] = []
+    for key, vals in reg.items():
+        m = rx.search(key)
+        if not m:
+            continue
+        scope, area = m.group(1), m.group(2)
+        for name in vals:
+            if not name.endswith("_WinningProvider"):
+                continue
+            setting = name[: -len("_WinningProvider")]
+            admx = (area.upper().startswith("ADMX_")
+                    or f"{setting}_ADMXInstanceData" in vals)
+            value = vals.get(setting, "")
+            out.append({
+                "scope": scope, "area": area, "setting": setting,
+                "value": "" if value == "" else str(value),
+                "admx": admx,
+                "oma_uri": policy_oma_uri(scope, area, setting),
+                "doc_url": "" if admx else policy_doc_url(area, setting),
+            })
+            if len(out) >= limit:
+                out.sort(key=lambda r: (r["area"].lower(), r["setting"].lower()))
+                return out
+    out.sort(key=lambda r: (r["area"].lower(), r["setting"].lower()))
+    return out
+
+
 def parse_winhttp_proxy(text: str) -> dict:
     """WinHTTP proxy config from `netsh winhttp show proxy`."""
     direct = bool(re.search(r"Direct access \(no proxy", text, re.IGNORECASE))
@@ -1075,12 +1133,19 @@ def build_dashboard(input_dir: Path) -> dict:
                        f'areas, {pm["provider_count"]} provider(s)'),
             **link("policymanager"),
         })
+        # Per-setting table: couple each applied setting to its CSP/OMA-URI
+        # name with a deep-link to the Microsoft Learn Policy CSP doc.
+        pm_settings = parse_policymanager_settings(reg("policymanager"))
+        rows = []
+        for s in pm_settings[:2000]:
+            oma = ({"text": s["oma_uri"], "href": s["doc_url"]} if s["doc_url"]
+                   else s["oma_uri"] + ("  (ADMX)" if s["admx"] else ""))
+            rows.append([s["area"], s["setting"], s["value"], oma])
         sections.append({
-            "title": f'Policy areas ({pm["area_count"]})',
+            "title": f'Policy settings ({len(pm_settings)})',
             "src": src_of("policymanager"),
-            "columns": ["Area", "Settings"],
-            "rows": [[a, str(n)] for a, n in
-                     sorted(pm["areas"], key=lambda x: (-x[1], x[0]))],
+            "columns": ["Area", "Setting", "Value", "OMA-URI / Intune name"],
+            "rows": rows,
         })
 
     # Proactive Remediations / platform scripts (SideCarPolicies executions).
@@ -2660,9 +2725,18 @@ def render_dashboard_panel(dash: Optional[dict]) -> str:
                     f' role="link" tabindex="0"'
                     f' title="Open {attr_escape(src)}">source &rarr;</span>')
         head = "".join(f"<th>{html_escape(str(c))}</th>" for c in cols)
+
+        def render_cell(cell) -> str:
+            # A dict cell {text, href} becomes an external link (e.g. the
+            # Microsoft Learn deep-link for a policy setting); else plain text.
+            if isinstance(cell, dict) and cell.get("href"):
+                return (f'<td><a href="{attr_escape(str(cell["href"]))}"'
+                        f' target="_blank" rel="noopener">'
+                        f'{html_escape(str(cell.get("text", "")))}</a></td>')
+            return f"<td>{html_escape(str(cell))}</td>"
+
         body = "".join(
-            "<tr>" + "".join(f"<td>{html_escape(str(cell))}</td>"
-                             for cell in row) + "</tr>"
+            "<tr>" + "".join(render_cell(cell) for cell in row) + "</tr>"
             for row in rows)
         parts.append(
             f'<details class="section"><summary>'
