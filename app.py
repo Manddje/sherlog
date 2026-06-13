@@ -25,6 +25,9 @@ Configuration (env, with safe defaults):
                           Microsoft Graph settings catalog. Off by default.
   CSP_NAMES_CACHE         default <JOBS_DIR>/../csp-names.json (catalog cache)
   CSP_NAMES_TTL_HOURS     default 720 (re-fetch the catalog after this age)
+  INBOX_DIR               default = JOBS_DIR; storage for device drop-off
+                          packages. Mount a persistent volume here to keep them
+                          across redeploys (and out of the retention cleanup).
   ENABLE_UPLOAD_API       default off; enables /api/diagnostics + /inbox so an
                           Intune-deployed collector can drop off packages
   UPLOAD_TOKEN_MIN_LEN    default 24 (minimum length of a self-chosen token)
@@ -87,6 +90,11 @@ SCRIPT_TIMEOUT_SECONDS = int(os.environ.get("SCRIPT_TIMEOUT_SECONDS", "300"))
 # by many concurrent uploads (each run is CPU/memory heavy).
 JOB_CONCURRENCY = max(1, int(os.environ.get("JOB_CONCURRENCY", "2")))
 JOBS_DIR = Path(os.environ.get("JOBS_DIR", "/data/jobs"))
+# Device drop-off packages (source=api) are stored here instead of JOBS_DIR.
+# Point this at a persistent Coolify volume to keep them across redeploys; when
+# distinct from JOBS_DIR they are never touched by the retention cleanup. Default
+# = JOBS_DIR (drop-off behaves like any other job: ephemeral).
+INBOX_DIR = Path(os.environ.get("INBOX_DIR", str(JOBS_DIR)))
 APP_USER = os.environ.get("APP_USER", "")
 APP_PASSWORD = os.environ.get("APP_PASSWORD", "")
 # Cap rows rendered by the CMTrace log viewer so a large upload can't build a
@@ -152,7 +160,29 @@ def token_hash(raw: str) -> str:
 
 
 def job_dir(job_id: str) -> Path:
-    return JOBS_DIR / job_id
+    """Resolve a job's directory. New ephemeral jobs live under JOBS_DIR; device
+    drop-off jobs may live under a distinct persistent INBOX_DIR. Prefer an
+    existing location so every read path works regardless of where it was made."""
+    p = JOBS_DIR / job_id
+    if INBOX_DIR != JOBS_DIR and not p.exists():
+        q = INBOX_DIR / job_id
+        if q.exists():
+            return q
+    return p
+
+
+def iter_job_dirs():
+    """Yield every job directory across JOBS_DIR and (if distinct) INBOX_DIR."""
+    seen = set()
+    for root in (JOBS_DIR, INBOX_DIR):
+        try:
+            children = list(root.iterdir())
+        except OSError:
+            continue
+        for child in children:
+            if child.is_dir() and child.name not in seen:
+                seen.add(child.name)
+                yield child
 
 
 def status_path(job_id: str) -> Path:
@@ -1807,14 +1837,10 @@ def fail_interrupted_jobs() -> int:
     crash) any job still queued/running can never finish, and its result
     page would poll forever.
     """
-    if not JOBS_DIR.is_dir():
-        return 0
     msg = ("The analysis was interrupted by an app restart. "
            "Please upload again.")
     failed = 0
-    for child in JOBS_DIR.iterdir():
-        if not child.is_dir():
-            continue
+    for child in iter_job_dirs():
         status = read_status(child.name)
         if not status:
             continue
@@ -1836,6 +1862,8 @@ def fail_interrupted_jobs() -> int:
 
 
 def cleanup_old_jobs() -> int:
+    # Only JOBS_DIR is swept; a distinct INBOX_DIR (device drop-off) is left
+    # untouched so those packages persist across redeploys.
     if not JOBS_DIR.is_dir():
         return 0
     cutoff = time.time() - JOB_RETENTION_HOURS * 3600
@@ -1880,6 +1908,7 @@ def spawn_job(coro) -> None:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     JOBS_DIR.mkdir(parents=True, exist_ok=True)
+    INBOX_DIR.mkdir(parents=True, exist_ok=True)
     fail_interrupted_jobs()
     if not AUTH_ENABLED:
         log.warning("AUTH DISABLED: APP_USER/APP_PASSWORD not both set. App is OPEN.")
@@ -4042,13 +4071,10 @@ async def diagnostics_analyze(request: Request) -> Response:
 def _count_api_jobs() -> int:
     """How many drop-off (source=api) jobs currently exist on disk."""
     n = 0
-    try:
-        for child in JOBS_DIR.iterdir():
-            st = read_status(child.name) if child.is_dir() else None
-            if st and st.get("source") == "api":
-                n += 1
-    except OSError:
-        pass
+    for child in iter_job_dirs():
+        st = read_status(child.name)
+        if st and st.get("source") == "api":
+            n += 1
     return n
 
 
@@ -4077,7 +4103,8 @@ async def api_diagnostics(request: Request) -> Response:
 
     device = (request.headers.get("X-Device-Name") or "device").strip()[:128]
     job_id = uuid.uuid4().hex
-    base = job_dir(job_id)
+    # Drop-off packages go to the (optionally persistent) inbox dir, not JOBS_DIR.
+    base = INBOX_DIR / job_id
     input_dir = base / "input"
     output_dir = base / "output"
     tmp_dir = base / "tmp"
@@ -4123,13 +4150,7 @@ def list_inbox_jobs(token: str) -> List[dict]:
     """Drop-off jobs whose stored token hash matches `token`, newest first."""
     want = token_hash(token)
     rows = []
-    try:
-        children = list(JOBS_DIR.iterdir())
-    except OSError:
-        return []
-    for child in children:
-        if not child.is_dir():
-            continue
+    for child in iter_job_dirs():
         st = read_status(child.name)
         if not st or st.get("source") != "api":
             continue
@@ -4214,9 +4235,11 @@ _INBOX_FORM = """
           <li>Copy or download the script above (your token is already in it).</li>
           <li>Intune admin center &rarr; <strong>Devices</strong> &rarr;
               <strong>Scripts and remediations</strong> &rarr; <strong>Create</strong>.</li>
-          <li>Paste the script as the <strong>Remediation script</strong> (no
-              detection script needed for on-demand; or add a detection that always
-              <code>exit 1</code> to force it on assignment).</li>
+          <li>Paste the script above as the <strong>Remediation script</strong>.
+              Intune always wants a <strong>Detection script</strong> too &mdash;
+              use this trigger so the remediation runs:
+              <pre class="scriptbox">Write-Output "collect"
+exit 1   # 1 = run remediation; 0 = skip</pre></li>
           <li>Settings: <strong>Run script in 64-bit PowerShell</strong> =
               <code>Yes</code>; <strong>Run using logged-on credentials</strong> =
               <code>No</code> (runs as SYSTEM); signature check = <code>No</code>.</li>

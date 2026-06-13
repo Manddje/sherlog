@@ -113,6 +113,7 @@ Alle configuratie loopt via environment variables met veilige defaults:
 | `CSP_NAMES_CACHE`        | `<JOBS_DIR>/../csp-names.json` | Cachebestand voor de (tenant-onafhankelijke) catalog. Mag ook vooraf gegenereerd worden. |
 | `CSP_NAMES_TTL_HOURS`    | `720`   | Maximale leeftijd van de cache voordat de catalog opnieuw wordt opgehaald.                     |
 | `ENABLE_UPLOAD_API`      | *(uit)* | Zet de device drop-off API (`/api/diagnostics`) + `/inbox` aan. Default uit.                   |
+| `INBOX_DIR`              | `=JOBS_DIR` | Opslag voor device drop-off packages. Wijs naar een persistent Coolify-volume om ze over redeploys te bewaren; als die verschilt van `JOBS_DIR` blijven ze buiten de 24u-cleanup. |
 | `UPLOAD_TOKEN_MIN_LEN`   | `24`    | Minimale lengte van een (zelfgekozen) upload-token.                                            |
 | `UPLOAD_API_MAX_JOBS`    | `2000`  | Globale rem op het aantal drop-off-jobs (tegen disk-misbruik); daarboven `429`.                |
 
@@ -144,10 +145,22 @@ token zelf — en houdt geen token-register bij.
 2. Open [`Remediate-CollectToSherlog.ps1`](Remediate-CollectToSherlog.ps1), vul
    `$SherlogBase` en `$UploadToken` in.
 3. Intune-admincenter → **Devices → Scripts and remediations** → custom script
-   package (alleen remediation-script nodig), **Run in 64-bit PowerShell: Yes**.
+   package, **Run in 64-bit PowerShell: Yes**, **logged-on credentials: No**.
+   - **Remediation script**: `Remediate-CollectToSherlog.ps1`.
+   - **Detection script**: Intune vereist er altijd één. Voor on-demand /
+     altijd-verzamelen volstaat een trigger die "issue gevonden" meldt zodat de
+     remediation draait:
+     ```powershell
+     # Detect-CollectToSherlog.ps1
+     Write-Output "collect"
+     exit 1   # 1 = run remediation; gebruik 'exit 0' om over te slaan
+     ```
 4. Selecteer een device → **Run remediation** (on-demand). Het script draait als
    SYSTEM, verzamelt het slimme `-Remote`-profiel en POST't de zip.
 5. Open `<sherlog>/inbox?token=<token>` en klik de device-upload open.
+
+> De detection-/remediation-scripts staan ook kant-en-klaar (met je token al
+> ingevuld) op de `/inbox`-pagina nadat je een token genereert.
 
 Direct vanaf de commandline kan ook:
 
@@ -155,6 +168,11 @@ Direct vanaf de commandline kan ook:
 .\Collect-IntuneDiagnostics.ps1 -Remote `
     -UploadUrl 'https://sherlog.nl/api/diagnostics' -UploadToken '<token>'
 ```
+
+**Persistent opslag.** Wijs `INBOX_DIR` naar een persistent Coolify-volume
+(bijv. `/data/inbox`) zodat de geüploade packages elke redeploy overleven en
+buiten de 24u-cleanup vallen. Gewone Timeline/CMTrace-uploads blijven wegwerp in
+`JOBS_DIR`.
 
 **Security & privacy.** Diagnostics-packages bevatten vertrouwelijke gegevens
 (IME-logs, identity, certificaten). Voor vertrouwelijke logs heeft een

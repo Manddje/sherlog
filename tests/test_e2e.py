@@ -1506,6 +1506,36 @@ def test_api_token_too_short(upload_client):
     assert r.status_code == 401
 
 
+def test_dropoff_uses_persistent_inbox_dir(tmp_path, monkeypatch):
+    """Drop-off packages land in a distinct INBOX_DIR and survive the cleanup
+    that sweeps JOBS_DIR."""
+    jobs = tmp_path / "jobs"
+    inbox = tmp_path / "inbox"
+    monkeypatch.setenv("JOBS_DIR", str(jobs))
+    monkeypatch.setenv("INBOX_DIR", str(inbox))
+    monkeypatch.setenv("ENABLE_UPLOAD_API", "1")
+    monkeypatch.setenv("APP_USER", "")
+    monkeypatch.setenv("APP_PASSWORD", "")
+    import importlib
+    import app as app_module
+    importlib.reload(app_module)
+    from fastapi.testclient import TestClient
+    with TestClient(app_module.app) as c:
+        r = c.post("/api/diagnostics", content=_diag_zip(),
+                   headers={"X-Upload-Token": _TOK, "X-Device-Name": "PC01",
+                            "Content-Type": "application/zip"})
+        job_id = r.json()["job_id"]
+        assert (inbox / job_id).is_dir()
+        assert not (jobs / job_id).exists()
+        assert c.get(f"/result/{job_id}").status_code == 200
+        # Backdate it and run the retention sweep: it must remain.
+        old = time.time() - 10 ** 7
+        os.utime(inbox / job_id, (old, old))
+        app_module.cleanup_old_jobs()
+        assert (inbox / job_id).is_dir()
+    importlib.reload(app_module)
+
+
 def test_inbox_form_has_generator(upload_client):
     r = upload_client.get("/inbox")
     assert r.status_code == 200
