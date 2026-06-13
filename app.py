@@ -2509,7 +2509,7 @@ DIAG_PAGE = """<!doctype html>
 <style>%(css)s
   .topbar{display:flex;align-items:center;justify-content:space-between;
     padding:.6rem 1.25rem;border-bottom:1px solid var(--border);background:var(--bg)}
-  .panels{max-width:1100px;margin:0 auto;padding:.9rem 1.25rem;display:flex;
+  .panels{padding:.9rem 1.25rem;display:flex;
     flex-direction:column;gap:.8rem}
   .panels>h2{margin:.2rem 0 0;font-size:1.15rem}
   .devline{color:var(--muted);font-size:.9rem;margin:0}
