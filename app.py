@@ -2230,16 +2230,17 @@ LANDING_PAGE = """<!doctype html>
 <body>
   %(nav)s
   <section class="hero">
-    <h1>Analyze Intune Management Extension logs</h1>
-    <p>Sherlog is a free troubleshooting tool for <strong>Intune
-       administrators</strong>: upload the IME logs of a managed Windows
-       device and see what actually happened &mdash; app installs, scripts
-       and errors &mdash; without reading raw logs line by line.</p>
+    <h1>Troubleshoot Intune-managed Windows devices</h1>
+    <p>Sherlog is a free, browser-based toolkit for <strong>Intune
+       administrators</strong>: upload IME logs or a full diagnostics package
+       and see what actually happened &mdash; app installs, scripts, errors,
+       device health and applied policies &mdash; without reading raw logs
+       line by line.</p>
     <form class="cta" method="post" action="/demo">
       <button class="btn" type="submit">Try it with sample logs</button>
     </form>
-    <p class="trust">No account needed &middot; uploads are deleted after
-       %(retention)d hours</p>
+    <p class="trust">No account needed &middot; runs in your browser &middot;
+       uploads are deleted after %(retention)d hours</p>
   </section>
   <main class="wrap">
     <div class="cards">
@@ -2273,12 +2274,26 @@ LANDING_PAGE = """<!doctype html>
         <h2>Diagnostics Package</h2>
         <p class="when">&ldquo;Is this device healthy at all?&rdquo;</p>
         <p class="desc">Upload the zip from
-          <code>Collect-IntuneDiagnostics.ps1</code> and get device health
-          checks, an automatic timeline analysis and a viewer for every file
-          in the package &mdash; including event logs and registry
-          exports.</p>
+          <code>Collect-IntuneDiagnostics.ps1</code> for a full picture: a
+          <strong>device health dashboard</strong> (Entra join, PRT, MDM
+          enrollment, IME service, certificates, endpoint connectivity),
+          <strong>Win32 app deployment status</strong>, the
+          <strong>applied policies (RSOP)</strong> mapped to their Intune /
+          OMA-URI setting names, scripts &amp; remediations, an automatic
+          timeline, and a viewer for every file (event logs, registry,
+          <code>.cab</code>).</p>
         <a class="btn" href="/diagnostics">Open Diagnostics</a>
       </div>
+      <div class="card">
+        <h2>Error codes</h2>
+        <p class="when">&ldquo;What does 0x87D1041C mean?&rdquo;</p>
+        <p class="desc">A searchable reference of every Intune / Win32,
+          Windows, network, Delivery Optimization and MSI error code Sherlog
+          recognises &mdash; each with a plain-language explanation. Result
+          pages link straight into it.</p>
+        <a class="btn" href="/errorcodes">Browse error codes</a>
+      </div>
+      %(dropoff)s
     </div>
     <section class="explain">
       <h2>How it works</h2>
@@ -2306,6 +2321,8 @@ LANDING_PAGE = """<!doctype html>
         <li>You have an <code>IntuneDiag-*.zip</code> from the collector
           script, or want the full device picture &rarr;
           <a href="/diagnostics">Diagnostics Package</a></li>
+        <li>You just need to look up an error code &rarr;
+          <a href="/errorcodes">Error codes</a></li>
       </ul>
     </section>
     %(recent)s
@@ -3613,9 +3630,18 @@ def _render_records_page(filename: str, head: str, rows: List[str],
 
 @app.get("/", response_class=HTMLResponse)
 async def index() -> HTMLResponse:
+    dropoff = ("""<div class="card">
+        <h2>Device drop-off (Intune)</h2>
+        <p class="when">&ldquo;Collect from a device without touching it.&rdquo;</p>
+        <p class="desc">Deploy the collector as an Intune remediation; targeted
+          devices upload their diagnostics straight to your token-scoped
+          <a href="/inbox">inbox</a> &mdash; no manual zipping or file
+          transfer.</p>
+        <a class="btn" href="/inbox">Open inbox</a>
+      </div>""" if ENABLE_UPLOAD_API else "")
     return HTMLResponse(LANDING_PAGE % {
         "css": PAGE_CSS, "nav": NAV, "footer": FOOTER, "recent": HISTORY_SECTION,
-        "retention": JOB_RETENTION_HOURS,
+        "retention": JOB_RETENTION_HOURS, "dropoff": dropoff,
     })
 
 
