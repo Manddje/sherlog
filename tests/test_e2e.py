@@ -1152,3 +1152,162 @@ def test_parse_evtx_file_sample():
     records, _truncated = app_module.parse_evtx_file(TESTDATA / "sample.evtx")
     assert records
     assert any(r["event_id"] for r in records)
+
+
+# --- Diagnostics-package registry/network parsers (Intune Debug Toolkit
+#     inspired dashboard cards) --------------------------------------------
+
+_WIN32_REG = (
+    "Windows Registry Editor Version 5.00\r\n\r\n"
+    "[HKEY_LOCAL_MACHINE\\SOFTWARE\\Microsoft\\IntuneManagementExtension"
+    "\\Win32Apps\\{11111111-1111-1111-1111-111111111111}"
+    "\\{aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa}_1]\r\n"
+    "\"Intent\"=\"3\"\r\n\r\n"
+    "[HKEY_LOCAL_MACHINE\\SOFTWARE\\Microsoft\\IntuneManagementExtension"
+    "\\Win32Apps\\{11111111-1111-1111-1111-111111111111}"
+    "\\{aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa}_1\\ComplianceStateMessage]\r\n"
+    "\"ComplianceStateMessage\"=\"{\\\"ComplianceState\\\":1,\\\"DesiredState\\\":2,"
+    "\\\"ErrorCode\\\":null}\"\r\n\r\n"
+    "[HKEY_LOCAL_MACHINE\\SOFTWARE\\Microsoft\\IntuneManagementExtension"
+    "\\Win32Apps\\{11111111-1111-1111-1111-111111111111}"
+    "\\{aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa}_1\\EnforcementStateMessage]\r\n"
+    "\"EnforcementStateMessage\"=\"{\\\"EnforcementState\\\":1000,\\\"ErrorCode\\\":null}\"\r\n\r\n"
+    "[HKEY_LOCAL_MACHINE\\SOFTWARE\\Microsoft\\IntuneManagementExtension"
+    "\\Win32Apps\\{11111111-1111-1111-1111-111111111111}"
+    "\\{bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb}_4\\ComplianceStateMessage]\r\n"
+    "\"ComplianceStateMessage\"=\"{\\\"ComplianceState\\\":4,\\\"ErrorCode\\\":-2016345060}\"\r\n\r\n"
+    "[HKEY_LOCAL_MACHINE\\SOFTWARE\\Microsoft\\IntuneManagementExtension"
+    "\\Win32Apps\\{11111111-1111-1111-1111-111111111111}"
+    "\\{bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb}_4\\EnforcementStateMessage]\r\n"
+    "\"EnforcementStateMessage\"=\"{\\\"EnforcementState\\\":3000,\\\"ErrorCode\\\":-2016345060}\"\r\n"
+)
+
+
+def test_parse_reg_strings_and_dwords():
+    import app as app_module
+    reg = app_module.parse_reg(
+        "[HKLM\\Test\\Key]\r\n\"S\"=\"a\\\\b \\\"q\\\"\"\r\n\"D\"=dword:0000001f\r\n")
+    assert reg["HKLM\\Test\\Key"]["S"] == 'a\\b "q"'
+    assert reg["HKLM\\Test\\Key"]["D"] == 31
+
+
+def test_parse_reg_total_on_garbage():
+    import app as app_module
+    assert app_module.parse_reg("") == {}
+    assert app_module.parse_reg("no keys here\n=oops\n") == {}
+
+
+def test_hresult_code_normalizes():
+    import app as app_module
+    assert app_module.hresult_code(-2016345060) == "0x87D1041C"
+    assert app_module.hresult_code(None) == ""
+    assert app_module.hresult_code(0) == ""
+    assert app_module.hresult_code("1603") == "1603"   # decimal MSI key
+
+
+def test_parse_win32apps_joins_state_subkeys():
+    import app as app_module
+    apps = app_module.parse_win32apps(app_module.parse_reg(_WIN32_REG))
+    assert len(apps) == 2
+    failed = [a for a in apps if a["failed"]]
+    assert len(failed) == 1
+    bad = failed[0]
+    assert bad["error_code"] == "0x87D1041C"
+    assert bad["error_text"]                       # mapped to an explanation
+    assert bad["enforcement"] == "Failed"
+    ok = [a for a in apps if not a["failed"]][0]
+    assert ok["compliance"] == "Installed"
+    assert ok["enforcement"] == "Succeeded"
+
+
+def test_parse_enrollments_flags_intune():
+    import app as app_module
+    reg = app_module.parse_reg(
+        "[HKLM\\SOFTWARE\\Microsoft\\Enrollments\\{ee111111-1111-1111-1111-111111111111}]\r\n"
+        "\"UPN\"=\"user@contoso.com\"\r\n\"ProviderID\"=\"MS DM Server\"\r\n"
+        "\"EnrollmentState\"=dword:00000001\r\n"
+        "\"DiscoveryServiceFullURL\"=\"https://enrollment.manage.microsoft.com/x\"\r\n")
+    enrolls = app_module.parse_enrollments(reg)
+    assert len(enrolls) == 1
+    assert enrolls[0]["is_intune"] is True
+    assert enrolls[0]["upn"] == "user@contoso.com"
+
+
+def test_parse_policymanager_counts_settings():
+    import app as app_module
+    reg = app_module.parse_reg(
+        "[HKLM\\SOFTWARE\\Microsoft\\PolicyManager\\current\\device\\AboveLock]\r\n"
+        "\"AllowX_WinningProvider\"=\"{p1}\"\r\n"
+        "[HKLM\\SOFTWARE\\Microsoft\\PolicyManager\\current\\device\\Bitlocker]\r\n"
+        "\"A_WinningProvider\"=\"{p1}\"\r\n\"B_WinningProvider\"=\"{p2}\"\r\n")
+    pm = app_module.parse_policymanager(reg)
+    assert pm["area_count"] == 2
+    assert pm["setting_count"] == 3
+    assert pm["provider_count"] == 2
+
+
+def test_parse_sidecar_scripts():
+    import app as app_module
+    reg = app_module.parse_reg(
+        "[HKLM\\SOFTWARE\\Microsoft\\IntuneManagementExtension\\SideCarPolicies"
+        "\\Scripts\\Execution\\{cc111111-1111-1111-1111-111111111111}"
+        "\\{dd222222-2222-2222-2222-222222222222}_2]\r\n"
+        "\"LastExecution\"=\"5/27/2026 12:50:13 PM\"\r\n")
+    scripts = app_module.parse_sidecar_scripts(reg)
+    assert len(scripts) == 1
+    assert scripts[0]["last_execution"].startswith("5/27/2026")
+
+
+def test_parse_winhttp_proxy_and_firewall():
+    import app as app_module
+    assert app_module.parse_winhttp_proxy(
+        "Current WinHTTP proxy settings:\r\n\r\n    Direct access (no proxy server).\r\n"
+    )["direct"] is True
+    p = app_module.parse_winhttp_proxy("    Proxy Server(s) :  proxy:8080\r\n")
+    assert p["direct"] is False and p["server"] == "proxy:8080"
+    fw = app_module.parse_firewall_profiles(
+        "Domain Profile Settings:\r\nState                                 ON\r\n"
+        "Public Profile Settings:\r\nState                                 OFF\r\n")
+    assert {f["profile"]: f["on"] for f in fw} == {"Domain": True, "Public": False}
+
+
+def test_count_event_issues():
+    import app as app_module
+    txt = ("LevelDisplayName : Error\n...\nLevelDisplayName : Warning\n"
+           "LevelDisplayName : Error\nLevelDisplayName : Information\n")
+    assert app_module.count_event_issues(txt) == {"errors": 2, "warnings": 1}
+
+
+def _write_utf16(path, text):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(text.encode("utf-16-le"))   # BOM-less; reader sniffs NULs
+
+
+def test_build_dashboard_adds_registry_cards(tmp_path):
+    import app as app_module
+    inp = tmp_path / "pkg"
+    _write_utf16(inp / "Registry" / "Win32Apps.reg", _WIN32_REG)
+    _write_utf16(inp / "Registry" / "Enrollments.reg",
+                 "[HKLM\\SOFTWARE\\Microsoft\\Enrollments\\{ee111111-1111-1111-1111-111111111111}]\r\n"
+                 "\"UPN\"=\"u@c.com\"\r\n\"DiscoveryServiceFullURL\"=\"https://x.manage.microsoft.com/y\"\r\n")
+    (inp / "EventLogs").mkdir(parents=True, exist_ok=True)
+    (inp / "EventLogs" / "DeviceManagement-Admin-ErrorsWarnings.txt").write_text(
+        "LevelDisplayName : Error\nLevelDisplayName : Warning\n", encoding="utf-8")
+    dash = app_module.build_dashboard(inp)
+    labels = {c["label"]: c for c in dash["checks"]}
+    assert labels["Win32 apps"]["status"] == "bad"     # one app has an error
+    assert labels["Enrollment"]["status"] == "ok"
+    assert labels["MDM event log"]["status"] == "bad"
+    titles = [s["title"] for s in dash["sections"]]
+    assert any("Win32 app deployment status" in t for t in titles)
+
+
+def test_errorcodes_page(client):
+    r = client.get("/errorcodes")
+    assert r.status_code == 200
+    assert "0x87D1041C" in r.text
+    assert 'class="ec"' in r.text
+
+
+def test_nav_links_errorcodes(client):
+    assert "/errorcodes" in client.get("/").text

@@ -629,6 +629,237 @@ def parse_cert_overview(text: str) -> List[dict]:
     return certs
 
 
+# --- Registry (.reg export) parsing -----------------------------------------
+# `reg export` writes UTF-16LE text in a stable, simple grammar:
+#   [Full\Key\Path]
+#   "ValueName"=<typed-data>      (or @=... for the default value)
+# Long values wrap with a trailing backslash. We only need string and dword
+# data for the dashboards; other types keep their raw right-hand side.
+
+_REG_KEY_RE = re.compile(r"^\[(.+)\]\s*$")
+_GUID_TAIL = r"\{?[0-9a-fA-F-]{36}\}?"
+
+
+def _reg_unescape(s: str) -> str:
+    return s.replace('\\\\', '\\').replace('\\"', '"')
+
+
+def parse_reg(text: str) -> "dict[str, dict[str, object]]":
+    """Parse a `reg export` dump into {key_path: {value_name: data}}.
+
+    Total: malformed lines are skipped, never raised. String values are
+    unescaped; `dword:` becomes an int; everything else stays a raw string.
+    Backslash-continued lines (hex blobs wrap) are joined first.
+    """
+    out: "dict[str, dict[str, object]]" = {}
+    cur: Optional[dict] = None
+    joined: List[str] = []
+    for line in text.replace("\r\n", "\n").split("\n"):
+        if joined and joined[-1].endswith("\\"):
+            joined[-1] = joined[-1][:-1] + line.strip()
+        else:
+            joined.append(line)
+    for line in joined:
+        km = _REG_KEY_RE.match(line)
+        if km:
+            cur = out.setdefault(km.group(1), {})
+            continue
+        if cur is None or "=" not in line:
+            continue
+        name, _, rhs = line.partition("=")
+        name = name.strip()
+        if name != "@":
+            if name[:1] == '"' and name[-1:] == '"':
+                name = _reg_unescape(name[1:-1])
+            else:
+                continue
+        rhs = rhs.strip()
+        if rhs[:1] == '"':
+            cur[name] = _reg_unescape(rhs[1:-1] if rhs.endswith('"') else rhs[1:])
+        elif rhs.startswith("dword:"):
+            try:
+                cur[name] = int(rhs[6:], 16)
+            except ValueError:
+                cur[name] = rhs
+        else:
+            cur[name] = rhs
+    return out
+
+
+def _json_or_empty(s) -> dict:
+    if not isinstance(s, str) or not s.strip():
+        return {}
+    try:
+        v = json.loads(s)
+        return v if isinstance(v, dict) else {}
+    except ValueError:
+        return {}
+
+
+def hresult_code(err) -> str:
+    """Normalize an Intune ErrorCode (decimal int/string) to the 0xXXXXXXXX
+    key form used in ERROR_CODES; '' for null/zero/empty/non-numeric."""
+    if err in (None, "", "null", 0, "0"):
+        return ""
+    try:
+        n = int(err)
+    except (TypeError, ValueError):
+        return ""
+    if n == 0:
+        return ""
+    if str(n) in ERROR_CODES:          # MSI exit codes are decimal keys
+        return str(n)
+    return f"0x{n & 0xFFFFFFFF:08X}"
+
+
+# Intune Win32 app state enums (as written to the IME registry).
+_ENFORCEMENT_STATE = {
+    1000: "Succeeded", 1001: "Succeeded (already compliant)",
+    2000: "In progress", 3000: "Failed", 5000: "Error",
+}
+_COMPLIANCE_STATE = {
+    0: "Unknown", 1: "Installed", 2: "Not installed",
+    3: "Conflict", 4: "Error", 5: "Not applicable",
+}
+# An app-instance key is `…\Win32Apps\<userGUID>\<appGUID>_<intent>`; the
+# ComplianceStateMessage / EnforcementStateMessage JSON live in same-named
+# child keys (value name == subkey name).
+_WIN32_APP_KEY_RE = re.compile(rf"(?P<base>\\Win32Apps\\[^\\]+\\(?P<app>{_GUID_TAIL})_\d+)$")
+_WIN32_STATE_RE = re.compile(
+    rf"\\Win32Apps\\[^\\]+\\{_GUID_TAIL}_\d+\\(ComplianceStateMessage|EnforcementStateMessage)$")
+
+
+def parse_win32apps(reg: dict) -> List[dict]:
+    """One row per tracked Win32 app from a Win32Apps.reg dump.
+
+    Joins each app-instance key with its ComplianceStateMessage /
+    EnforcementStateMessage child keys (the JSON the IME writes) and surfaces
+    the state + deployment error code.
+    """
+    entries: "dict[str, dict]" = {}
+
+    def slot(base: str, app: str) -> dict:
+        return entries.setdefault(base, {"app_id": app.strip("{}"),
+                                         "comp": {}, "enf": {}})
+
+    for key, vals in reg.items():
+        m = _WIN32_APP_KEY_RE.search(key)
+        if m:
+            slot(key, m.group("app"))
+            continue
+        sm = _WIN32_STATE_RE.search(key)
+        if not sm:
+            continue
+        base = key[:sm.start(1) - 1]  # strip the trailing "\<StateName>"
+        app = re.search(_GUID_TAIL + r"_\d+$", base)
+        e = slot(base, app.group(0) if app else "")
+        data = _json_or_empty(vals.get(sm.group(1)))
+        e["comp" if sm.group(1).startswith("Compliance") else "enf"] = data
+
+    apps = []
+    for e in entries.values():
+        comp, enf = e["comp"], e["enf"]
+        code = hresult_code(enf.get("ErrorCode")) or hresult_code(comp.get("ErrorCode"))
+        cs, es = comp.get("ComplianceState"), enf.get("EnforcementState")
+        apps.append({
+            "app_id": e["app_id"],
+            "compliance": _COMPLIANCE_STATE.get(cs, "" if cs is None else str(cs)),
+            "enforcement": _ENFORCEMENT_STATE.get(es, "" if es is None else str(es)),
+            "error_code": code,
+            "error_text": ERROR_CODES.get(code, "") if code else "",
+            "failed": cs == 4 or es in (3000, 5000) or bool(code),
+        })
+    apps.sort(key=lambda a: (not a["failed"], a["app_id"]))
+    return apps
+
+
+def parse_enrollments(reg: dict) -> List[dict]:
+    """MDM enrollment entries (the GUID subkeys directly under Enrollments)."""
+    out = []
+    rx = re.compile(rf"\\Enrollments\\({_GUID_TAIL})$")
+    for key, vals in reg.items():
+        m = rx.search(key)
+        if not m:
+            continue
+        disc = str(vals.get("DiscoveryServiceFullURL", ""))
+        upn = vals.get("UPN", "")
+        provider = vals.get("ProviderID", "")
+        if not (upn or provider or disc):
+            continue
+        out.append({
+            "id": m.group(1).strip("{}"),
+            "upn": str(upn), "provider": str(provider),
+            "state": str(vals.get("EnrollmentState", "")),
+            "discovery": disc,
+            "is_intune": "manage.microsoft.com" in disc,
+        })
+    return out
+
+
+def parse_sidecar_scripts(reg: dict) -> List[dict]:
+    """Platform-script / Proactive-Remediation executions (SideCarPolicies)."""
+    out = []
+    rx = re.compile(
+        rf"\\SideCarPolicies\\Scripts\\Execution\\[^\\]+\\({_GUID_TAIL}_\d+)$")
+    for key, vals in reg.items():
+        m = rx.search(key)
+        if m:
+            out.append({"policy": m.group(1).strip("{}"),
+                        "last_execution": str(vals.get("LastExecution", ""))})
+    return out
+
+
+def parse_policymanager(reg: dict) -> dict:
+    """Summarize PolicyManager\\current\\<scope>\\<area> settings + providers."""
+    areas: "dict[str, int]" = {}
+    providers = set()
+    settings = 0
+    rx = re.compile(r"\\PolicyManager\\current\\[^\\]+\\([^\\]+)$", re.IGNORECASE)
+    for key, vals in reg.items():
+        m = rx.search(key)
+        if not m:
+            continue
+        names = [n for n in vals if n.endswith("_WinningProvider")]
+        if not names:
+            continue
+        area = m.group(1)
+        areas[area] = areas.get(area, 0) + len(names)
+        settings += len(names)
+        providers.update(str(vals[n]) for n in names)
+    return {"area_count": len(areas), "setting_count": settings,
+            "provider_count": len(providers), "areas": sorted(areas.items())}
+
+
+def parse_winhttp_proxy(text: str) -> dict:
+    """WinHTTP proxy config from `netsh winhttp show proxy`."""
+    direct = bool(re.search(r"Direct access \(no proxy", text, re.IGNORECASE))
+    m = re.search(r"Proxy Server\(s\)\s*:\s*(.+)", text, re.IGNORECASE)
+    return {"direct": direct, "server": (m.group(1).strip() if m else "")}
+
+
+def parse_firewall_profiles(text: str) -> List[dict]:
+    """State (ON/OFF) per firewall profile from `netsh advfirewall`."""
+    out, cur = [], None
+    for line in text.splitlines():
+        h = re.match(r"^(Domain|Private|Public)\s+Profile", line, re.IGNORECASE)
+        if h:
+            cur = h.group(1).capitalize()
+            continue
+        s = re.match(r"^State\s+(ON|OFF)\b", line.strip(), re.IGNORECASE)
+        if cur and s:
+            out.append({"profile": cur, "on": s.group(1).upper() == "ON"})
+            cur = None
+    return out
+
+
+def count_event_issues(text: str) -> dict:
+    """Tally Error/Warning rows in a *-ErrorsWarnings.txt Format-List dump."""
+    return {
+        "errors": len(re.findall(r"LevelDisplayName\s*:\s*Error", text, re.I)),
+        "warnings": len(re.findall(r"LevelDisplayName\s*:\s*Warning", text, re.I)),
+    }
+
+
 # The collector exists in an English and a Dutch variant; accept both names.
 _DASH_SOURCES = {
     "summary": ("_SUMMARY.txt", "_SAMENVATTING.txt"),
@@ -638,6 +869,12 @@ _DASH_SOURCES = {
     "certs": ("Identity/certs-machine-overview.txt",
               "Identity/certs-machine-overzicht.txt"),
     "apps": ("Apps-IME/installed-apps.txt",),
+    "win32apps": ("Registry/Win32Apps.reg",),
+    "ime_reg": ("Registry/IntuneManagementExtension.reg",),
+    "enrollments": ("Registry/Enrollments.reg",),
+    "policymanager": ("Registry/PolicyManager-Current.reg",),
+    "proxy": ("Network/winhttp-proxy.txt",),
+    "firewall": ("Network/firewall-profiles.txt",),
 }
 
 
@@ -778,13 +1015,132 @@ def build_dashboard(input_dir: Path) -> dict:
         checks.append({"label": "Installed apps", "status": "unknown",
                        "detail": "no app inventory found"})
 
+    # --- Registry/network-derived checks + detail tables --------------------
+    # Everything below parses files the collector already gathers but the
+    # original dashboard ignored. Each parser is total; a missing source just
+    # means the check is skipped (no card), never an error.
+    sections: List[dict] = []
+
+    def reg(key: str) -> dict:
+        text = read(key)
+        return parse_reg(text) if text else {}
+
+    def src_of(key: str) -> Optional[str]:
+        return (link(key) or {}).get("src")
+
+    # Win32 apps (Sherlog's core domain): per-app state + deployment error code.
+    w32 = parse_win32apps(reg("win32apps"))
+    if w32:
+        failed = [a for a in w32 if a["failed"]]
+        checks.append({
+            "label": "Win32 apps",
+            "status": "bad" if failed else "ok",
+            "detail": (f"{len(failed)} of {len(w32)} with errors" if failed
+                       else f"{len(w32)} tracked, all healthy"),
+            **link("win32apps"),
+        })
+        sections.append({
+            "title": f"Win32 app deployment status ({len(w32)})",
+            "src": src_of("win32apps"),
+            "columns": ["App ID", "Compliance", "Enforcement", "Error"],
+            "rows": [[a["app_id"], a["compliance"], a["enforcement"],
+                      (f'{a["error_code"]} — {a["error_text"]}' if a["error_text"]
+                       else a["error_code"])]
+                     for a in w32[:200]],
+        })
+    else:
+        checks.append({"label": "Win32 apps", "status": "unknown",
+                       "detail": "no Win32Apps registry export found"})
+
+    # MDM enrollment detail (UPN, provider) from the Enrollments hive.
+    enrolls = parse_enrollments(reg("enrollments"))
+    intune = next((e for e in enrolls if e["is_intune"]), None)
+    if enrolls:
+        checks.append({
+            "label": "Enrollment",
+            "status": "ok" if intune else "warn",
+            "detail": (f'{intune["upn"] or "device"} · state {intune["state"]}'
+                       if intune else f"{len(enrolls)} enrollment(s), none Intune"),
+            **link("enrollments"),
+        })
+
+    # PolicyManager / RSOP: how many settings landed and from how many
+    # providers (the winning-provider model, like GPResult).
+    pm = parse_policymanager(reg("policymanager"))
+    if pm["setting_count"]:
+        checks.append({
+            "label": "Policies (RSOP)",
+            "status": "ok",
+            "detail": (f'{pm["setting_count"]} settings, {pm["area_count"]} '
+                       f'areas, {pm["provider_count"]} provider(s)'),
+            **link("policymanager"),
+        })
+        sections.append({
+            "title": f'Policy areas ({pm["area_count"]})',
+            "src": src_of("policymanager"),
+            "columns": ["Area", "Settings"],
+            "rows": [[a, str(n)] for a, n in
+                     sorted(pm["areas"], key=lambda x: (-x[1], x[0]))],
+        })
+
+    # Proactive Remediations / platform scripts (SideCarPolicies executions).
+    scripts = parse_sidecar_scripts(reg("ime_reg"))
+    if scripts:
+        last = max((s["last_execution"] for s in scripts if s["last_execution"]),
+                   default="")
+        npol = len({s["policy"] for s in scripts})
+        checks.append({
+            "label": "Scripts / remediations",
+            "status": "ok",
+            "detail": f"{npol} policies executed" + (f", last {last}" if last else ""),
+            **link("ime_reg"),
+        })
+
+    # MDM / Entra event-log health: aggregate the Error/Warning rows the
+    # collector already distilled into *-ErrorsWarnings.txt files.
+    ev_files = sorted(input_dir.rglob("*-ErrorsWarnings.txt"))
+    if ev_files:
+        tot_e = tot_w = 0
+        for p in ev_files:
+            c = count_event_issues(read_text_tolerant(p))
+            tot_e += c["errors"]
+            tot_w += c["warnings"]
+        dm = next((p for p in ev_files if "DeviceManagement-Admin" in p.name),
+                  ev_files[0])
+        checks.append({
+            "label": "MDM event log",
+            "status": "bad" if tot_e else "warn" if tot_w else "ok",
+            "detail": f"{tot_e} errors, {tot_w} warnings across {len(ev_files)} logs",
+            "src": dm.relative_to(input_dir).as_posix(),
+        })
+
+    # Network: WinHTTP proxy + firewall profile states.
+    if read("proxy"):
+        proxy = parse_winhttp_proxy(read("proxy"))
+        checks.append({
+            "label": "WinHTTP proxy",
+            "status": "ok",
+            "detail": ("direct (no proxy)" if proxy["direct"]
+                       else proxy["server"] or "configured"),
+            **link("proxy"),
+        })
+    fw = parse_firewall_profiles(read("firewall")) if read("firewall") else []
+    if fw:
+        off = [f["profile"] for f in fw if not f["on"]]
+        checks.append({
+            "label": "Firewall",
+            "status": "warn" if off else "ok",
+            "detail": ("off: " + ", ".join(off) if off else "all profiles on"),
+            **link("firewall"),
+        })
+
     device = {
         "name": identity.get("Device", ""),
         "device_id": identity.get("DeviceId", ""),
         "tenant": identity.get("TenantName", ""),
         "collected": identity.get("Date", identity.get("Datum", "")),
     }
-    return {"device": device, "checks": checks}
+    return {"device": device, "checks": checks, "sections": sections}
 
 
 def read_dashboard(job_id: str) -> Optional[dict]:
@@ -1437,6 +1793,7 @@ NAV = ("""<header><nav class="nav">
     <a class="navlink" href="/timeline">Timeline</a>
     <a class="navlink" href="/cmtrace">CMTrace</a>
     <a class="navlink" href="/diagnostics">Diagnostics</a>
+    <a class="navlink" href="/errorcodes">Error codes</a>
     <a class="navlink ext" href="https://payloadkit.app" target="_blank"
        rel="noopener" title="PayloadKit &mdash; browse &amp; build Apple
        Configuration Profiles for macOS, iOS and tvOS, by the maker of
@@ -1931,6 +2288,17 @@ DIAG_PAGE = """<!doctype html>
   .check .det{color:var(--muted);font-size:.85rem;margin-top:.2rem;word-break:break-word}
   .check[data-file]{cursor:pointer}
   .check[data-file]:hover,.check[data-file]:focus-visible{border-color:var(--accent)}
+  details.section{background:var(--surface);border:1px solid var(--border);
+    border-radius:10px;padding:.4rem 1rem;font-size:.85rem;max-height:45vh;overflow:auto}
+  details.section>summary{cursor:pointer;font-weight:600;padding:.25rem 0}
+  details.section .seclink{margin-left:.5rem;font-weight:400;font-size:.8rem;
+    color:var(--accent);cursor:pointer}
+  details.section table{border-collapse:collapse;width:100%%;margin-top:.5rem}
+  details.section th,details.section td{text-align:left;padding:.25rem .5rem;
+    border-bottom:1px solid var(--row-border);vertical-align:top;
+    word-break:break-word;font-family:ui-monospace,Menlo,Consolas,monospace}
+  details.section th{color:var(--muted);font-weight:600;position:sticky;top:0;
+    background:var(--surface)}
   .acard{border:1px solid var(--border);border-radius:10px;padding:.75rem 1rem;
     background:var(--surface);display:flex;align-items:center;gap:.8rem;flex-wrap:wrap}
   .acard pre{margin:.4rem 0 0;width:100%%;max-height:10rem}
@@ -2021,7 +2389,7 @@ DIAG_PAGE = """<!doctype html>
     f.scrollIntoView({block: 'nearest'});
     view.scrollIntoView({behavior: 'smooth', block: 'nearest'});
   }
-  document.querySelectorAll('.check[data-file]').forEach(card => {
+  document.querySelectorAll('.check[data-file],.seclink[data-file]').forEach(card => {
     card.addEventListener('click', () => openSource(card));
     card.addEventListener('keydown', ev => {
       if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); openSource(card); }
@@ -2280,6 +2648,27 @@ def render_dashboard_panel(dash: Optional[dict]) -> str:
         )
     if cards:
         parts.append(f'<div class="dash">{"".join(cards)}</div>')
+    for sec in dash.get("sections", []):
+        cols = sec.get("columns", [])
+        rows = sec.get("rows", [])
+        if not rows:
+            continue
+        src = sec.get("src")
+        link = ""
+        if isinstance(src, str) and src:
+            link = (f'<span class="seclink" data-file="{attr_escape(src)}"'
+                    f' role="link" tabindex="0"'
+                    f' title="Open {attr_escape(src)}">source &rarr;</span>')
+        head = "".join(f"<th>{html_escape(str(c))}</th>" for c in cols)
+        body = "".join(
+            "<tr>" + "".join(f"<td>{html_escape(str(cell))}</td>"
+                             for cell in row) + "</tr>"
+            for row in rows)
+        parts.append(
+            f'<details class="section"><summary>'
+            f'{html_escape(str(sec.get("title", "")))}{link}</summary>'
+            f'<table><thead><tr>{head}</tr></thead>'
+            f'<tbody>{body}</tbody></table></details>')
     return "".join(parts)
 
 
@@ -2333,6 +2722,12 @@ _CMTRACE_CSS = """
     border:1px solid var(--border2);border-radius:6px;
     background:var(--bg);color:var(--fg)}
   .bar input{flex:1;min-width:8rem}
+  .qjump{display:flex;gap:.3rem;flex-wrap:wrap}
+  .qjump button{font:inherit;font-size:.8rem;padding:.2rem .55rem;cursor:pointer;
+    border:1px solid var(--border2);border-radius:999px;
+    background:var(--surface);color:var(--muted)}
+  .qjump button:hover{border-color:var(--accent);color:var(--fg)}
+  .qjump button.on{background:var(--accent);border-color:var(--accent);color:#fff}
   .count{color:var(--muted);white-space:nowrap}
   .note{padding:.5rem .75rem;color:var(--warn-fg);background:var(--note-bg);
     border-bottom:1px solid var(--warn-border)}
@@ -2734,6 +3129,14 @@ def _render_records_page(filename: str, head: str, rows: List[str],
       <option value="e">Errors</option>
       <option value="w">Warnings</option>
     </select>
+    <span class="qjump" id="qjump">
+      <button type="button" data-q="Win32App">Win32App</button>
+      <button type="button" data-q="detection">Detection</button>
+      <button type="button" data-q="PowerShell">Scripts</button>
+      <button type="button" data-q="policy">Policy</button>
+      <button type="button" data-q="Download">Download</button>
+      <button type="button" data-q="reboot">Reboot</button>
+    </span>
     <span class="legend"><span><span class="sw w"></span>Warning</span>
       <span><span class="sw e"></span>Error</span></span>
     <span class="count" id="count"></span>
@@ -2781,6 +3184,16 @@ def _render_records_page(filename: str, head: str, rows: List[str],
   q.addEventListener('input', apply);
   if (comp) comp.addEventListener('change', apply);
   sev.addEventListener('change', apply);
+  // IME quick-jumps: toggle a preset into the text filter (click again clears).
+  document.getElementById('qjump').addEventListener('click', function (ev) {
+    const b = ev.target.closest('button[data-q]');
+    if (!b) return;
+    const v = b.dataset.q;
+    const on = q.value.toLowerCase() === v.toLowerCase();
+    q.value = on ? '' : v;
+    [...this.children].forEach(c => c.classList.toggle('on', !on && c === b));
+    apply();
+  });
   apply();
 
   // Detail panel: click a row to read the full message, with plain-language
@@ -3002,6 +3415,83 @@ async def diagnostics_upload_page() -> HTMLResponse:
                   "<code>IntuneDiag-*.zip</code> here, or"),
         extra=render_collect_script_panel(),
     )
+
+
+ERRORCODES_PAGE = """<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<script>(function(){var de=document.documentElement;function a(d){de.classList.toggle('dark',d);de.style.colorScheme=d?'dark':'light'}function cur(){return de.classList.contains('dark')}function tell(w){try{w.postMessage({sherlogTheme:cur()?'dark':'light'},'*')}catch(e){}}var t=null;try{t=localStorage.getItem('sherlog.theme')}catch(e){}a(t==='dark'||(t!=='light'&&matchMedia('(prefers-color-scheme: dark)').matches));window.sherlogTheme=function(){a(!cur());try{localStorage.setItem('sherlog.theme',cur()?'dark':'light')}catch(e){}var fs=document.querySelectorAll('iframe');for(var i=0;i<fs.length;i++)tell(fs[i].contentWindow)};window.addEventListener('load',function(e){if(e.target&&e.target.tagName==='IFRAME')tell(e.target.contentWindow)},true);window.addEventListener('message',function(e){var v=e.data&&e.data.sherlogTheme;if(v==='dark'||v==='light')a(v==='dark')})})()</script>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sherlog &mdash; Intune error codes</title><style>%(css)s
+  .ec-tools{display:flex;gap:.6rem;align-items:center;margin:0 0 1rem}
+  .ec-tools input{flex:1;padding:.55rem .8rem;border:1px solid var(--border);
+    border-radius:8px;background:var(--bg);color:var(--fg);font-size:.95rem}
+  .ec-count{color:var(--muted);font-size:.85rem;white-space:nowrap}
+  table.ec{border-collapse:collapse;width:100%%}
+  table.ec th,table.ec td{text-align:left;padding:.5rem .6rem;
+    border-bottom:1px solid var(--border);vertical-align:top}
+  table.ec td.code{font-family:ui-monospace,Menlo,Consolas,monospace;
+    white-space:nowrap;font-weight:600}
+  table.ec tr.hide{display:none}
+  .ec-empty{color:var(--muted);padding:1rem 0}
+</style></head>
+<body>
+  %(nav)s
+  <section class="hero">
+    <h1>Intune &amp; Win32 error codes</h1>
+    <p>Searchable reference of the IME / Win32 app, Windows, network, Delivery
+       Optimization and MSI exit codes Sherlog recognises.</p>
+  </section>
+  <main class="wrap">
+    <div class="card">
+      <div class="ec-tools">
+        <input id="q" type="search" autofocus
+          placeholder="Filter by code or text &mdash; e.g. 0x87D1041C, detection, proxy">
+        <span class="ec-count" id="count"></span>
+      </div>
+      <table class="ec"><thead><tr><th>Code</th><th>Meaning</th></tr></thead>
+        <tbody id="body"></tbody></table>
+      <p class="ec-empty" id="empty" hidden>No codes match your filter.</p>
+    </div>
+  </main>
+  %(footer)s
+<script>
+  const CODES = %(codes)s;
+  const body = document.getElementById('body');
+  const rows = Object.keys(CODES).sort().map(function (code) {
+    const tr = document.createElement('tr');
+    const c = document.createElement('td'); c.className = 'code'; c.textContent = code;
+    const m = document.createElement('td'); m.textContent = CODES[code];
+    tr.appendChild(c); tr.appendChild(m);
+    tr.dataset.hay = (code + ' ' + CODES[code]).toLowerCase();
+    body.appendChild(tr); return tr;
+  });
+  const q = document.getElementById('q');
+  const count = document.getElementById('count');
+  const empty = document.getElementById('empty');
+  function apply() {
+    const t = q.value.trim().toLowerCase();
+    let n = 0;
+    rows.forEach(function (tr) {
+      const show = !t || tr.dataset.hay.indexOf(t) !== -1;
+      tr.classList.toggle('hide', !show); if (show) n++;
+    });
+    count.textContent = n + ' of ' + rows.length;
+    empty.hidden = n !== 0;
+  }
+  q.addEventListener('input', apply);
+  if (location.hash.length > 1) { q.value = decodeURIComponent(location.hash.slice(1)); }
+  apply();
+</script>
+</body></html>"""
+
+
+@app.get("/errorcodes", response_class=HTMLResponse)
+async def error_codes_page() -> HTMLResponse:
+    """Searchable reference of every error code Sherlog can explain."""
+    return HTMLResponse(ERRORCODES_PAGE % {
+        "css": PAGE_CSS, "nav": NAV, "footer": FOOTER,
+        "codes": json.dumps(ERROR_CODES),
+    })
 
 
 @app.get("/collect-script")
