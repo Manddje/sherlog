@@ -174,6 +174,12 @@ Direct vanaf de commandline kan ook:
 buiten de 24u-cleanup vallen. Gewone Timeline/CMTrace-uploads blijven wegwerp in
 `JOBS_DIR`.
 
+**Maprechten.** De container draait als niet-root (uid 10001). De entrypoint
+([`scripts/docker-entrypoint.sh`](scripts/docker-entrypoint.sh)) chownt `JOBS_DIR`
+en `INBOX_DIR` bij het starten en dropt daarna naar die user, dus een root-owned
+Coolify-volume werkt **zonder handmatige `chown`**. Wel nodig: het volume moet
+schrijfbaar zijn voor root bij het starten (standaard zo).
+
 **Security & privacy.** Diagnostics-packages bevatten vertrouwelijke gegevens
 (IME-logs, identity, certificaten). Voor vertrouwelijke logs heeft een
 **self-hosted** Sherlog de voorkeur boven het publieke `sherlog.nl`. Het token

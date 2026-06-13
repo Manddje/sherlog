@@ -39,14 +39,15 @@ COPY scripts/ /app/scripts/
 COPY static/ /app/static/
 COPY testdata/ /app/testdata/
 
-RUN chmod +x /app/scripts/run-analysis.sh \
+RUN chmod +x /app/scripts/run-analysis.sh /app/scripts/docker-entrypoint.sh \
     && chmod 0644 /app/Collect-IntuneDiagnostics.ps1
 
-# Non-root runtime user; /data is the job state directory and must be writable.
+# Create the non-root runtime user (uid 10001). The container starts as root so
+# the entrypoint can chown mounted volumes (JOBS_DIR / INBOX_DIR), then drops to
+# this user via setpriv before launching uvicorn.
 RUN useradd --create-home --uid 10001 appuser \
     && mkdir -p /data/jobs \
     && chown -R appuser:appuser /data
-USER appuser
 
 ENV JOBS_DIR=/data/jobs
 EXPOSE 8080
@@ -55,4 +56,5 @@ EXPOSE 8080
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
     CMD python3 -c "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8080/health').status==200 else 1)"
 
+ENTRYPOINT ["/app/scripts/docker-entrypoint.sh"]
 CMD ["python3", "-m", "uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8080"]
