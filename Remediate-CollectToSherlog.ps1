@@ -14,8 +14,7 @@
 
 .NOTES
     Edit the two settings below. Generate the token on the Sherlog /inbox page.
-    Run in 64-bit PowerShell. No detection script needed (run on-demand), or
-    pair with a detection script that always 'exit 1' to force the remediation.
+    Run in 64-bit PowerShell. Trigger it on-demand with "Run remediation".
 #>
 
 # ---- settings -------------------------------------------------------------

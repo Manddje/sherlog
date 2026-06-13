@@ -3703,8 +3703,7 @@ REMEDIATION_TEMPLATE = r"""<#
 
 .NOTES
     Edit the two settings below. Generate the token on the Sherlog /inbox page.
-    Run in 64-bit PowerShell. No detection script needed (run on-demand), or
-    pair with a detection script that always 'exit 1' to force the remediation.
+    Run in 64-bit PowerShell. Trigger it on-demand with "Run remediation".
 #>
 
 # ---- settings -------------------------------------------------------------
@@ -4235,11 +4234,7 @@ _INBOX_FORM = """
           <li>Copy or download the script above (your token is already in it).</li>
           <li>Intune admin center &rarr; <strong>Devices</strong> &rarr;
               <strong>Scripts and remediations</strong> &rarr; <strong>Create</strong>.</li>
-          <li>Paste the script above as the <strong>Remediation script</strong>.
-              Intune always wants a <strong>Detection script</strong> too &mdash;
-              use this trigger so the remediation runs:
-              <pre class="scriptbox">Write-Output "collect"
-exit 1   # 1 = run remediation; 0 = skip</pre></li>
+          <li>Paste the script above as the <strong>Remediation script</strong>.</li>
           <li>Settings: <strong>Run script in 64-bit PowerShell</strong> =
               <code>Yes</code>; <strong>Run using logged-on credentials</strong> =
               <code>No</code> (runs as SYSTEM); signature check = <code>No</code>.</li>
