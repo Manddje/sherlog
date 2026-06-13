@@ -17,17 +17,39 @@
 .PARAMETER OutputPath
     Folder where the zip file will be created. Default: C:\Temp
 
+.PARAMETER Remote
+    Slim profile for unattended/Intune use: skips the slow and large sections
+    (msinfo32, Get-WindowsUpdateLog, Defender -GetFiles cab) so the run stays
+    well under the Intune script timeout and the Sherlog upload size limit,
+    while keeping the IME logs, event logs, registry, identity and network data.
+
+.PARAMETER UploadUrl
+    When set, the resulting zip is uploaded to this Sherlog drop-off endpoint,
+    e.g. https://sherlog.nl/api/diagnostics . Requires -UploadToken.
+
+.PARAMETER UploadToken
+    The self-chosen secret the admin generated on the Sherlog /inbox page. It
+    authorizes the upload and is the key to view the uploads at /inbox.
+
 .EXAMPLE
     .\Collect-IntuneDiagnostics.ps1
     .\Collect-IntuneDiagnostics.ps1 -OutputPath D:\Diag
 
+.EXAMPLE
+    # Unattended drop-off (e.g. from an Intune remediation script):
+    .\Collect-IntuneDiagnostics.ps1 -Remote `
+        -UploadUrl 'https://sherlog.nl/api/diagnostics' -UploadToken '<token>'
+
 .NOTES
-    Run as Administrator (elevated PowerShell).
+    Run as Administrator (elevated PowerShell), or as SYSTEM via Intune.
 #>
 
 [CmdletBinding()]
 param(
-    [string]$OutputPath = 'C:\Temp'
+    [string]$OutputPath = 'C:\Temp',
+    [switch]$Remote,
+    [string]$UploadUrl,
+    [string]$UploadToken
 )
 
 # ============================================================
@@ -210,8 +232,10 @@ Invoke-Safe 'Inventorying installed apps...' {
 # ============================================================
 # 7. System
 # ============================================================
-Invoke-Safe 'msinfo32 report (this may take a while)...' {
-    Start-Process msinfo32 -ArgumentList "/report `"$(Join-Path $work 'System\msinfo32.log')`"" -Wait
+if (-not $Remote) {
+    Invoke-Safe 'msinfo32 report (this may take a while)...' {
+        Start-Process msinfo32 -ArgumentList "/report `"$(Join-Path $work 'System\msinfo32.log')`"" -Wait
+    }
 }
 
 Invoke-Safe 'Drivers, battery, OS info...' {
@@ -232,11 +256,14 @@ Invoke-Safe 'Relevant scheduled tasks...' {
 # 8. Defender
 # ============================================================
 Invoke-Safe 'Defender support files...' {
-    $mpcmd = "$env:ProgramFiles\Windows Defender\mpcmdrun.exe"
-    if (Test-Path $mpcmd) {
-        & $mpcmd -GetFiles | Out-Null
-        Copy-Item "$env:ProgramData\Microsoft\Windows Defender\Support\MpSupportFiles.cab" `
-                  (Join-Path $work 'Defender') -Force -ErrorAction SilentlyContinue
+    # -GetFiles produces a large cab; skip it in the slim remote profile.
+    if (-not $Remote) {
+        $mpcmd = "$env:ProgramFiles\Windows Defender\mpcmdrun.exe"
+        if (Test-Path $mpcmd) {
+            & $mpcmd -GetFiles | Out-Null
+            Copy-Item "$env:ProgramData\Microsoft\Windows Defender\Support\MpSupportFiles.cab" `
+                      (Join-Path $work 'Defender') -Force -ErrorAction SilentlyContinue
+        }
     }
     Get-MpComputerStatus -ErrorAction SilentlyContinue |
         Out-File (Join-Path $work 'Defender\mp-status.txt')
@@ -245,9 +272,12 @@ Invoke-Safe 'Defender support files...' {
 # ============================================================
 # 9. Windows Update
 # ============================================================
-Invoke-Safe 'Windows Update log (this may take a while)...' {
-    Get-WindowsUpdateLog -LogPath (Join-Path $work 'WindowsUpdate\WindowsUpdate.log') -ErrorAction SilentlyContinue | Out-Null
-    Copy-Item "$env:ProgramData\USOShared\Logs\System\*.etl" (Join-Path $work 'WindowsUpdate') -Force -ErrorAction SilentlyContinue
+# Get-WindowsUpdateLog is slow (symbol decode); skip in the slim remote profile.
+if (-not $Remote) {
+    Invoke-Safe 'Windows Update log (this may take a while)...' {
+        Get-WindowsUpdateLog -LogPath (Join-Path $work 'WindowsUpdate\WindowsUpdate.log') -ErrorAction SilentlyContinue | Out-Null
+        Copy-Item "$env:ProgramData\USOShared\Logs\System\*.etl" (Join-Path $work 'WindowsUpdate') -Force -ErrorAction SilentlyContinue
+    }
 }
 
 # ============================================================
@@ -320,3 +350,29 @@ Remove-Item $work -Recurse -Force
 
 Write-Host ''
 Write-Host "Done! Diagnostics package: $zipFile" -ForegroundColor Green
+
+# ============================================================
+# 13. Optional upload to Sherlog (drop-off API)
+# ============================================================
+if ($UploadUrl) {
+    if (-not $UploadToken) {
+        Write-Warning 'UploadUrl set without UploadToken; skipping upload. Local zip kept.'
+    } else {
+        Write-Step "Uploading to $UploadUrl ..."
+        # TLS 1.2 for older Windows PowerShell 5.1 defaults.
+        try { [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12 } catch {}
+        try {
+            $resp = Invoke-RestMethod -Uri $UploadUrl -Method Post -InFile $zipFile `
+                -ContentType 'application/zip' -Headers @{
+                    'X-Upload-Token' = $UploadToken
+                    'X-Device-Name'  = $env:COMPUTERNAME
+                }
+            $base = ($UploadUrl -replace '/api/diagnostics/?$', '')
+            Write-Host "Uploaded. Review at: $base$($resp.url)" -ForegroundColor Green
+            # Keep the device clean once it is safely uploaded.
+            Remove-Item $zipFile -Force -ErrorAction SilentlyContinue
+        } catch {
+            Write-Warning "Upload failed: $($_.Exception.Message). Local zip kept: $zipFile"
+        }
+    }
+}

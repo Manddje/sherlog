@@ -112,6 +112,9 @@ Alle configuratie loopt via environment variables met veilige defaults:
 | `GRAPH_CLIENT_SECRET`    | *(leeg)*| Client secret van bovenstaande app-registratie.                                               |
 | `CSP_NAMES_CACHE`        | `<JOBS_DIR>/../csp-names.json` | Cachebestand voor de (tenant-onafhankelijke) catalog. Mag ook vooraf gegenereerd worden. |
 | `CSP_NAMES_TTL_HOURS`    | `720`   | Maximale leeftijd van de cache voordat de catalog opnieuw wordt opgehaald.                     |
+| `ENABLE_UPLOAD_API`      | *(uit)* | Zet de device drop-off API (`/api/diagnostics`) + `/inbox` aan. Default uit.                   |
+| `UPLOAD_TOKEN_MIN_LEN`   | `24`    | Minimale lengte van een (zelfgekozen) upload-token.                                            |
+| `UPLOAD_API_MAX_JOBS`    | `2000`  | Globale rem op het aantal drop-off-jobs (tegen disk-misbruik); daarboven `429`.                |
 
 De Graph-verrijking is **optioneel en uit by default**: zonder de drie `GRAPH_*`
 vars doet de app geen externe call en blijft de RSOP-tabel zoals hij is (OMA-URI +
@@ -122,6 +125,44 @@ De app is **standaard zonder login** (publiek). Basic auth is optioneel: zet
 **beide** `APP_USER` en `APP_PASSWORD` om de hele app achter een wachtwoord te
 zetten. Zijn ze (allebei) leeg — de default — dan is de app open en logt hij
 één waarschuwing bij het starten. `/health` valt altijd buiten auth.
+
+## Device drop-off via Intune
+
+Een Intune-beheerder kan de collector via Intune op een device draaien en de
+logs automatisch naar Sherlog laten uploaden, om ze daarna in een **inbox** op de
+site door te nemen. Zet hiervoor `ENABLE_UPLOAD_API=1`.
+
+**Self-service tokens.** Het token is de namespace: genereer er één op
+`/inbox` (knop *Generate token*) en bewaar het. Wie het token kent kan ermee
+uploaden én alle bijbehorende packages bekijken op `/inbox?token=<token>`.
+Sherlog bewaart alleen de **sha256-hash** van het token op elke job — nooit het
+token zelf — en houdt geen token-register bij.
+
+**Uitrollen (aanbevolen: Remediation on-demand):**
+
+1. Genereer een token op `<sherlog>/inbox`.
+2. Open [`Remediate-CollectToSherlog.ps1`](Remediate-CollectToSherlog.ps1), vul
+   `$SherlogBase` en `$UploadToken` in.
+3. Intune-admincenter → **Devices → Scripts and remediations** → custom script
+   package (alleen remediation-script nodig), **Run in 64-bit PowerShell: Yes**.
+4. Selecteer een device → **Run remediation** (on-demand). Het script draait als
+   SYSTEM, verzamelt het slimme `-Remote`-profiel en POST't de zip.
+5. Open `<sherlog>/inbox?token=<token>` en klik de device-upload open.
+
+Direct vanaf de commandline kan ook:
+
+```powershell
+.\Collect-IntuneDiagnostics.ps1 -Remote `
+    -UploadUrl 'https://sherlog.nl/api/diagnostics' -UploadToken '<token>'
+```
+
+**Security & privacy.** Diagnostics-packages bevatten vertrouwelijke gegevens
+(IME-logs, identity, certificaten). Voor vertrouwelijke logs heeft een
+**self-hosted** Sherlog de voorkeur boven het publieke `sherlog.nl`. Het token
+is een device-secret (in het remediation-script leesbaar voor wie de policy kan
+inzien). Jobs worden na `JOB_RETENTION_HOURS` (default 24 u) opgeruimd. Microsoft
+adviseert geen persoonsgegevens via scripts te verzamelen — beoordeel zelf wat je
+ophaalt.
 
 ## Coolify-deployment
 

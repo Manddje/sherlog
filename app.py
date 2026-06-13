@@ -25,12 +25,17 @@ Configuration (env, with safe defaults):
                           Microsoft Graph settings catalog. Off by default.
   CSP_NAMES_CACHE         default <JOBS_DIR>/../csp-names.json (catalog cache)
   CSP_NAMES_TTL_HOURS     default 720 (re-fetch the catalog after this age)
+  ENABLE_UPLOAD_API       default off; enables /api/diagnostics + /inbox so an
+                          Intune-deployed collector can drop off packages
+  UPLOAD_TOKEN_MIN_LEN    default 24 (minimum length of a self-chosen token)
+  UPLOAD_API_MAX_JOBS     default 2000 (global cap to bound disk abuse)
 """
 
 from __future__ import annotations
 
 import asyncio
 import base64
+import hashlib
 import json
 import logging
 import os
@@ -109,6 +114,16 @@ CSP_NAMES_CACHE = Path(os.environ.get(
     "CSP_NAMES_CACHE", str(JOBS_DIR.parent / "csp-names.json")))
 CSP_NAMES_TTL_HOURS = max(1, int(os.environ.get("CSP_NAMES_TTL_HOURS", "720")))
 
+# Unattended device drop-off API (off by default). When ENABLE_UPLOAD_API is on,
+# an Intune-deployed collector can POST a diagnostics zip to /api/diagnostics with
+# a self-chosen secret in the X-Upload-Token header; the admin reviews uploads at
+# /inbox?token=<same secret>. The token IS the namespace: only its sha256 hash is
+# stored (on each job), never the token itself, and there is no token registry.
+ENABLE_UPLOAD_API = os.environ.get("ENABLE_UPLOAD_API", "").lower() in (
+    "1", "true", "yes", "on")
+UPLOAD_TOKEN_MIN_LEN = max(8, int(os.environ.get("UPLOAD_TOKEN_MIN_LEN", "24")))
+UPLOAD_API_MAX_JOBS = max(1, int(os.environ.get("UPLOAD_API_MAX_JOBS", "2000")))
+
 # Diagnostics-package extension policy. Text-ish files get the line viewer,
 # .log the CMTrace viewer, .html a sandboxed iframe, .evtx the event viewer.
 # .cab archives (Defender MpSupportFiles.cab, LicensingDiag.cab) are expanded
@@ -129,6 +144,12 @@ _job_sem = asyncio.Semaphore(JOB_CONCURRENCY)
 
 
 # --- Job state on disk -------------------------------------------------------
+
+def token_hash(raw: str) -> str:
+    """Stable sha256 hex of an upload token. Only this hash is persisted (on the
+    job) and compared for the inbox; the token itself never touches disk."""
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
 
 def job_dir(job_id: str) -> Path:
     return JOBS_DIR / job_id
@@ -1550,12 +1571,19 @@ async def save_diag_upload(files: List[UploadFile], input_dir: Path) -> tuple[in
                 raise UploadError(413, f"Upload exceeds {MAX_UPLOAD_MB} MB limit.")
             fh.write(chunk)
 
+    return await _extract_diag_zip(dest, input_dir)
+
+
+async def _extract_diag_zip(dest_zip: Path, input_dir: Path) -> tuple[int, list]:
+    """Extract a staged diagnostics .zip into input_dir, expanding .cab members
+    when cabextract is available. Shared by the form upload and the drop-off API.
+    Raises UploadError on a bad/empty archive."""
     # Keep .cab members only when cabextract can expand them afterwards;
     # otherwise they are skipped (and listed disabled) as before.
     keep_exts = DIAG_KEEP_EXTS | ({".cab"} if CABEXTRACT else set())
     budget = [0]
     try:
-        count, skipped = extract_zip_members(dest, input_dir, keep_exts,
+        count, skipped = extract_zip_members(dest_zip, input_dir, keep_exts,
                                              budget=budget)
     except zipfile.BadZipFile:
         raise UploadError(400, "The uploaded file is not a valid zip archive.")
@@ -1747,7 +1775,11 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
 
 class BasicAuthMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
-        if request.url.path == "/health" or not AUTH_ENABLED:
+        # /health and the token-authenticated drop-off API carry their own
+        # auth (or none), so they bypass basic auth — a device collector can't
+        # do the interactive basic-auth challenge.
+        if (request.url.path in ("/health", "/api/diagnostics")
+                or not AUTH_ENABLED):
             return await call_next(request)
 
         header = request.headers.get("Authorization", "")
@@ -2029,6 +2061,7 @@ NAV = ("""<header><nav class="nav">
     <a class="navlink" href="/cmtrace">CMTrace</a>
     <a class="navlink" href="/diagnostics">Diagnostics</a>
     <a class="navlink" href="/errorcodes">Error codes</a>
+    %(inbox_nav)s
     <a class="navlink ext" href="https://payloadkit.app" target="_blank"
        rel="noopener" title="PayloadKit &mdash; browse &amp; build Apple
        Configuration Profiles for macOS, iOS and tvOS, by the maker of
@@ -2077,7 +2110,8 @@ NAV = ("""<header><nav class="nav">
   d.addEventListener('click', function (e) { if (e.target === d) d.close(); });
 })();
 </script>
-</header>""" % {"logo": _LOGO})
+</header>""" % {"logo": _LOGO, "inbox_nav": (
+    '<a class="navlink" href="/inbox">Inbox</a>' if ENABLE_UPLOAD_API else "")})
 
 FOOTER = ("""<footer>
   <span>Sherlog &middot; sherlog.nl
@@ -3638,6 +3672,20 @@ def render_collect_script_panel() -> str:
     Download Collect-IntuneDiagnostics.ps1</a></p>
   <details><summary>View script source</summary>
     <pre style="max-height:24rem">{html_escape(text)}</pre></details>
+</section>{_render_dropoff_panel()}"""
+
+
+def _render_dropoff_panel() -> str:
+    """Pointer to the Intune device drop-off flow, only when it's enabled."""
+    if not ENABLE_UPLOAD_API:
+        return ""
+    return """<section class="card recent">
+  <h2>Collect straight from Intune</h2>
+  <p class="limits">Deploy the collector as an Intune remediation and have devices
+    upload here automatically. Generate a token in the
+    <a href="/inbox">inbox</a>, then review each device's upload there &mdash; no
+    manual zipping.</p>
+  <p><a class="btn btn-ghost" href="/inbox">Open inbox</a></p>
 </section>"""
 
 
@@ -3933,6 +3981,196 @@ async def diagnostics_analyze(request: Request) -> Response:
         spawn_job(run_job(job_id, ime_dir, output_dir,
                             _diag_state_writer(job_id)))
     return RedirectResponse(url=f"/result/{job_id}", status_code=303)
+
+
+def _count_api_jobs() -> int:
+    """How many drop-off (source=api) jobs currently exist on disk."""
+    n = 0
+    try:
+        for child in JOBS_DIR.iterdir():
+            st = read_status(child.name) if child.is_dir() else None
+            if st and st.get("source") == "api":
+                n += 1
+    except OSError:
+        pass
+    return n
+
+
+@app.post("/api/diagnostics")
+async def api_diagnostics(request: Request) -> Response:
+    """Unattended drop-off: a device collector POSTs a diagnostics zip as the raw
+    request body with a self-chosen secret in X-Upload-Token. The package is
+    staged like a normal diagnostics job and tagged with the token hash so the
+    matching /inbox can list it. Off unless ENABLE_UPLOAD_API is set."""
+    if not ENABLE_UPLOAD_API:
+        return JSONResponse({"error": "upload api disabled"}, status_code=404)
+
+    token = (request.headers.get("X-Upload-Token")
+             or request.headers.get("Authorization", "").removeprefix("Bearer ").strip())
+    if not token or len(token) < UPLOAD_TOKEN_MIN_LEN:
+        return JSONResponse(
+            {"error": f"missing or too-short token (min {UPLOAD_TOKEN_MIN_LEN})"},
+            status_code=401)
+
+    err = _content_length_error(request)
+    if err is not None:
+        return JSONResponse({"error": "upload too large"}, status_code=413)
+    if _count_api_jobs() >= UPLOAD_API_MAX_JOBS:
+        return JSONResponse({"error": "server inbox full, try later"},
+                            status_code=429)
+
+    device = (request.headers.get("X-Device-Name") or "device").strip()[:128]
+    job_id = uuid.uuid4().hex
+    base = job_dir(job_id)
+    input_dir = base / "input"
+    output_dir = base / "output"
+    tmp_dir = base / "tmp"
+    input_dir.mkdir(parents=True, exist_ok=True)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    tmp_dir.mkdir(parents=True, exist_ok=True)
+    dest = tmp_dir / f"{uuid.uuid4().hex}.zip"
+
+    try:
+        total = 0
+        with dest.open("wb") as fh:
+            async for chunk in request.stream():
+                total += len(chunk)
+                if total > MAX_UPLOAD_BYTES:
+                    raise UploadError(413, f"Upload exceeds {MAX_UPLOAD_MB} MB limit.")
+                fh.write(chunk)
+        if total == 0:
+            raise UploadError(400, "Empty request body.")
+        _count, skipped = await _extract_diag_zip(dest, input_dir)
+    except UploadError as e:
+        shutil.rmtree(base, ignore_errors=True)
+        return JSONResponse({"error": e.message}, status_code=e.status_code)
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+    dashboard = build_dashboard(input_dir)
+    (output_dir / "dashboard.json").write_text(json.dumps(dashboard),
+                                               encoding="utf-8")
+
+    ime_dir = find_ime_log_dir(input_dir)
+    write_status(job_id, kind="diag", state="ready",
+                 source="api", upload_token_hash=token_hash(token), device=device,
+                 uploads=[f"{device}.zip"],
+                 skipped=skipped[:_MAX_SKIPPED_LISTED],
+                 analysis={"state": "queued" if ime_dir else "none"})
+    if ime_dir is not None:
+        spawn_job(run_job(job_id, ime_dir, output_dir,
+                            _diag_state_writer(job_id)))
+    return JSONResponse({"job_id": job_id, "url": f"/result/{job_id}"})
+
+
+def list_inbox_jobs(token: str) -> List[dict]:
+    """Drop-off jobs whose stored token hash matches `token`, newest first."""
+    want = token_hash(token)
+    rows = []
+    try:
+        children = list(JOBS_DIR.iterdir())
+    except OSError:
+        return []
+    for child in children:
+        if not child.is_dir():
+            continue
+        st = read_status(child.name)
+        if not st or st.get("source") != "api":
+            continue
+        if not secrets.compare_digest(str(st.get("upload_token_hash", "")), want):
+            continue
+        try:
+            mtime = (child / "job.json").stat().st_mtime
+        except OSError:
+            mtime = 0
+        analysis = (st.get("analysis") or {}).get("state", "none")
+        rows.append({"job_id": child.name, "device": st.get("device", "device"),
+                     "mtime": mtime, "state": st.get("state", "?"),
+                     "analysis": analysis})
+    rows.sort(key=lambda r: r["mtime"], reverse=True)
+    return rows[:200]
+
+
+INBOX_PAGE = """<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<script>(function(){var de=document.documentElement;function a(d){de.classList.toggle('dark',d);de.style.colorScheme=d?'dark':'light'}function cur(){return de.classList.contains('dark')}var t=null;try{t=localStorage.getItem('sherlog.theme')}catch(e){}a(t==='dark'||(t!=='light'&&matchMedia('(prefers-color-scheme: dark)').matches));window.sherlogTheme=function(){a(!cur());try{localStorage.setItem('sherlog.theme',cur()?'dark':'light')}catch(e){}}})()</script>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sherlog &mdash; Inbox</title><style>%(css)s
+  table.inbox{border-collapse:collapse;width:100%%;margin-top:1rem}
+  table.inbox th,table.inbox td{text-align:left;padding:.5rem .6rem;
+    border-bottom:1px solid var(--border);vertical-align:top}
+  table.inbox th{color:var(--muted);font-weight:600}
+  .tokrow{display:flex;gap:.5rem;flex-wrap:wrap;align-items:center;margin:.5rem 0}
+  .tokrow input{flex:1;min-width:16rem;padding:.55rem .8rem;border:1px solid var(--border);
+    border-radius:8px;background:var(--bg);color:var(--fg);font:inherit}
+  .muted{color:var(--muted);font-size:.9rem}
+</style></head>
+<body>
+  %(nav)s
+  <section class="hero">
+    <h1>Device drop-off inbox</h1>
+    <p>Packages an Intune-deployed collector uploaded with your token.</p>
+  </section>
+  <main class="wrap">
+    <div class="card">%(body)s</div>
+  </main>
+  %(footer)s
+</body></html>"""
+
+
+@app.get("/inbox", response_class=HTMLResponse)
+async def inbox(request: Request, token: str = "") -> HTMLResponse:
+    """Token-scoped list of device drop-off uploads. The token is the namespace;
+    no token shows a form plus a client-side token generator."""
+    if not ENABLE_UPLOAD_API:
+        return HTMLResponse("Inbox is not enabled on this server.", status_code=404)
+    token = token or request.headers.get("X-Upload-Token", "")
+    if not token:
+        body = """
+      <p>Enter your upload token to see this device inbox, or generate a new one
+         to use in your Intune collector script.</p>
+      <form method="get" action="/inbox" class="tokrow">
+        <input name="token" id="tok" type="text" placeholder="upload token"
+               autocomplete="off" minlength="%(min)d" required>
+        <button class="btn" type="submit">Open inbox</button>
+        <button class="btn btn-ghost" type="button" id="gen">Generate token</button>
+      </form>
+      <p class="muted" id="genout" hidden></p>
+      <script>
+        document.getElementById('gen').addEventListener('click', function () {
+          var b = new Uint8Array(32); crypto.getRandomValues(b);
+          var s = btoa(String.fromCharCode.apply(null, b))
+                    .replace(/\\+/g,'-').replace(/\\//g,'_').replace(/=+$/,'');
+          document.getElementById('tok').value = s;
+          var o = document.getElementById('genout');
+          o.hidden = false;
+          o.textContent = 'New token (store it safely — it is shown once and is '
+            + 'both your upload secret and your inbox key): ' + s;
+        });
+      </script>""" % {"min": UPLOAD_TOKEN_MIN_LEN}
+        return HTMLResponse(INBOX_PAGE % {
+            "css": PAGE_CSS, "nav": NAV, "footer": FOOTER, "body": body})
+
+    rows = list_inbox_jobs(token)
+    if rows:
+        trs = "".join(
+            f'<tr><td>{html_escape(r["device"])}</td>'
+            f'<td>{time.strftime("%Y-%m-%d %H:%M", time.localtime(r["mtime"]))}</td>'
+            f'<td>{html_escape(r["state"])}'
+            + (f' · analysis {html_escape(r["analysis"])}'
+               if r["analysis"] not in ("none", "") else "")
+            + f'</td><td><a href="/result/{r["job_id"]}">open</a></td></tr>'
+            for r in rows)
+        body = (f'<p class="muted">{len(rows)} upload(s) for this token.</p>'
+                '<table class="inbox"><thead><tr><th>Device</th><th>Uploaded</th>'
+                '<th>Status</th><th></th></tr></thead><tbody>'
+                f'{trs}</tbody></table>')
+    else:
+        body = ('<p>No uploads found for this token yet. Deploy the collector '
+                'with this token via Intune, then refresh.</p>'
+                '<p class="muted"><a href="/inbox">&larr; use another token</a></p>')
+    return HTMLResponse(INBOX_PAGE % {
+        "css": PAGE_CSS, "nav": NAV, "footer": FOOTER, "body": body})
 
 
 @app.get("/result/{job_id}", response_class=HTMLResponse)

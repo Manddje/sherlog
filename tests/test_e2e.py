@@ -1424,3 +1424,90 @@ def test_build_dashboard_intune_name_column(tmp_path, monkeypatch):
     assert "Allow Cortana above lock screen" in intune_cells
     html = app_module.render_dashboard_panel(dash)
     assert "Allow Cortana above lock screen" in html
+
+
+# --- Device drop-off API + inbox (ENABLE_UPLOAD_API) ------------------------
+
+@pytest.fixture()
+def upload_client(tmp_path, monkeypatch):
+    """App with the drop-off API enabled (separate jobs dir)."""
+    monkeypatch.setenv("JOBS_DIR", str(tmp_path / "jobs"))
+    monkeypatch.setenv("APP_USER", "")
+    monkeypatch.setenv("APP_PASSWORD", "")
+    monkeypatch.setenv("ENABLE_UPLOAD_API", "1")
+    import importlib
+    import app as app_module
+    importlib.reload(app_module)
+    from fastapi.testclient import TestClient
+    with TestClient(app_module.app) as c:
+        yield c
+    importlib.reload(app_module)  # restore defaults for later tests
+
+
+def _diag_zip() -> bytes:
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("Apps-IME/Logs/IntuneManagementExtension.log",
+                    '<![LOG[hi]LOG]!><time="1" date="2" component="C" '
+                    'type="1" thread="3">')
+        zf.writestr("Identity/dsregcmd-status.txt", "AzureAdJoined : YES\n")
+    return buf.getvalue()
+
+
+_TOK = "abcdefghijklmnopqrstuvwxyz0123456789"  # >= 24 chars
+
+
+def test_token_hash_stable_and_hex():
+    import app as app_module
+    h = app_module.token_hash("hello")
+    assert h == app_module.token_hash("hello")
+    assert len(h) == 64 and all(c in "0123456789abcdef" for c in h)
+
+
+def test_api_disabled_by_default(client):
+    r = client.post("/api/diagnostics", content=b"x",
+                    headers={"X-Upload-Token": "a" * 30,
+                             "Content-Type": "application/zip"})
+    assert r.status_code == 404
+    assert client.get("/inbox", params={"token": "a" * 30}).status_code == 404
+    assert "/inbox" not in client.get("/").text   # nav link hidden
+
+
+def test_api_upload_and_inbox(upload_client):
+    import app as app_module
+    r = upload_client.post("/api/diagnostics", content=_diag_zip(),
+                           headers={"X-Upload-Token": _TOK,
+                                    "X-Device-Name": "PC01",
+                                    "Content-Type": "application/zip"})
+    assert r.status_code == 200
+    body = r.json()
+    job_id = body["job_id"]
+    assert body["url"] == f"/result/{job_id}"
+    status = app_module.read_status(job_id)
+    assert status["source"] == "api"
+    assert status["device"] == "PC01"
+    assert status["upload_token_hash"] == app_module.token_hash(_TOK)
+    # The raw token is never persisted, only its hash.
+    assert _TOK not in app_module.status_path(job_id).read_text(encoding="utf-8")
+
+    inbox = upload_client.get("/inbox", params={"token": _TOK})
+    assert inbox.status_code == 200
+    assert "PC01" in inbox.text
+    assert f"/result/{job_id}" in inbox.text
+    # A different token sees nothing.
+    other = upload_client.get("/inbox", params={"token": "z" * 36})
+    assert "PC01" not in other.text
+
+
+def test_api_token_too_short(upload_client):
+    r = upload_client.post("/api/diagnostics", content=_diag_zip(),
+                           headers={"X-Upload-Token": "short",
+                                    "Content-Type": "application/zip"})
+    assert r.status_code == 401
+
+
+def test_inbox_form_has_generator(upload_client):
+    r = upload_client.get("/inbox")
+    assert r.status_code == 200
+    assert "Generate token" in r.text
+    assert "crypto.getRandomValues" in r.text
