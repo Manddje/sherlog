@@ -4237,6 +4237,9 @@ _INBOX_FORM = """
           var s = SCRIPT_TPL
             .replace(/\\$SherlogBase\\s*=\\s*'[^']*'/, "$SherlogBase = '" + base + "'")
             .replace(/\\$UploadToken\\s*=\\s*'[^']*'/, "$UploadToken = '" + token + "'");
+          // Also fill the placeholders in the comment text so the shown script
+          // is fully concrete.
+          s = s.split('<SherlogBase>').join(base).split('<token>').join(token);
           document.getElementById('script').textContent = s;
           document.getElementById('tokshow').textContent = token;
           document.getElementById('inboxlink').href = '/inbox?token=' + encodeURIComponent(token);
