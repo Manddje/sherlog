@@ -1511,3 +1511,9 @@ def test_inbox_form_has_generator(upload_client):
     assert r.status_code == 200
     assert "Generate token" in r.text
     assert "crypto.getRandomValues" in r.text
+    # Generating a token reveals the remediation script + an Intune guide.
+    assert "SCRIPT_TPL =" in r.text
+    assert "function fillScript" in r.text
+    assert "Collect-IntuneDiagnostics.ps1" in r.text   # embedded script body
+    assert "Deploy in Intune" in r.text
+    assert "Run remediation" in r.text

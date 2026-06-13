@@ -3654,6 +3654,7 @@ async def cmtrace_upload_page() -> HTMLResponse:
 # package this tool analyzes; shipped in the repo root so it can be shown
 # and downloaded from the upload page.
 COLLECT_SCRIPT = APP_DIR / "Collect-IntuneDiagnostics.ps1"
+REMEDIATION_SCRIPT = APP_DIR / "Remediate-CollectToSherlog.ps1"
 
 
 def render_collect_script_panel() -> str:
@@ -4104,6 +4105,13 @@ INBOX_PAGE = """<!doctype html>
   .tokrow input{flex:1;min-width:16rem;padding:.55rem .8rem;border:1px solid var(--border);
     border-radius:8px;background:var(--bg);color:var(--fg);font:inherit}
   .muted{color:var(--muted);font-size:.9rem}
+  .tokval{font-family:ui-monospace,Menlo,Consolas,monospace;word-break:break-all;
+    background:var(--surface);border:1px solid var(--border);border-radius:6px;
+    padding:.4rem .6rem;display:inline-block}
+  pre.scriptbox{max-height:26rem;overflow:auto;white-space:pre;background:var(--surface);
+    border:1px solid var(--border);border-radius:8px;padding:.75rem;font-size:.82rem}
+  ol.guide{line-height:1.65;padding-left:1.2rem}
+  ol.guide code{background:var(--surface);padding:.05rem .3rem;border-radius:4px}
 </style></head>
 <body>
   %(nav)s
@@ -4118,6 +4126,99 @@ INBOX_PAGE = """<!doctype html>
 </body></html>"""
 
 
+# No-token inbox view: token field + generator. Generating (or typing) a token
+# reveals the ready-to-paste Intune remediation script with the token already
+# filled in, plus a short Intune deployment guide.
+_INBOX_FORM = """
+      <p>Enter your upload token to open this device inbox, or generate a new one
+         to use in your Intune remediation script.</p>
+      <form method="get" action="/inbox" class="tokrow">
+        <input name="token" id="tok" type="text" placeholder="upload token"
+               autocomplete="off" minlength="%(min)d" required>
+        <button class="btn" type="submit">Open inbox</button>
+        <button class="btn btn-ghost" type="button" id="gen">Generate token</button>
+      </form>
+      <p class="muted" id="genout" hidden></p>
+
+      <section id="result" hidden>
+        <h2>Your token</h2>
+        <p><span class="tokval" id="tokshow"></span></p>
+        <p class="muted">Store it safely &mdash; it is shown once and is both your
+           upload secret <em>and</em> your inbox key
+           (<code>/inbox?token=&lt;token&gt;</code>).</p>
+
+        <h2>Remediation script (token filled in)</h2>
+        <div class="tokrow">
+          <button class="btn btn-ghost" type="button" id="copy">Copy script</button>
+          <button class="btn btn-ghost" type="button" id="dl">Download .ps1</button>
+        </div>
+        <pre class="scriptbox" id="script"></pre>
+
+        <h2>Deploy in Intune</h2>
+        <ol class="guide">
+          <li>Copy or download the script above (your token is already in it).</li>
+          <li>Intune admin center &rarr; <strong>Devices</strong> &rarr;
+              <strong>Scripts and remediations</strong> &rarr; <strong>Create</strong>.</li>
+          <li>Paste the script as the <strong>Remediation script</strong> (no
+              detection script needed for on-demand; or add a detection that always
+              <code>exit 1</code> to force it on assignment).</li>
+          <li>Settings: <strong>Run script in 64-bit PowerShell</strong> =
+              <code>Yes</code>; <strong>Run using logged-on credentials</strong> =
+              <code>No</code> (runs as SYSTEM); signature check = <code>No</code>.</li>
+          <li>Assign to a device group, <em>or</em> run it targeted: pick a device
+              &rarr; <strong>Run remediation</strong>.</li>
+          <li>After a few minutes the device upload appears in
+              <a id="inboxlink" href="/inbox">this inbox</a> &mdash; refresh it.</li>
+        </ol>
+      </section>
+
+      <script>
+        var SCRIPT_TPL = %(script)s;
+        function fillScript(token) {
+          var base = window.location.origin;
+          var s = SCRIPT_TPL
+            .replace(/\\$SherlogBase\\s*=\\s*'[^']*'/, "$SherlogBase = '" + base + "'")
+            .replace(/\\$UploadToken\\s*=\\s*'[^']*'/, "$UploadToken = '" + token + "'");
+          document.getElementById('script').textContent = s;
+          document.getElementById('tokshow').textContent = token;
+          document.getElementById('inboxlink').href = '/inbox?token=' + encodeURIComponent(token);
+          document.getElementById('result').hidden = !s;
+          return s;
+        }
+        document.getElementById('gen').addEventListener('click', function () {
+          var b = new Uint8Array(32); crypto.getRandomValues(b);
+          var s = btoa(String.fromCharCode.apply(null, b))
+                    .replace(/\\+/g, '-').replace(/\\//g, '_').replace(/=+$/, '');
+          document.getElementById('tok').value = s;
+          var o = document.getElementById('genout');
+          o.hidden = false;
+          o.textContent = 'New token generated and filled into the script below.';
+          fillScript(s);
+          document.getElementById('result').scrollIntoView({behavior: 'smooth', block: 'start'});
+        });
+        document.getElementById('tok').addEventListener('input', function () {
+          var v = this.value.trim();
+          if (v.length >= %(min)d) { fillScript(v); }
+          else { document.getElementById('result').hidden = true; }
+        });
+        document.getElementById('copy').addEventListener('click', function () {
+          if (navigator.clipboard) {
+            navigator.clipboard.writeText(document.getElementById('script').textContent);
+            this.textContent = 'Copied!';
+            var b = this; setTimeout(function(){ b.textContent = 'Copy script'; }, 1500);
+          }
+        });
+        document.getElementById('dl').addEventListener('click', function () {
+          var blob = new Blob([document.getElementById('script').textContent],
+                              {type: 'text/plain'});
+          var a = document.createElement('a');
+          a.href = URL.createObjectURL(blob);
+          a.download = 'Remediate-CollectToSherlog.ps1';
+          a.click();
+        });
+      </script>"""
+
+
 @app.get("/inbox", response_class=HTMLResponse)
 async def inbox(request: Request, token: str = "") -> HTMLResponse:
     """Token-scoped list of device drop-off uploads. The token is the namespace;
@@ -4126,28 +4227,12 @@ async def inbox(request: Request, token: str = "") -> HTMLResponse:
         return HTMLResponse("Inbox is not enabled on this server.", status_code=404)
     token = token or request.headers.get("X-Upload-Token", "")
     if not token:
-        body = """
-      <p>Enter your upload token to see this device inbox, or generate a new one
-         to use in your Intune collector script.</p>
-      <form method="get" action="/inbox" class="tokrow">
-        <input name="token" id="tok" type="text" placeholder="upload token"
-               autocomplete="off" minlength="%(min)d" required>
-        <button class="btn" type="submit">Open inbox</button>
-        <button class="btn btn-ghost" type="button" id="gen">Generate token</button>
-      </form>
-      <p class="muted" id="genout" hidden></p>
-      <script>
-        document.getElementById('gen').addEventListener('click', function () {
-          var b = new Uint8Array(32); crypto.getRandomValues(b);
-          var s = btoa(String.fromCharCode.apply(null, b))
-                    .replace(/\\+/g,'-').replace(/\\//g,'_').replace(/=+$/,'');
-          document.getElementById('tok').value = s;
-          var o = document.getElementById('genout');
-          o.hidden = false;
-          o.textContent = 'New token (store it safely — it is shown once and is '
-            + 'both your upload secret and your inbox key): ' + s;
-        });
-      </script>""" % {"min": UPLOAD_TOKEN_MIN_LEN}
+        try:
+            script_tpl = REMEDIATION_SCRIPT.read_text(encoding="utf-8")
+        except OSError:
+            script_tpl = ""
+        body = _INBOX_FORM % {"min": UPLOAD_TOKEN_MIN_LEN,
+                              "script": json.dumps(script_tpl)}
         return HTMLResponse(INBOX_PAGE % {
             "css": PAGE_CSS, "nav": NAV, "footer": FOOTER, "body": body})
 
