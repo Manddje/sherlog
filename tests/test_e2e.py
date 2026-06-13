@@ -1360,7 +1360,7 @@ def test_build_dashboard_policy_settings_section(tmp_path):
     _write_utf16(inp / "Registry" / "PolicyManager-Current.reg", _PM_REG)
     dash = app_module.build_dashboard(inp)
     sec = next(s for s in dash["sections"] if s["title"].startswith("Policy settings"))
-    assert sec["columns"][-1] == "OMA-URI / Intune name"
+    assert sec["columns"][-1] == "OMA-URI"
     # The CSP setting carries a dict link cell; the ADMX one stays plain text.
     cells = [row[-1] for row in sec["rows"]]
     assert any(isinstance(c, dict) and "policy-csp-abovelock" in c["href"] for c in cells)
@@ -1368,3 +1368,59 @@ def test_build_dashboard_policy_settings_section(tmp_path):
     html = app_module.render_dashboard_panel(dash)
     assert 'href="https://learn.microsoft.com/windows/client-management/mdm/policy-csp-' in html
     assert 'rel="noopener"' in html
+
+
+# --- Settings-Catalog name enrichment (Microsoft Graph, optional) ----------
+
+_GRAPH_ITEMS = [
+    {"id": "device_vendor_msft_policy_config_abovelock_allowcortanaabovelock",
+     "displayName": "Allow Cortana above lock screen",
+     "baseUri": "./Device/Vendor/MSFT/Policy/Config",
+     "offsetUri": "AboveLock/AllowCortanaAboveLock"},
+    {"id": "skipme", "displayName": "", "baseUri": "", "offsetUri": ""},
+]
+
+
+def test_build_csp_name_map_keys_path_and_id():
+    import app as app_module
+    m = app_module.build_csp_name_map(_GRAPH_ITEMS)
+    assert m["device/vendor/msft/policy/config/abovelock/allowcortanaabovelock"] == \
+        "Allow Cortana above lock screen"
+    assert m["device_vendor_msft_policy_config_abovelock_allowcortanaabovelock"] == \
+        "Allow Cortana above lock screen"
+    assert "skipme" not in m            # entries without a display name are dropped
+
+
+def test_csp_display_name_lookup(monkeypatch):
+    import app as app_module
+    monkeypatch.setattr(app_module, "_CSP_NAMES",
+                        app_module.build_csp_name_map(_GRAPH_ITEMS))
+    oma = app_module.policy_oma_uri("device", "AboveLock", "AllowCortanaAboveLock")
+    assert app_module.csp_display_name("AboveLock", "AllowCortanaAboveLock", oma) == \
+        "Allow Cortana above lock screen"
+    # Falls back to the settingDefinitionId when the path doesn't match.
+    assert app_module.csp_display_name(
+        "AboveLock", "AllowCortanaAboveLock", "./bogus") == \
+        "Allow Cortana above lock screen"
+    assert app_module.csp_display_name("Foo", "Bar", "./none") == ""
+
+
+def test_csp_display_name_empty_without_map(monkeypatch):
+    import app as app_module
+    monkeypatch.setattr(app_module, "_CSP_NAMES", {})
+    assert app_module.csp_display_name("AboveLock", "X", "./y") == ""
+
+
+def test_build_dashboard_intune_name_column(tmp_path, monkeypatch):
+    import app as app_module
+    monkeypatch.setattr(app_module, "_CSP_NAMES",
+                        app_module.build_csp_name_map(_GRAPH_ITEMS))
+    inp = tmp_path / "pkg"
+    _write_utf16(inp / "Registry" / "PolicyManager-Current.reg", _PM_REG)
+    dash = app_module.build_dashboard(inp)
+    sec = next(s for s in dash["sections"] if s["title"].startswith("Policy settings"))
+    assert sec["columns"] == ["Area", "Setting", "Intune name", "Value", "OMA-URI"]
+    intune_cells = [r[2] for r in sec["rows"]]
+    assert "Allow Cortana above lock screen" in intune_cells
+    html = app_module.render_dashboard_panel(dash)
+    assert "Allow Cortana above lock screen" in html

@@ -107,6 +107,16 @@ Alle configuratie loopt via environment variables met veilige defaults:
 | `LONG_SCRIPT_THRESHOLD_SECONDS` | `180` | PowerShell-scripts die langer draaien dan dit worden in de timeline als waarschuwing gemarkeerd. |
 | `APP_USER`               | *(leeg)*| Optionele gebruikersnaam voor basic auth.                                                     |
 | `APP_PASSWORD`           | *(leeg)*| Optioneel wachtwoord voor basic auth.                                                         |
+| `GRAPH_TENANT_ID`        | *(leeg)*| Zet samen met `GRAPH_CLIENT_ID`/`GRAPH_CLIENT_SECRET` aan: verrijkt de RSOP-settingtabel met de vriendelijke Intune-settingnaam uit de Microsoft Graph settings-catalog. |
+| `GRAPH_CLIENT_ID`        | *(leeg)*| App-registratie client-id (scope `DeviceManagementConfiguration.Read.All`, app-permission). |
+| `GRAPH_CLIENT_SECRET`    | *(leeg)*| Client secret van bovenstaande app-registratie.                                               |
+| `CSP_NAMES_CACHE`        | `<JOBS_DIR>/../csp-names.json` | Cachebestand voor de (tenant-onafhankelijke) catalog. Mag ook vooraf gegenereerd worden. |
+| `CSP_NAMES_TTL_HOURS`    | `720`   | Maximale leeftijd van de cache voordat de catalog opnieuw wordt opgehaald.                     |
+
+De Graph-verrijking is **optioneel en uit by default**: zonder de drie `GRAPH_*`
+vars doet de app geen externe call en blijft de RSOP-tabel zoals hij is (OMA-URI +
+Learn-link). De catalog bevat alleen globale Microsoft-metadata (geen logdata) en
+wordt één keer bij het starten opgehaald en gecached.
 
 De app is **standaard zonder login** (publiek). Basic auth is optioneel: zet
 **beide** `APP_USER` en `APP_PASSWORD` om de hele app achter een wachtwoord te

@@ -19,6 +19,12 @@ Configuration (env, with safe defaults):
   LONG_SCRIPT_THRESHOLD_SECONDS  default 180 (flag long-running PowerShell
                           scripts in the timeline; consumed by run-analysis.sh)
   EVTX_MAX_EVENTS         default 2000 (cap events parsed per .evtx view)
+  GRAPH_TENANT_ID / GRAPH_CLIENT_ID / GRAPH_CLIENT_SECRET
+                          default empty; set all three to enrich the RSOP table
+                          with friendly Intune setting names from the (global)
+                          Microsoft Graph settings catalog. Off by default.
+  CSP_NAMES_CACHE         default <JOBS_DIR>/../csp-names.json (catalog cache)
+  CSP_NAMES_TTL_HOURS     default 720 (re-fetch the catalog after this age)
 """
 
 from __future__ import annotations
@@ -33,6 +39,9 @@ import secrets
 import shutil
 import subprocess
 import time
+import urllib.error
+import urllib.parse
+import urllib.request
 import uuid
 import xml.etree.ElementTree as ET
 import zipfile
@@ -85,6 +94,20 @@ CHUNK = 1024 * 1024
 # Cap events parsed per .evtx file in the event log viewer (python-evtx is
 # pure Python; large System.evtx files would otherwise stall the request).
 EVTX_MAX_EVENTS = max(1, int(os.environ.get("EVTX_MAX_EVENTS", "2000")))
+
+# Optional Settings-Catalog name enrichment via Microsoft Graph. When all three
+# GRAPH_* vars are set, the (tenant-independent) configuration-settings catalog
+# is fetched ONCE at startup and cached to CSP_NAMES_CACHE, so the RSOP table
+# can show the friendly Intune setting display name next to each CSP setting.
+# Off by default: no creds -> no external call, behaviour is unchanged. The
+# cache file can also be pre-generated (build-time) and shipped without creds.
+GRAPH_TENANT_ID = os.environ.get("GRAPH_TENANT_ID", "")
+GRAPH_CLIENT_ID = os.environ.get("GRAPH_CLIENT_ID", "")
+GRAPH_CLIENT_SECRET = os.environ.get("GRAPH_CLIENT_SECRET", "")
+GRAPH_ENABLED = bool(GRAPH_TENANT_ID and GRAPH_CLIENT_ID and GRAPH_CLIENT_SECRET)
+CSP_NAMES_CACHE = Path(os.environ.get(
+    "CSP_NAMES_CACHE", str(JOBS_DIR.parent / "csp-names.json")))
+CSP_NAMES_TTL_HOURS = max(1, int(os.environ.get("CSP_NAMES_TTL_HOURS", "720")))
 
 # Diagnostics-package extension policy. Text-ish files get the line viewer,
 # .log the CMTrace viewer, .html a sandboxed iframe, .evtx the event viewer.
@@ -918,6 +941,146 @@ def count_event_issues(text: str) -> dict:
     }
 
 
+# --- Settings-Catalog name enrichment (optional, Microsoft Graph) ------------
+# Maps a Policy CSP setting to its friendly Intune display name. The catalog is
+# global Microsoft metadata (no tenant/log data), fetched once and cached. Every
+# function is total: a network/credential failure logs and yields no names, so a
+# diagnostics job never fails because of this enrichment.
+
+_CSP_NAMES: Optional[dict] = None  # in-memory map cache (path/id -> displayName)
+_GRAPH_TOKEN_URL = "https://login.microsoftonline.com/{tenant}/oauth2/v2.0/token"
+_GRAPH_SETTINGS_URL = (
+    "https://graph.microsoft.com/beta/deviceManagement/configurationSettings"
+    "?$select=id,displayName,baseUri,offsetUri")
+
+
+def _norm_csp_key(s: str) -> str:
+    """Normalize a CSP path/OMA-URI to a stable lookup key (lowercase, no
+    leading `./`, single slashes)."""
+    s = (s or "").strip().lower().lstrip(".")
+    s = re.sub(r"/+", "/", s).strip("/")
+    return s
+
+
+def _graph_token() -> Optional[str]:
+    """Client-credentials access token for Graph, or None on any failure."""
+    if not GRAPH_ENABLED:
+        return None
+    data = urllib.parse.urlencode({
+        "client_id": GRAPH_CLIENT_ID,
+        "client_secret": GRAPH_CLIENT_SECRET,
+        "scope": "https://graph.microsoft.com/.default",
+        "grant_type": "client_credentials",
+    }).encode()
+    url = _GRAPH_TOKEN_URL.format(tenant=urllib.parse.quote(GRAPH_TENANT_ID))
+    try:
+        with urllib.request.urlopen(
+                urllib.request.Request(url, data=data), timeout=30) as r:
+            return json.loads(r.read()).get("access_token")
+    except (urllib.error.URLError, ValueError, OSError) as e:
+        log.warning("Graph token request failed: %s", e)
+        return None
+
+
+def _graph_fetch_settings(token: str) -> List[dict]:
+    """Page through the configuration-settings catalog; [] on any failure."""
+    items: List[dict] = []
+    url: Optional[str] = _GRAPH_SETTINGS_URL
+    headers = {"Authorization": f"Bearer {token}"}
+    pages = 0
+    while url and pages < 200:
+        pages += 1
+        try:
+            with urllib.request.urlopen(
+                    urllib.request.Request(url, headers=headers), timeout=60) as r:
+                payload = json.loads(r.read())
+        except (urllib.error.URLError, ValueError, OSError) as e:
+            log.warning("Graph settings fetch failed: %s", e)
+            break
+        items.extend(payload.get("value", []))
+        url = payload.get("@odata.nextLink")
+    return items
+
+
+def build_csp_name_map(items: List[dict]) -> dict:
+    """Pure transform: catalog items -> {csp-path-or-settingDefinitionId:
+    displayName}. Keyed by both the normalized baseUri/offsetUri path and the
+    settingDefinitionId so either lookup resolves."""
+    out: dict = {}
+    for it in items:
+        name = (it.get("displayName") or "").strip()
+        if not name:
+            continue
+        base, offset = it.get("baseUri") or "", it.get("offsetUri") or ""
+        if base or offset:
+            out[_norm_csp_key(f"{base}/{offset}")] = name
+        sid = (it.get("id") or "").strip().lower()
+        if sid:
+            out[sid] = name
+    return out
+
+
+def load_csp_names() -> dict:
+    """Return the name map: in-memory cache, else the on-disk cache, else {}."""
+    global _CSP_NAMES
+    if _CSP_NAMES is not None:
+        return _CSP_NAMES
+    try:
+        if CSP_NAMES_CACHE.is_file():
+            _CSP_NAMES = json.loads(CSP_NAMES_CACHE.read_text(encoding="utf-8")
+                                    ).get("map", {})
+            return _CSP_NAMES
+    except (ValueError, OSError) as e:
+        log.warning("Could not read CSP names cache: %s", e)
+    _CSP_NAMES = {}
+    return _CSP_NAMES
+
+
+def refresh_csp_names(force: bool = False) -> dict:
+    """Fetch + cache the catalog when creds are set and the cache is missing or
+    older than the TTL. Total: never raises; returns the (possibly empty) map."""
+    global _CSP_NAMES
+    if not GRAPH_ENABLED:
+        return load_csp_names()
+    try:
+        fresh = (CSP_NAMES_CACHE.is_file()
+                 and (time.time() - CSP_NAMES_CACHE.stat().st_mtime)
+                 < CSP_NAMES_TTL_HOURS * 3600)
+    except OSError:
+        fresh = False
+    if fresh and not force:
+        return load_csp_names()
+    token = _graph_token()
+    if not token:
+        return load_csp_names()
+    items = _graph_fetch_settings(token)
+    if not items:
+        return load_csp_names()
+    mapping = build_csp_name_map(items)
+    try:
+        CSP_NAMES_CACHE.parent.mkdir(parents=True, exist_ok=True)
+        CSP_NAMES_CACHE.write_text(
+            json.dumps({"generated": time.time(), "map": mapping}),
+            encoding="utf-8")
+    except OSError as e:
+        log.warning("Could not write CSP names cache: %s", e)
+    _CSP_NAMES = mapping
+    log.info("Loaded %d Intune setting display names from Graph", len(mapping))
+    return mapping
+
+
+def csp_display_name(area: str, setting: str, oma_uri: str) -> str:
+    """Friendly Intune display name for a CSP setting, or '' when unknown."""
+    names = load_csp_names()
+    if not names:
+        return ""
+    hit = names.get(_norm_csp_key(oma_uri))
+    if hit:
+        return hit
+    sid = f"device_vendor_msft_policy_config_{area}_{setting}".lower()
+    return names.get(sid, "")
+
+
 # The collector exists in an English and a Dutch variant; accept both names.
 _DASH_SOURCES = {
     "summary": ("_SUMMARY.txt", "_SAMENVATTING.txt"),
@@ -1140,11 +1303,14 @@ def build_dashboard(input_dir: Path) -> dict:
         for s in pm_settings[:2000]:
             oma = ({"text": s["oma_uri"], "href": s["doc_url"]} if s["doc_url"]
                    else s["oma_uri"] + ("  (ADMX)" if s["admx"] else ""))
-            rows.append([s["area"], s["setting"], s["value"], oma])
+            # Friendly Intune display name from the Graph catalog (empty when
+            # enrichment is off or the setting is ADMX/unmatched).
+            intune = csp_display_name(s["area"], s["setting"], s["oma_uri"])
+            rows.append([s["area"], s["setting"], intune, s["value"], oma])
         sections.append({
             "title": f'Policy settings ({len(pm_settings)})',
             "src": src_of("policymanager"),
-            "columns": ["Area", "Setting", "Value", "OMA-URI / Intune name"],
+            "columns": ["Area", "Setting", "Intune name", "Value", "OMA-URI"],
             "rows": rows,
         })
 
@@ -1688,6 +1854,10 @@ async def lifespan(app: FastAPI):
     else:
         log.info("Basic auth enabled for user %r", APP_USER)
     task = asyncio.create_task(cleanup_loop())
+    # Warm the Intune setting-name cache in the background (only when Graph
+    # creds are set); never blocks startup or fails it.
+    if GRAPH_ENABLED:
+        asyncio.create_task(asyncio.to_thread(refresh_csp_names))
     try:
         yield
     finally:
