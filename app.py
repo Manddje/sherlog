@@ -3654,7 +3654,62 @@ async def cmtrace_upload_page() -> HTMLResponse:
 # package this tool analyzes; shipped in the repo root so it can be shown
 # and downloaded from the upload page.
 COLLECT_SCRIPT = APP_DIR / "Collect-IntuneDiagnostics.ps1"
-REMEDIATION_SCRIPT = APP_DIR / "Remediate-CollectToSherlog.ps1"
+
+# Canonical remediation script, also shipped as Remediate-CollectToSherlog.ps1.
+# Kept inline so
+# the inbox can always show it, even if the file isn't in the running image.
+REMEDIATION_TEMPLATE = r"""<#
+.SYNOPSIS
+    Intune remediation script: collect a slim Intune diagnostics package and
+    upload it to a Sherlog drop-off inbox.
+
+.DESCRIPTION
+    Deploy this single script as a Remediation (Devices > Scripts and
+    remediations) and trigger it on-demand ("Run remediation") per device, or
+    assign it to a group. It downloads Collect-IntuneDiagnostics.ps1 from your
+    Sherlog server and runs it with the slim -Remote profile, uploading the zip
+    with your token. Review the uploads at <SherlogBase>/inbox?token=<token>.
+
+    Runs as SYSTEM. Output is kept short to fit the 2048-char remediation cap.
+
+.NOTES
+    Edit the two settings below. Generate the token on the Sherlog /inbox page.
+    Run in 64-bit PowerShell. No detection script needed (run on-demand), or
+    pair with a detection script that always 'exit 1' to force the remediation.
+#>
+
+# ---- settings -------------------------------------------------------------
+$SherlogBase = 'https://sherlog.nl'          # your Sherlog base URL
+$UploadToken = '<PASTE-YOUR-TOKEN-HERE>'     # from <SherlogBase>/inbox
+# ---------------------------------------------------------------------------
+
+try {
+    [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+} catch {}
+
+$collector = Join-Path $env:TEMP 'Collect-IntuneDiagnostics.ps1'
+try {
+    Invoke-WebRequest -Uri "$SherlogBase/collect-script" -OutFile $collector -UseBasicParsing
+} catch {
+    Write-Output "Sherlog: collector download failed: $($_.Exception.Message)"
+    exit 1
+}
+
+try {
+    & $collector -Remote -OutputPath $env:TEMP `
+        -UploadUrl "$SherlogBase/api/diagnostics" -UploadToken $UploadToken |
+        Where-Object { $_ -match 'Review at:|Upload failed' } |
+        Select-Object -Last 1 |
+        ForEach-Object { Write-Output "Sherlog: $_" }
+} catch {
+    Write-Output "Sherlog: collection failed: $($_.Exception.Message)"
+    exit 1
+} finally {
+    Remove-Item $collector -Force -ErrorAction SilentlyContinue
+}
+
+exit 0
+"""
 
 
 def render_collect_script_panel() -> str:
@@ -4227,12 +4282,8 @@ async def inbox(request: Request, token: str = "") -> HTMLResponse:
         return HTMLResponse("Inbox is not enabled on this server.", status_code=404)
     token = token or request.headers.get("X-Upload-Token", "")
     if not token:
-        try:
-            script_tpl = REMEDIATION_SCRIPT.read_text(encoding="utf-8")
-        except OSError:
-            script_tpl = ""
         body = _INBOX_FORM % {"min": UPLOAD_TOKEN_MIN_LEN,
-                              "script": json.dumps(script_tpl)}
+                              "script": json.dumps(REMEDIATION_TEMPLATE)}
         return HTMLResponse(INBOX_PAGE % {
             "css": PAGE_CSS, "nav": NAV, "footer": FOOTER, "body": body})
 
