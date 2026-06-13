@@ -43,8 +43,8 @@ RUN chmod +x /app/scripts/run-analysis.sh /app/scripts/docker-entrypoint.sh \
     && chmod 0644 /app/Collect-IntuneDiagnostics.ps1
 
 # Create the non-root runtime user (uid 10001). The container starts as root so
-# the entrypoint can chown mounted volumes (JOBS_DIR / INBOX_DIR), then drops to
-# this user via setpriv before launching uvicorn.
+# the entrypoint can chown the mounted JOBS_DIR volume, then drops to this user
+# via setpriv before launching uvicorn.
 RUN useradd --create-home --uid 10001 appuser \
     && mkdir -p /data/jobs \
     && chown -R appuser:appuser /data

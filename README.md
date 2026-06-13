@@ -112,8 +112,7 @@ Alle configuratie loopt via environment variables met veilige defaults:
 | `GRAPH_CLIENT_SECRET`    | *(leeg)*| Client secret van bovenstaande app-registratie.                                               |
 | `CSP_NAMES_CACHE`        | `<JOBS_DIR>/../csp-names.json` | Cachebestand voor de (tenant-onafhankelijke) catalog. Mag ook vooraf gegenereerd worden. |
 | `CSP_NAMES_TTL_HOURS`    | `720`   | Maximale leeftijd van de cache voordat de catalog opnieuw wordt opgehaald.                     |
-| `ENABLE_UPLOAD_API`      | *(uit)* | Zet de device drop-off API (`/api/diagnostics`) + `/inbox` aan. Default uit.                   |
-| `INBOX_DIR`              | `=JOBS_DIR` | Opslag voor device drop-off packages. Wijs naar een persistent Coolify-volume om ze over redeploys te bewaren; als die verschilt van `JOBS_DIR` blijven ze buiten de 24u-cleanup. |
+| `ENABLE_UPLOAD_API`      | *(uit)* | Zet de device drop-off API (`/api/diagnostics`) + `/inbox` aan. Default uit. Drop-off packages gebruiken dezelfde `JOBS_DIR` en `JOB_RETENTION_HOURS` als alle andere logs. |
 | `UPLOAD_TOKEN_MIN_LEN`   | `24`    | Minimale lengte van een (zelfgekozen) upload-token.                                            |
 | `UPLOAD_API_MAX_JOBS`    | `2000`  | Globale rem op het aantal drop-off-jobs (tegen disk-misbruik); daarboven `429`.                |
 
@@ -161,16 +160,16 @@ Direct vanaf de commandline kan ook:
     -UploadUrl 'https://sherlog.nl/api/diagnostics' -UploadToken '<token>'
 ```
 
-**Persistent opslag.** Wijs `INBOX_DIR` naar een persistent Coolify-volume
-(bijv. `/data/inbox`) zodat de geüploade packages elke redeploy overleven en
-buiten de 24u-cleanup vallen. Gewone Timeline/CMTrace-uploads blijven wegwerp in
-`JOBS_DIR`.
+**Opslag & retentie.** Drop-off packages worden net als alle andere logs in
+`JOBS_DIR` opgeslagen en na `JOB_RETENTION_HOURS` (default 24u) opgeruimd. Wil je
+ze langer bewaren én over redeploys behouden: mount `JOBS_DIR` op een persistent
+Coolify-volume en zet `JOB_RETENTION_HOURS` hoger (bijv. `720` voor 30 dagen).
 
 **Maprechten.** De container draait als niet-root (uid 10001). De entrypoint
 ([`scripts/docker-entrypoint.sh`](scripts/docker-entrypoint.sh)) chownt `JOBS_DIR`
-en `INBOX_DIR` bij het starten en dropt daarna naar die user, dus een root-owned
-Coolify-volume werkt **zonder handmatige `chown`**. Wel nodig: het volume moet
-schrijfbaar zijn voor root bij het starten (standaard zo).
+bij het starten en dropt daarna naar die user, dus een root-owned Coolify-volume
+werkt **zonder handmatige `chown`**. Wel nodig: het volume moet schrijfbaar zijn
+voor root bij het starten (standaard zo).
 
 **Security & privacy.** Diagnostics-packages bevatten vertrouwelijke gegevens
 (IME-logs, identity, certificaten). Voor vertrouwelijke logs heeft een

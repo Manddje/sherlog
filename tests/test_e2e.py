@@ -1506,33 +1506,36 @@ def test_api_token_too_short(upload_client):
     assert r.status_code == 401
 
 
-def test_dropoff_uses_persistent_inbox_dir(tmp_path, monkeypatch):
-    """Drop-off packages land in a distinct INBOX_DIR and survive the cleanup
-    that sweeps JOBS_DIR."""
-    jobs = tmp_path / "jobs"
-    inbox = tmp_path / "inbox"
-    monkeypatch.setenv("JOBS_DIR", str(jobs))
-    monkeypatch.setenv("INBOX_DIR", str(inbox))
+def test_dropoff_uses_jobs_dir_and_shared_retention(tmp_path, monkeypatch):
+    """Drop-off packages live in JOBS_DIR and obey the shared
+    JOB_RETENTION_HOURS, just like every other job."""
+    monkeypatch.setenv("JOBS_DIR", str(tmp_path / "jobs"))
     monkeypatch.setenv("ENABLE_UPLOAD_API", "1")
+    monkeypatch.setenv("JOB_RETENTION_HOURS", "1")
     monkeypatch.setenv("APP_USER", "")
     monkeypatch.setenv("APP_PASSWORD", "")
     import importlib
     import app as app_module
     importlib.reload(app_module)
+    # No IME logs -> no analysis task spawned (keeps teardown clean).
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr("Identity/dsregcmd-status.txt", "AzureAdJoined : YES\n")
+    payload = buf.getvalue()
     from fastapi.testclient import TestClient
     with TestClient(app_module.app) as c:
-        r = c.post("/api/diagnostics", content=_diag_zip(),
-                   headers={"X-Upload-Token": _TOK, "X-Device-Name": "PC01",
-                            "Content-Type": "application/zip"})
-        job_id = r.json()["job_id"]
-        assert (inbox / job_id).is_dir()
-        assert not (jobs / job_id).exists()
-        assert c.get(f"/result/{job_id}").status_code == 200
-        # Backdate it and run the retention sweep: it must remain.
-        old = time.time() - 10 ** 7
-        os.utime(inbox / job_id, (old, old))
+        job_id = c.post("/api/diagnostics", content=payload,
+                        headers={"X-Upload-Token": _TOK, "X-Device-Name": "PC01",
+                                 "Content-Type": "application/zip"}).json()["job_id"]
+        d = app_module.job_dir(job_id)
+        assert d == app_module.JOBS_DIR / job_id and d.is_dir()
+        # Younger than the window: kept; older: removed.
         app_module.cleanup_old_jobs()
-        assert (inbox / job_id).is_dir()
+        assert d.is_dir()
+        old = time.time() - 2 * 3600
+        os.utime(d, (old, old))
+        app_module.cleanup_old_jobs()
+        assert not d.exists()
     importlib.reload(app_module)
 
 

@@ -25,9 +25,6 @@ Configuration (env, with safe defaults):
                           Microsoft Graph settings catalog. Off by default.
   CSP_NAMES_CACHE         default <JOBS_DIR>/../csp-names.json (catalog cache)
   CSP_NAMES_TTL_HOURS     default 720 (re-fetch the catalog after this age)
-  INBOX_DIR               default = JOBS_DIR; storage for device drop-off
-                          packages. Mount a persistent volume here to keep them
-                          across redeploys (and out of the retention cleanup).
   ENABLE_UPLOAD_API       default off; enables /api/diagnostics + /inbox so an
                           Intune-deployed collector can drop off packages
   UPLOAD_TOKEN_MIN_LEN    default 24 (minimum length of a self-chosen token)
@@ -90,11 +87,6 @@ SCRIPT_TIMEOUT_SECONDS = int(os.environ.get("SCRIPT_TIMEOUT_SECONDS", "300"))
 # by many concurrent uploads (each run is CPU/memory heavy).
 JOB_CONCURRENCY = max(1, int(os.environ.get("JOB_CONCURRENCY", "2")))
 JOBS_DIR = Path(os.environ.get("JOBS_DIR", "/data/jobs"))
-# Device drop-off packages (source=api) are stored here instead of JOBS_DIR.
-# Point this at a persistent Coolify volume to keep them across redeploys; when
-# distinct from JOBS_DIR they are never touched by the retention cleanup. Default
-# = JOBS_DIR (drop-off behaves like any other job: ephemeral).
-INBOX_DIR = Path(os.environ.get("INBOX_DIR", str(JOBS_DIR)))
 APP_USER = os.environ.get("APP_USER", "")
 APP_PASSWORD = os.environ.get("APP_PASSWORD", "")
 # Cap rows rendered by the CMTrace log viewer so a large upload can't build a
@@ -160,29 +152,18 @@ def token_hash(raw: str) -> str:
 
 
 def job_dir(job_id: str) -> Path:
-    """Resolve a job's directory. New ephemeral jobs live under JOBS_DIR; device
-    drop-off jobs may live under a distinct persistent INBOX_DIR. Prefer an
-    existing location so every read path works regardless of where it was made."""
-    p = JOBS_DIR / job_id
-    if INBOX_DIR != JOBS_DIR and not p.exists():
-        q = INBOX_DIR / job_id
-        if q.exists():
-            return q
-    return p
+    return JOBS_DIR / job_id
 
 
 def iter_job_dirs():
-    """Yield every job directory across JOBS_DIR and (if distinct) INBOX_DIR."""
-    seen = set()
-    for root in (JOBS_DIR, INBOX_DIR):
-        try:
-            children = list(root.iterdir())
-        except OSError:
-            continue
-        for child in children:
-            if child.is_dir() and child.name not in seen:
-                seen.add(child.name)
-                yield child
+    """Yield every job directory under JOBS_DIR."""
+    try:
+        children = list(JOBS_DIR.iterdir())
+    except OSError:
+        return
+    for child in children:
+        if child.is_dir():
+            yield child
 
 
 def status_path(job_id: str) -> Path:
@@ -1862,15 +1843,10 @@ def fail_interrupted_jobs() -> int:
 
 
 def cleanup_old_jobs() -> int:
-    # Only JOBS_DIR is swept; a distinct INBOX_DIR (device drop-off) is left
-    # untouched so those packages persist across redeploys.
-    if not JOBS_DIR.is_dir():
-        return 0
+    # All jobs (incl. device drop-off) share one retention: JOB_RETENTION_HOURS.
     cutoff = time.time() - JOB_RETENTION_HOURS * 3600
     removed = 0
-    for child in JOBS_DIR.iterdir():
-        if not child.is_dir():
-            continue
+    for child in iter_job_dirs():
         try:
             if child.stat().st_mtime < cutoff:
                 shutil.rmtree(child, ignore_errors=True)
@@ -1908,7 +1884,6 @@ def spawn_job(coro) -> None:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     JOBS_DIR.mkdir(parents=True, exist_ok=True)
-    INBOX_DIR.mkdir(parents=True, exist_ok=True)
     fail_interrupted_jobs()
     if not AUTH_ENABLED:
         log.warning("AUTH DISABLED: APP_USER/APP_PASSWORD not both set. App is OPEN.")
@@ -4102,8 +4077,7 @@ async def api_diagnostics(request: Request) -> Response:
 
     device = (request.headers.get("X-Device-Name") or "device").strip()[:128]
     job_id = uuid.uuid4().hex
-    # Drop-off packages go to the (optionally persistent) inbox dir, not JOBS_DIR.
-    base = INBOX_DIR / job_id
+    base = job_dir(job_id)
     input_dir = base / "input"
     output_dir = base / "output"
     tmp_dir = base / "tmp"
