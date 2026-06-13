@@ -1296,6 +1296,7 @@ def build_dashboard(input_dir: Path) -> dict:
             "title": f"Win32 app deployment status ({len(w32)})",
             "src": src_of("win32apps"),
             "columns": ["App ID", "Compliance", "Enforcement", "Error"],
+            "widths": [30, 16, 18, 36],
             "rows": [[a["app_id"], a["compliance"], a["enforcement"],
                       (f'{a["error_code"]} — {a["error_text"]}' if a["error_text"]
                        else a["error_code"])]
@@ -1343,6 +1344,7 @@ def build_dashboard(input_dir: Path) -> dict:
             "title": f'Policy settings ({len(pm_settings)})',
             "src": src_of("policymanager"),
             "columns": ["Area", "Setting", "Intune name", "Value", "OMA-URI"],
+            "widths": [13, 20, 23, 12, 32],
             "rows": rows,
         })
 
@@ -2566,10 +2568,11 @@ DIAG_PAGE = """<!doctype html>
   details.section>summary{cursor:pointer;font-weight:600;padding:.25rem 0}
   details.section .seclink{margin-left:.5rem;font-weight:400;font-size:.8rem;
     color:var(--accent);cursor:pointer}
-  details.section table{border-collapse:collapse;width:100%%;margin-top:.5rem}
+  details.section table{border-collapse:collapse;width:100%%;margin-top:.5rem;
+    table-layout:fixed}
   details.section th,details.section td{text-align:left;padding:.25rem .5rem;
     border-bottom:1px solid var(--row-border);vertical-align:top;
-    word-break:break-word;font-family:ui-monospace,Menlo,Consolas,monospace}
+    overflow-wrap:anywhere;font-family:ui-monospace,Menlo,Consolas,monospace}
   details.section th{color:var(--muted);font-weight:600;position:sticky;top:0;
     background:var(--surface)}
   .acard{border:1px solid var(--border);border-radius:10px;padding:.75rem 1rem;
@@ -2933,6 +2936,14 @@ def render_dashboard_panel(dash: Optional[dict]) -> str:
                     f' role="link" tabindex="0"'
                     f' title="Open {attr_escape(src)}">source &rarr;</span>')
         head = "".join(f"<th>{html_escape(str(c))}</th>" for c in cols)
+        # Optional per-column widths (percent ints) for the fixed table layout,
+        # so a short column (e.g. Value) isn't crushed by long ones (OMA-URI).
+        widths = sec.get("widths")
+        colgroup = ""
+        if widths and len(widths) == len(cols):
+            colgroup = ("<colgroup>"
+                        + "".join(f'<col style="width:{int(w)}%">' for w in widths)
+                        + "</colgroup>")
 
         def render_cell(cell) -> str:
             # A dict cell {text, href} becomes an external link (e.g. the
@@ -2949,7 +2960,7 @@ def render_dashboard_panel(dash: Optional[dict]) -> str:
         parts.append(
             f'<details class="section"><summary>'
             f'{html_escape(str(sec.get("title", "")))}{link}</summary>'
-            f'<table><thead><tr>{head}</tr></thead>'
+            f'<table>{colgroup}<thead><tr>{head}</tr></thead>'
             f'<tbody>{body}</tbody></table></details>')
     return "".join(parts)
 

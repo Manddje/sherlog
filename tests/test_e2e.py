@@ -1365,9 +1365,13 @@ def test_build_dashboard_policy_settings_section(tmp_path):
     cells = [row[-1] for row in sec["rows"]]
     assert any(isinstance(c, dict) and "policy-csp-abovelock" in c["href"] for c in cells)
     assert any(isinstance(c, str) and "(ADMX)" in c for c in cells)
+    # Fixed column widths render as a <colgroup> so the Value column isn't
+    # crushed by the long OMA-URI column.
+    assert sec["widths"] and len(sec["widths"]) == len(sec["columns"])
     html = app_module.render_dashboard_panel(dash)
     assert 'href="https://learn.microsoft.com/windows/client-management/mdm/policy-csp-' in html
     assert 'rel="noopener"' in html
+    assert "<colgroup>" in html and html.count("<col ") == len(sec["columns"])
 
 
 # --- Settings-Catalog name enrichment (Microsoft Graph, optional) ----------
