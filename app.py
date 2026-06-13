@@ -2363,13 +2363,20 @@ _CMTRACE_CSS = """
   .sw.e{background:var(--err-bg);border-color:var(--err-border)}
   #body tr{cursor:pointer}
   tr.sel,tr.sel.warn,tr.sel.err{background:var(--hl)}
-  #detail{position:fixed;bottom:0;left:0;right:0;max-height:45%;overflow:auto;
+  #detail{position:fixed;bottom:0;left:0;right:0;max-height:45%;overflow-y:auto;overflow-x:hidden;
     background:var(--bg);border-top:2px solid var(--border2);
     box-shadow:0 -6px 16px rgba(0,0,0,.1);padding:.6rem 1rem;z-index:3}
+  #d-resize{height:8px;margin:-.6rem -1rem .45rem;cursor:ns-resize;
+    background:linear-gradient(var(--border2),var(--border2)) center/2rem 2px no-repeat;
+    user-select:none;flex-shrink:0}
+  #d-resize:hover,#d-resize.active{background-color:var(--surface2);
+    background-image:linear-gradient(var(--accent),var(--accent))}
   .d-bar{display:flex;justify-content:space-between;align-items:center;gap:.5rem}
-  #d-close{font:inherit;border:1px solid var(--border2);background:var(--surface);
+  .d-actions{display:flex;gap:.35rem}
+  #d-close,#d-copy{font:inherit;border:1px solid var(--border2);background:var(--surface);
     color:var(--fg);border-radius:6px;cursor:pointer;padding:.05rem .55rem}
-  #d-close:hover{background:var(--surface2)}
+  #d-close:hover,#d-copy:hover{background:var(--surface2)}
+  #d-copy.copied{color:var(--accent);border-color:var(--accent)}
   #d-msg{margin:.45rem 0;white-space:pre-wrap;word-break:break-word}
   .d-meta{color:var(--muted);margin-bottom:.4rem}
   .sev{font-weight:600;padding:.1rem .55rem;border-radius:999px}
@@ -2736,8 +2743,12 @@ def _render_records_page(filename: str, head: str, rows: List[str],
   %(rows)s
   </tbody></table>
   <div id="detail" hidden>
+    <div id="d-resize"></div>
     <div class="d-bar"><span id="d-sev" class="sev"></span>
-      <button id="d-close" title="Close (Esc)">&times;</button></div>
+      <div class="d-actions">
+        <button id="d-copy" title="Copy to clipboard">&#x2398;</button>
+        <button id="d-close" title="Close (Esc)">&times;</button>
+      </div></div>
     <pre id="d-msg"></pre>
     <div id="d-meta" class="d-meta"></div>
     <div id="d-explain"></div>
@@ -2833,7 +2844,57 @@ def _render_records_page(filename: str, head: str, rows: List[str],
     if (tr) showDetail(tr);
   });
   document.getElementById('d-close').addEventListener('click', closeDetail);
+  document.getElementById('d-copy').addEventListener('click', function(){
+    var parts = [dSev.textContent];
+    if (dMeta.textContent) parts.push(dMeta.textContent);
+    parts.push(dMsg.textContent);
+    for (var el of dExplain.querySelectorAll('.code'))
+      parts.push(el.textContent.trim());
+    navigator.clipboard.writeText(parts.join('\\n')).then(function(){
+      var btn = document.getElementById('d-copy');
+      btn.classList.add('copied');
+      setTimeout(function(){ btn.classList.remove('copied'); }, 1500);
+    });
+  });
   document.addEventListener('keydown', ev => { if (ev.key === 'Escape') closeDetail(); });
+  // Resize handle: drag top edge of detail panel
+  (function(){
+    var handle = document.getElementById('d-resize');
+    var startY, startH;
+    function onMove(ev){
+      var y = ev.touches ? ev.touches[0].clientY : ev.clientY;
+      var h = Math.max(80, Math.min(window.innerHeight - 50, startH + startY - y));
+      detail.style.height = h + 'px';
+      detail.style.maxHeight = 'none';
+    }
+    function onUp(){
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('mouseup', onUp);
+      document.removeEventListener('touchmove', onMove);
+      document.removeEventListener('touchend', onUp);
+      handle.classList.remove('active');
+      try { localStorage.setItem('sherlog.detail-h', detail.style.height); } catch(e){}
+    }
+    handle.addEventListener('mousedown', function(ev){
+      ev.preventDefault();
+      startY = ev.clientY;
+      startH = detail.getBoundingClientRect().height;
+      handle.classList.add('active');
+      document.addEventListener('mousemove', onMove);
+      document.addEventListener('mouseup', onUp);
+    });
+    handle.addEventListener('touchstart', function(ev){
+      ev.preventDefault();
+      startY = ev.touches[0].clientY;
+      startH = detail.getBoundingClientRect().height;
+      document.addEventListener('touchmove', onMove, {passive:false});
+      document.addEventListener('touchend', onUp);
+    }, {passive:false});
+    try {
+      var h = localStorage.getItem('sherlog.detail-h');
+      if (h){ detail.style.height = h; detail.style.maxHeight = 'none'; }
+    } catch(e){}
+  })();
 </script>
 </body></html>""" % {
         "file": html_escape(filename), "css": _CMTRACE_CSS, "comp": comp_sel,
