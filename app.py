@@ -4512,8 +4512,11 @@ def render_diag_page(job_id: str, status: dict) -> HTMLResponse:
         "firstsrc": firstsrc,
         "jobjson": json.dumps(job_id), "firstjson": json.dumps(first),
         "analysisjson": json.dumps(analysis.get("state", "none")),
-        "history": history_record_js(job_id, "diag", hist_state,
-                                     upload_names(status, job_id)),
+        # Device drop-off jobs belong in the token inbox, not in the viewer's
+        # personal "Recent uploads" history.
+        "history": ("" if status.get("source") == "api"
+                    else history_record_js(job_id, "diag", hist_state,
+                                           upload_names(status, job_id))),
     })
 
 
@@ -4544,8 +4547,9 @@ async def diag_timeline(job_id: str) -> Response:
     return HTMLResponse(REPORT_PAGE % {
         "css": PAGE_CSS, "logo": _LOGO, "job": job_id,
         "summary": render_summary_panel(read_summary(job_id)),
-        "history": history_record_js(job_id, "diag", "done",
-                                     upload_names(status, job_id)),
+        "history": ("" if status.get("source") == "api"
+                    else history_record_js(job_id, "diag", "done",
+                                           upload_names(status, job_id))),
     })
 
 

@@ -1539,6 +1539,30 @@ def test_dropoff_uses_jobs_dir_and_shared_retention(tmp_path, monkeypatch):
     importlib.reload(app_module)
 
 
+def test_dropoff_excluded_from_recent_uploads(upload_client):
+    """A device drop-off result page must not upsert into the viewer's personal
+    'Recent uploads' history; a self-uploaded package still does."""
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr("Identity/dsregcmd-status.txt", "AzureAdJoined : YES\n")
+    pkg = buf.getvalue()
+
+    # Drop-off via the API: not recorded.
+    drop_id = upload_client.post(
+        "/api/diagnostics", content=pkg,
+        headers={"X-Upload-Token": _TOK, "Content-Type": "application/zip"},
+    ).json()["job_id"]
+    assert "h.unshift" not in upload_client.get(f"/result/{drop_id}").text
+
+    # Own upload via the form: recorded.
+    r = upload_client.post(
+        "/diagnostics-analyze",
+        files={"files": ("IntuneDiag-PC.zip", pkg, "application/zip")},
+        follow_redirects=True,
+    )
+    assert "h.unshift" in r.text
+
+
 def test_inbox_form_has_generator(upload_client):
     r = upload_client.get("/inbox")
     assert r.status_code == 200
