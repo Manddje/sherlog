@@ -1752,3 +1752,22 @@ def test_diag_downloads(client):
     assert dz.status_code == 200 and dz.headers["content-type"] == "application/zip"
     members = zipfile.ZipFile(io.BytesIO(dz.content)).namelist()
     assert "Identity/dsregcmd-status.txt" in members
+
+
+def test_summary_shows_failed_script_error_code():
+    """A failed PowerShell script's error code (often only in the full log entry)
+    is surfaced in the summary items + top errors."""
+    import app as app_module
+    rs = app_module.ReportSummary()
+    rs.timeline = [
+        {"index": "1", "date": "2026-05-27", "status": "Failed",
+         "type": "Powershell script", "intent": "Execute",
+         "detail": "52f1bd15-da4f-49cb-98ee-eb81642a5cef for user System",
+         "seconds": "", "logentry": "AgentExecutor exit code 0x87D1041C"},
+    ]
+    s = app_module.summarize(rs)
+    item = next(i for i in s["items"] if i["status"] == "Failed")
+    assert item["code"] == "0x87D1041C" and item["code_text"]
+    assert ("0x87D1041C", 1) in [(e["code"], e["count"]) for e in s["top_errors"]]
+    html = app_module.render_summary_panel(s)
+    assert "<th>Error</th>" in html and "0x87D1041C" in html

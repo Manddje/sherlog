@@ -564,6 +564,10 @@ def summarize(summary: ReportSummary) -> dict:
 
     for row in summary.timeline:
         status, rtype = row["status"], row["type"]
+        # The error code (e.g. a failed PowerShell script's exit code) often sits
+        # in the full log entry rather than the short detail column — scan both.
+        codes = find_error_codes(row["detail"] + " " + row.get("logentry", ""))
+        code = next(iter(codes), "")
         if status in ("Success", "Failed") and rtype:
             bucket = counts.setdefault(rtype, {"success": 0, "failed": 0})
             bucket["success" if status == "Success" else "failed"] += 1
@@ -572,14 +576,15 @@ def summarize(summary: ReportSummary) -> dict:
         if status == "Not Detected":
             not_detected += 1
         if status in ("Failed", "ErrorLog"):
-            for code in find_error_codes(row["detail"]):
-                code_counter[code] += 1
+            for c in codes:
+                code_counter[c] += 1
         if status == "Failed":
             failed_items.append({
                 "date": row["date"],
                 "type": rtype,
                 "intent": row["intent"],
                 "detail": row["detail"][:SUMMARY_DETAIL_CAP],
+                "code": code, "code_text": ERROR_CODES.get(code, ""),
             })
         # Per-type drill-down behind the summary chips: keep every outcome
         # row, success included (failed_items above stays for old jobs).
@@ -590,6 +595,7 @@ def summarize(summary: ReportSummary) -> dict:
                 "intent": row["intent"],
                 "status": status,
                 "detail": row["detail"][:SUMMARY_DETAIL_CAP],
+                "code": code, "code_text": ERROR_CODES.get(code, ""),
             })
 
     return {
@@ -3131,6 +3137,9 @@ def _render_summary_items(items: List[dict]) -> str:
     for i in items:
         status = str(i.get("status", ""))
         cls = _SUMMARY_STATUS_CLASS.get(status, "")
+        code = str(i.get("code", ""))
+        err = (f'<td class="st-bad" title="{attr_escape(str(i.get("code_text", "")))}">'
+               f'{html_escape(code)}</td>') if code else "<td></td>"
         rows.append(
             f'<tr class="it" data-type="{attr_escape(str(i.get("type", "")))}"'
             f' data-status="{attr_escape(status)}">'
@@ -3138,12 +3147,12 @@ def _render_summary_items(items: List[dict]) -> str:
             f"<td>{html_escape(str(i.get('type', '')))}</td>"
             f"<td>{html_escape(str(i.get('intent', '')))}</td>"
             f'<td class="{cls}">{html_escape(status)}</td>'
-            f"<td>{html_escape(str(i.get('detail', '')))}</td></tr>"
+            f"<td>{html_escape(str(i.get('detail', '')))}</td>{err}</tr>"
         )
     return (
         '<h3 class="items-h">Failed items</h3>'
         '<table class="items-t"><tr><th>Date</th><th>Type</th><th>Intent</th>'
-        f'<th>Status</th><th>Detail</th></tr>{"".join(rows)}</table>'
+        f'<th>Status</th><th>Detail</th><th>Error</th></tr>{"".join(rows)}</table>'
         + _SUMMARY_ITEMS_JS
     )
 
@@ -3206,12 +3215,16 @@ def render_summary_panel(summary: Optional[dict]) -> str:
             f"<tr><td>{html_escape(i['date'])}</td>"
             f"<td>{html_escape(i['type'])}</td>"
             f"<td>{html_escape(i['intent'])}</td>"
-            f"<td>{html_escape(i['detail'])}</td></tr>"
+            f"<td>{html_escape(i['detail'])}</td>"
+            + ((f'<td class="st-bad" title="{attr_escape(str(i.get("code_text", "")))}">'
+                f'{html_escape(str(i.get("code", "")))}</td>') if i.get("code")
+               else "<td></td>")
+            + "</tr>"
             for i in failed_items
         )
         parts.append(
             "<h3>Failed items</h3><table><tr><th>Date</th><th>Type</th>"
-            f"<th>Intent</th><th>Detail</th></tr>{rows}</table>"
+            f"<th>Intent</th><th>Detail</th><th>Error</th></tr>{rows}</table>"
         )
 
     if downloads:
