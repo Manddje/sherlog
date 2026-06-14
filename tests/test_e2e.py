@@ -1680,3 +1680,13 @@ def test_collector_has_anonymize_option():
     # The inbox JS rewrites this exact token in the remediation template.
     import app as app_module
     assert "-Remote -OutputPath" in app_module.REMEDIATION_TEMPLATE
+
+
+def test_device_scripts_are_ascii_only():
+    """Device scripts are downloaded and run by Windows PowerShell 5.1, which
+    reads BOM-less files as ANSI; non-ASCII (e.g. em-dashes) corrupts parsing."""
+    import app as app_module
+    text = (REPO_ROOT / "Collect-IntuneDiagnostics.ps1").read_text(encoding="utf-8")
+    assert text.isascii(), "Collect-IntuneDiagnostics.ps1 must be ASCII-only"
+    assert app_module.REMEDIATION_TEMPLATE.isascii(), \
+        "REMEDIATION_TEMPLATE must be ASCII-only"

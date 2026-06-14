@@ -37,7 +37,7 @@
     replaced with placeholders in all TEXT files, and the zip name + upload device
     name are anonymized. This is best-effort, NOT a guarantee: binary files
     (event logs .evtx, Defender .cab, the nested mdmdiag .zip) are NOT scrubbed
-    and may still contain identifiers — review the package before sharing.
+    and may still contain identifiers - review the package before sharing.
 
 .EXAMPLE
     .\Collect-IntuneDiagnostics.ps1
@@ -295,7 +295,7 @@ Invoke-Safe 'Defender support files...' {
 # 9. Windows Update
 # ============================================================
 # Get-WindowsUpdateLog is slow (symbol decode); skip in the slim remote profile.
-# Note: the raw USO *.etl traces are not collected — Sherlog cannot read .etl.
+# Note: the raw USO *.etl traces are not collected - Sherlog cannot read .etl.
 if (-not $Remote) {
     Invoke-Safe 'Windows Update log (this may take a while)...' {
         Get-WindowsUpdateLog -LogPath (Join-Path $work 'WindowsUpdate\WindowsUpdate.log') -ErrorAction SilentlyContinue | Out-Null
@@ -327,7 +327,7 @@ Invoke-Safe 'Generating summary...' {
 
     $anonLine = if ($Anonymize) {
         "`n [Anonymized] Best-effort redaction of tenant/company/device data in" +
-        " TEXT files. Binaries (evtx/cab/mdmdiag-zip) are NOT scrubbed —" +
+        " TEXT files. Binaries (evtx/cab/mdmdiag-zip) are NOT scrubbed -" +
         " review before sharing.`n"
     } else { '' }
 
@@ -369,7 +369,7 @@ See the subfolders for all details:
 }
 
 # ============================================================
-# 11b. Anonymize (best-effort) — text files only
+# 11b. Anonymize (best-effort) - text files only
 # Stop the transcript first so CollectionTranscript.log is scrubbed too.
 # ============================================================
 Stop-Transcript | Out-Null
