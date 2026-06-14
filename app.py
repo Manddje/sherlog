@@ -2038,6 +2038,48 @@ PAGE_CSS = """
   .card .shot img{ display:block; width:100%; height:auto; aspect-ratio:8/5;
     object-fit:cover; object-position:top left; }
   .card .when{ color:var(--fg); font-size:.9rem; font-style:italic; margin:0 0 .5rem; }
+  /* --- Home (split hero + icon tiles) --- */
+  .home-hero{ display:grid; grid-template-columns:1.05fr .95fr; gap:2.5rem;
+    align-items:center; padding:3rem 0 2.25rem; }
+  @media (max-width:820px){ .home-hero{ grid-template-columns:1fr; gap:1.5rem;
+    padding:1.75rem 0 1rem; } }
+  .home-copy h1{ font-size:2.3rem; line-height:1.13; letter-spacing:-.02em;
+    margin:0 0 .9rem; }
+  .home-copy .lead{ font-size:1.1rem; color:var(--muted); margin:0; max-width:34rem; }
+  .badges{ display:flex; flex-wrap:wrap; gap:.5rem; margin:1.2rem 0 0; }
+  .badges span{ font-size:.78rem; font-weight:600; color:var(--muted);
+    border:1px solid var(--border); border-radius:999px; padding:.2rem .65rem; }
+  .home-upload .drop{ min-height:8rem; display:flex; align-items:center;
+    justify-content:center; text-align:center; }
+  .home-upload .or{ text-align:center; color:var(--muted); font-size:.9rem;
+    margin:.7rem 0 0; }
+  .inline{ display:inline; }
+  .linkbtn{ background:none; border:0; color:var(--accent); cursor:pointer;
+    font:inherit; padding:0; }
+  .linkbtn:hover{ text-decoration:underline; }
+  .eyebrow{ font-size:.8rem; font-weight:700; letter-spacing:.08em;
+    text-transform:uppercase; color:var(--muted); margin:0 0 .9rem; }
+  .tools{ margin-top:2.5rem; }
+  .tiles{ display:grid; grid-template-columns:repeat(auto-fit,minmax(250px,1fr));
+    gap:1rem; }
+  .tile{ display:flex; gap:.85rem; align-items:flex-start; padding:1.1rem;
+    border:1px solid var(--border); border-radius:12px; background:var(--bg);
+    color:var(--fg); transition:border-color .12s, transform .12s; }
+  .tile:hover{ border-color:var(--accent); transform:translateY(-2px); }
+  .tile .ic{ flex:none; width:2.3rem; height:2.3rem; border-radius:9px;
+    display:flex; align-items:center; justify-content:center;
+    background:var(--surface); color:var(--accent); }
+  .tile .ic svg{ width:1.3rem; height:1.3rem; }
+  .tile h3{ margin:.1rem 0 .25rem; font-size:1.02rem; }
+  .tile p{ margin:0; color:var(--muted); font-size:.88rem; line-height:1.45; }
+  .stepper{ list-style:none; margin:0; padding:0; display:grid;
+    grid-template-columns:repeat(3,1fr); gap:1.1rem; }
+  @media (max-width:760px){ .stepper{ grid-template-columns:1fr; } }
+  .stepper li{ display:flex; gap:.7rem; color:var(--muted); }
+  .stepper .n{ flex:none; width:1.6rem; height:1.6rem; border-radius:50%;
+    background:var(--accent); color:#fff; font-weight:700; font-size:.85rem;
+    display:flex; align-items:center; justify-content:center; }
+  .stepper strong{ color:var(--fg); }
   .explain{ margin-top:2.75rem; }
   .explain h2{ font-size:1.25rem; margin:0 0 .7rem; }
   .steps{ margin:0; padding-left:1.4rem; }
@@ -2265,105 +2307,158 @@ LANDING_PAGE = """<!doctype html>
 <title>Sherlog &mdash; IME log analyzer</title><style>%(css)s</style></head>
 <body>
   %(nav)s
-  <section class="hero">
-    <h1>Troubleshoot Intune-managed Windows devices</h1>
-    <p>Sherlog is a free, browser-based toolkit for <strong>Intune
-       administrators</strong>: upload IME logs or a full diagnostics package
-       and see what actually happened &mdash; app installs, scripts, errors,
-       device health and applied policies &mdash; without reading raw logs
-       line by line.</p>
-    <form class="cta" method="post" action="/demo">
-      <button class="btn" type="submit">Try it with sample logs</button>
-    </form>
-    <p class="trust">No account needed &middot; runs in your browser &middot;
-       uploads are deleted after %(retention)d hours</p>
-  </section>
   <main class="wrap">
-    <div class="cards">
-      <div class="card">
-        <a class="shot" href="/timeline"><img src="/static/timeline.png"
-          loading="lazy" alt="Screenshot of the interactive Win32App timeline
-          report with the analysis summary panel"></a>
-        <h2>Timeline Analyzer</h2>
-        <p class="when">&ldquo;What happened on this device, and when?&rdquo;</p>
-        <p class="desc">Upload IME <code>.log</code> files and get an
-          interactive timeline report: app installs, scripts and errors in
-          chronological order, with a summary of failures and known error
-          codes.</p>
-        <a class="btn" href="/timeline">Open Timeline</a>
+    <section class="home-hero">
+      <div class="home-copy">
+        <h1>Troubleshoot Intune-managed Windows devices</h1>
+        <p class="lead">Upload IME logs or a full diagnostics package and see
+          what actually happened &mdash; app installs, scripts, errors, device
+          health and applied policies. Runs in your browser; nothing touches
+          the device or Intune.</p>
+        <p class="badges"><span>No account</span><span>Browser-only</span>
+          <span>Deleted after %(retention)dh</span></p>
       </div>
-      <div class="card">
-        <a class="shot" href="/cmtrace"><img src="/static/cmtrace.png"
-          loading="lazy" alt="Screenshot of the CMTrace-style log table with
-          colored warning and error rows and filters"></a>
-        <h2>CMTrace Viewer</h2>
-        <p class="when">&ldquo;Let me just read this log, fast.&rdquo;</p>
-        <p class="desc">Read raw <code>.log</code> files in a colored,
-          filterable CMTrace-style table: warnings yellow, errors red, with
-          text, component and severity filters. No analysis run.</p>
-        <a class="btn" href="/cmtrace">Open CMTrace</a>
+      <div class="home-upload">
+        <form id="form" action="/analyze" method="post" enctype="multipart/form-data">
+          <div class="drop" id="drop">
+            <strong>Drag &amp; drop</strong> a <code>.zip</code>,
+            <code>.log</code> files <em>or a whole folder</em>, or
+            <a href="#" id="pickfiles">choose files</a> &middot;
+            <a href="#" id="pickdir">choose a folder</a>.
+          </div>
+          <input id="input" name="files" type="file" multiple
+                 accept="%(accept)s" style="display:none">
+          <input id="dirinput" type="file" multiple webkitdirectory style="display:none">
+          <ul id="files"></ul>
+          <div class="row">
+            <p class="limits"><span class="badge">.log</span><span class="badge">.zip</span>
+              Max <strong>%(max)d&nbsp;MB</strong></p>
+            <button class="btn go" type="submit" disabled>Analyze</button>
+          </div>
+        </form>
+        <p class="or">or
+          <form class="inline" method="post" action="/demo">
+            <button class="linkbtn" type="submit">try with sample logs</button>
+          </form>
+        </p>
       </div>
-      <div class="card">
-        <a class="shot" href="/diagnostics"><img src="/static/diagnostics.png"
-          loading="lazy" alt="Screenshot of the device health dashboard and
-          package file browser"></a>
-        <h2>Diagnostics Package</h2>
-        <p class="when">&ldquo;Is this device healthy at all?&rdquo;</p>
-        <p class="desc">Upload the zip from
-          <code>Collect-IntuneDiagnostics.ps1</code> for a full picture: a
-          <strong>device health dashboard</strong> (Entra join, PRT, MDM
-          enrollment, IME service, certificates, endpoint connectivity),
-          <strong>Win32 app deployment status</strong>, the
-          <strong>applied policies (RSOP)</strong> mapped to their Intune /
-          OMA-URI setting names, scripts &amp; remediations, an automatic
-          timeline, and a viewer for every file (event logs, registry,
-          <code>.cab</code>).</p>
-        <a class="btn" href="/diagnostics">Open Diagnostics</a>
-      </div>
-      <div class="card">
-        <h2>Error codes</h2>
-        <p class="when">&ldquo;What does 0x87D1041C mean?&rdquo;</p>
-        <p class="desc">A searchable reference of every Intune / Win32,
-          Windows, network, Delivery Optimization and MSI error code Sherlog
-          recognises &mdash; each with a plain-language explanation. Result
-          pages link straight into it.</p>
-        <a class="btn" href="/errorcodes">Browse error codes</a>
-      </div>
-      %(dropoff)s
-    </div>
-    <section class="explain">
-      <h2>How it works</h2>
-      <ol class="steps">
-        <li><strong>Get the logs off the device.</strong> Copy them from
-          <code>C:\\ProgramData\\Microsoft\\IntuneManagementExtension\\Logs</code>,
-          download the Intune portal&rsquo;s <em>Collect diagnostics</em>
-          export, or run the <a href="/collect-script">collector script</a>
-          for a complete diagnostics package.</li>
-        <li><strong>Upload them here.</strong> Drag &amp; drop a
-          <code>.zip</code>, loose <code>.log</code> files or a whole folder.
-          Nothing is installed on the device or in Intune.</li>
-        <li><strong>Read the result in your browser.</strong> An interactive
-          timeline, a colored log table or a device health dashboard &mdash;
-          and every result page links back to the raw evidence.</li>
-      </ol>
     </section>
+
+    <section class="tools">
+      <h2 class="eyebrow">Tools</h2>
+      <div class="tiles">
+        <a class="tile" href="/timeline">
+          <span class="ic">%(ic_timeline)s</span>
+          <span class="tx"><h3>Timeline Analyzer</h3>
+            <p>IME <code>.log</code> &rarr; interactive timeline of app installs,
+              scripts and errors with a failure summary.</p></span>
+        </a>
+        <a class="tile" href="/cmtrace">
+          <span class="ic">%(ic_cmtrace)s</span>
+          <span class="tx"><h3>CMTrace Viewer</h3>
+            <p>Read raw logs in a colored, filterable CMTrace table &mdash;
+              warnings yellow, errors red. No analysis.</p></span>
+        </a>
+        <a class="tile" href="/diagnostics">
+          <span class="ic">%(ic_diag)s</span>
+          <span class="tx"><h3>Diagnostics Package</h3>
+            <p>Device health dashboard, Win32 app status, applied policies (RSOP)
+              with Intune names, plus a file viewer.</p></span>
+        </a>
+        <a class="tile" href="/errorcodes">
+          <span class="ic">%(ic_codes)s</span>
+          <span class="tx"><h3>Error codes</h3>
+            <p>Searchable reference of Intune / Win32, Windows, network, DO and
+              MSI codes with plain-language fixes.</p></span>
+        </a>
+        %(dropoff_tile)s
+      </div>
+    </section>
+
     <section class="explain">
-      <h2>Which tool do I need?</h2>
-      <ul class="pick">
-        <li>You have IME <code>.log</code> files and want to know what
-          happened &rarr; <a href="/timeline">Timeline Analyzer</a></li>
-        <li>You just want to read or filter a raw log quickly &rarr;
-          <a href="/cmtrace">CMTrace Viewer</a></li>
-        <li>You have an <code>IntuneDiag-*.zip</code> from the collector
-          script, or want the full device picture &rarr;
-          <a href="/diagnostics">Diagnostics Package</a></li>
-        <li>You just need to look up an error code &rarr;
-          <a href="/errorcodes">Error codes</a></li>
-      </ul>
+      <h2 class="eyebrow">How it works</h2>
+      <ol class="stepper">
+        <li><span class="n">1</span><div><strong>Get the logs.</strong> From
+          <code>%%ProgramData%%\\Microsoft\\IntuneManagementExtension\\Logs</code>,
+          the Intune <em>Collect diagnostics</em> export, or the
+          <a href="/collect-script">collector script</a>.</div></li>
+        <li><span class="n">2</span><div><strong>Upload here.</strong> Drop a
+          <code>.zip</code>, loose <code>.log</code> files or a folder &mdash;
+          a zip goes to Diagnostics, loose logs to the Timeline.</div></li>
+        <li><span class="n">3</span><div><strong>Read it in the browser.</strong>
+          Timeline, log table or health dashboard &mdash; every result links
+          back to the raw evidence.</div></li>
+      </ol>
     </section>
     %(recent)s
   </main>
   %(footer)s
+<script>
+  const drop = document.getElementById('drop');
+  const input = document.getElementById('input');
+  const dirinput = document.getElementById('dirinput');
+  const list = document.getElementById('files');
+  const form = document.getElementById('form');
+  const buttons = [...document.querySelectorAll('.go')];
+  const LOGRE = new RegExp(%(patternjson)s, 'i');
+
+  function setFiles(files) {
+    const dt = new DataTransfer();
+    files.filter(f => LOGRE.test(f.name)).forEach(f => dt.items.add(f));
+    input.files = dt.files;
+    refresh();
+  }
+  function refresh() {
+    list.innerHTML = '';
+    for (const f of input.files) {
+      const li = document.createElement('li');
+      li.textContent = (f.webkitRelativePath || f.name) +
+                       ' (' + (f.size/1048576).toFixed(2) + ' MB)';
+      list.appendChild(li);
+    }
+    const files = [...input.files];
+    // Route by content: a single .zip -> Diagnostics; anything else -> Timeline.
+    const oneZip = files.length === 1 && /\\.zip$/i.test(files[0].name);
+    form.action = oneZip ? '/diagnostics-analyze' : '/analyze';
+    buttons.forEach(b => b.disabled = files.length === 0);
+  }
+
+  const readBatch = r => new Promise(res => r.readEntries(res, () => res([])));
+  async function walk(entry, out) {
+    if (entry.isFile) {
+      out.push(await new Promise((res, rej) => entry.file(res, rej)));
+    } else if (entry.isDirectory) {
+      const reader = entry.createReader();
+      let batch;
+      do { batch = await readBatch(reader); for (const e of batch) await walk(e, out); }
+      while (batch.length);
+    }
+  }
+
+  function pick(el, ev) { if (ev) { ev.preventDefault(); ev.stopPropagation(); } el.click(); }
+  document.getElementById('pickfiles').addEventListener('click', ev => pick(input, ev));
+  document.getElementById('pickdir').addEventListener('click', ev => pick(dirinput, ev));
+  drop.addEventListener('click', () => input.click());
+  input.addEventListener('change', refresh);
+  dirinput.addEventListener('change', () => setFiles([...dirinput.files]));
+
+  ['dragenter','dragover'].forEach(e => drop.addEventListener(e, ev => {
+    ev.preventDefault(); drop.classList.add('hl'); }));
+  ['dragleave','drop'].forEach(e => drop.addEventListener(e, ev => {
+    ev.preventDefault(); drop.classList.remove('hl'); }));
+  drop.addEventListener('drop', async ev => {
+    ev.preventDefault();
+    const items = ev.dataTransfer.items;
+    const out = [];
+    if (items && items.length && items[0].webkitGetAsEntry) {
+      const entries = [...items].map(i => i.webkitGetAsEntry()).filter(Boolean);
+      for (const e of entries) await walk(e, out);
+    } else {
+      out.push(...ev.dataTransfer.files);
+    }
+    setFiles(out);
+  });
+</script>
 </body></html>"""
 
 UPLOAD_PAGE = """<!doctype html>
@@ -3664,20 +3759,39 @@ def _render_records_page(filename: str, head: str, rows: List[str],
 
 # --- Routes ------------------------------------------------------------------
 
+# Inline line icons for the homepage tool tiles (stroke = currentColor).
+_SVG = ('<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" '
+        'stroke-width="2" stroke-linecap="round" stroke-linejoin="round">')
+_ICONS = {
+    "timeline": _SVG + '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>',
+    "cmtrace": _SVG + '<line x1="8" y1="6" x2="20" y2="6"/><line x1="8" y1="12" '
+               'x2="20" y2="12"/><line x1="8" y1="18" x2="20" y2="18"/>'
+               '<line x1="3.5" y1="6" x2="4" y2="6"/><line x1="3.5" y1="12" x2="4" y2="12"/>'
+               '<line x1="3.5" y1="18" x2="4" y2="18"/></svg>',
+    "diag": _SVG + '<path d="M3 12h4l2 6 4-15 2 9h6"/></svg>',
+    "codes": _SVG + '<line x1="4" y1="9" x2="20" y2="9"/><line x1="4" y1="15" '
+             'x2="20" y2="15"/><line x1="10" y1="3" x2="8" y2="21"/>'
+             '<line x1="16" y1="3" x2="14" y2="21"/></svg>',
+    "inbox": _SVG + '<polyline points="22 12 16 12 14 15 10 15 8 12 2 12"/>'
+             '<path d="M5.5 5h13l3.5 7v6a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1v-6z"/></svg>',
+}
+
+
 @app.get("/", response_class=HTMLResponse)
 async def index() -> HTMLResponse:
-    dropoff = ("""<div class="card">
-        <h2>Device drop-off (Intune)</h2>
-        <p class="when">&ldquo;Collect from a device without touching it.&rdquo;</p>
-        <p class="desc">Deploy the collector as an Intune remediation; targeted
-          devices upload their diagnostics straight to your token-scoped
-          <a href="/inbox">inbox</a> &mdash; no manual zipping or file
-          transfer.</p>
-        <a class="btn" href="/inbox">Open inbox</a>
-      </div>""" if ENABLE_UPLOAD_API else "")
+    dropoff_tile = ("""<a class="tile" href="/inbox">
+          <span class="ic">%s</span>
+          <span class="tx"><h3>Inbox</h3>
+            <p>Device drop-off: Intune-deployed collectors upload diagnostics
+              straight to your token-scoped inbox.</p></span>
+        </a>""" % _ICONS["inbox"]) if ENABLE_UPLOAD_API else ""
     return HTMLResponse(LANDING_PAGE % {
         "css": PAGE_CSS, "nav": NAV, "footer": FOOTER, "recent": HISTORY_SECTION,
-        "retention": JOB_RETENTION_HOURS, "dropoff": dropoff,
+        "retention": JOB_RETENTION_HOURS, "max": MAX_UPLOAD_MB,
+        "accept": ".log,.zip", "patternjson": json.dumps(r"\.(log|zip)$"),
+        "ic_timeline": _ICONS["timeline"], "ic_cmtrace": _ICONS["cmtrace"],
+        "ic_diag": _ICONS["diag"], "ic_codes": _ICONS["codes"],
+        "dropoff_tile": dropoff_tile,
     })
 
 

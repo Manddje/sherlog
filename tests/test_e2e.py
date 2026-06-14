@@ -67,19 +67,22 @@ def test_health_no_auth(client):
     assert r.json()["status"] == "ok"
 
 
-def test_landing_shows_both_tools(client):
+def test_landing_shows_tools_and_dropzone(client):
     r = client.get("/")
     assert r.status_code == 200
+    # Tool tiles for every tool, with links.
     assert "Timeline Analyzer" in r.text
     assert "CMTrace Viewer" in r.text
-    assert 'href="/timeline"' in r.text
-    assert 'href="/cmtrace"' in r.text
-    # Explainer sections, screenshots and the sample-logs demo button.
+    assert "Diagnostics Package" in r.text
+    assert "Error codes" in r.text
+    for href in ('href="/timeline"', 'href="/cmtrace"', 'href="/diagnostics"',
+                 'href="/errorcodes"'):
+        assert href in r.text
+    # The homepage now has its own upload dropzone + the sample-logs demo.
+    assert 'enctype="multipart/form-data"' in r.text
+    assert 'id="drop"' in r.text
     assert 'action="/demo"' in r.text
     assert "How it works" in r.text
-    assert "Which tool do I need?" in r.text
-    assert '/static/timeline.png' in r.text
-    assert "enctype" not in r.text  # landing has no upload form
     # Cross-promo link in the header, opened safely in a new tab.
     assert 'https://payloadkit.app' in r.text
     assert 'rel="noopener"' in r.text
