@@ -1612,6 +1612,39 @@ def test_dropoff_uses_jobs_dir_and_shared_retention(tmp_path, monkeypatch):
     importlib.reload(app_module)
 
 
+def test_api_per_token_cap(tmp_path, monkeypatch):
+    """The per-token cap blocks a token's own next upload with 429, but a
+    different token's inbox is unaffected (it's per-inbox, not global)."""
+    monkeypatch.setenv("JOBS_DIR", str(tmp_path / "jobs"))
+    monkeypatch.setenv("ENABLE_UPLOAD_API", "1")
+    monkeypatch.setenv("UPLOAD_API_MAX_JOBS_PER_TOKEN", "1")
+    monkeypatch.setenv("APP_USER", "")
+    monkeypatch.setenv("APP_PASSWORD", "")
+    import importlib
+    import app as app_module
+    importlib.reload(app_module)
+    # No IME logs -> no analysis task spawned (keeps teardown clean).
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr("Identity/dsregcmd-status.txt", "AzureAdJoined : YES\n")
+    pkg = buf.getvalue()
+    hdr = {"Content-Type": "application/zip"}
+    from fastapi.testclient import TestClient
+    with TestClient(app_module.app) as c:
+        first = c.post("/api/diagnostics", content=pkg,
+                       headers={**hdr, "X-Upload-Token": _TOK})
+        assert first.status_code == 200
+        # Same token, now at its cap -> 429.
+        second = c.post("/api/diagnostics", content=pkg,
+                        headers={**hdr, "X-Upload-Token": _TOK})
+        assert second.status_code == 429
+        # A different token's inbox is independent.
+        other = c.post("/api/diagnostics", content=pkg,
+                       headers={**hdr, "X-Upload-Token": "z" * 30})
+        assert other.status_code == 200
+    importlib.reload(app_module)
+
+
 def test_dropoff_excluded_from_recent_uploads(upload_client):
     """A device drop-off result page must not upsert into the viewer's personal
     'Recent uploads' history; a self-uploaded package still does."""

@@ -29,6 +29,9 @@ Configuration (env, with safe defaults):
                           Intune-deployed collector can drop off packages
   UPLOAD_TOKEN_MIN_LEN    default 24 (minimum length of a self-chosen token)
   UPLOAD_API_MAX_JOBS     default 2000 (global cap to bound disk abuse)
+  UPLOAD_API_MAX_JOBS_PER_TOKEN
+                          default 200 (per-inbox cap: one token can't fill the
+                          global cap and lock out every other inbox)
 """
 
 from __future__ import annotations
@@ -124,6 +127,8 @@ ENABLE_UPLOAD_API = os.environ.get("ENABLE_UPLOAD_API", "").lower() in (
     "1", "true", "yes", "on")
 UPLOAD_TOKEN_MIN_LEN = max(8, int(os.environ.get("UPLOAD_TOKEN_MIN_LEN", "24")))
 UPLOAD_API_MAX_JOBS = max(1, int(os.environ.get("UPLOAD_API_MAX_JOBS", "2000")))
+UPLOAD_API_MAX_JOBS_PER_TOKEN = max(
+    1, int(os.environ.get("UPLOAD_API_MAX_JOBS_PER_TOKEN", "200")))
 
 # Diagnostics-package extension policy. Text-ish files get the line viewer,
 # .log the CMTrace viewer, .html a sandboxed iframe, .evtx the event viewer.
@@ -4446,6 +4451,19 @@ def _count_api_jobs() -> int:
     return n
 
 
+def _count_api_jobs_for_token(token: str) -> int:
+    """How many drop-off jobs already belong to this token's inbox."""
+    want = token_hash(token)
+    n = 0
+    for child in iter_job_dirs():
+        st = read_status(child.name)
+        if (st and st.get("source") == "api"
+                and secrets.compare_digest(
+                    str(st.get("upload_token_hash", "")), want)):
+            n += 1
+    return n
+
+
 @app.post("/api/diagnostics")
 async def api_diagnostics(request: Request) -> Response:
     """Unattended drop-off: a device collector POSTs a diagnostics zip as the raw
@@ -4467,6 +4485,9 @@ async def api_diagnostics(request: Request) -> Response:
         return JSONResponse({"error": "upload too large"}, status_code=413)
     if _count_api_jobs() >= UPLOAD_API_MAX_JOBS:
         return JSONResponse({"error": "server inbox full, try later"},
+                            status_code=429)
+    if _count_api_jobs_for_token(token) >= UPLOAD_API_MAX_JOBS_PER_TOKEN:
+        return JSONResponse({"error": "this inbox is full, try later"},
                             status_code=429)
 
     device = (request.headers.get("X-Device-Name") or "device").strip()[:128]
@@ -4580,6 +4601,9 @@ INBOX_PAGE = """<!doctype html>
 _INBOX_FORM = """
       <p>Enter your upload token to open this device inbox, or generate a new one
          to use in your Intune detection script.</p>
+      <p class="muted">Each inbox holds up to %(cap)d upload(s) at a time. Once
+         full, new uploads are refused until older ones are removed
+         (<em>Delete all</em>) or expire after the retention window.</p>
       <form method="get" action="/inbox" class="tokrow">
         <input name="token" id="tok" type="text" placeholder="upload token"
                autocomplete="off" minlength="%(min)d" required>
@@ -4697,6 +4721,7 @@ async def inbox(request: Request, token: str = "") -> HTMLResponse:
     token = token or request.headers.get("X-Upload-Token", "")
     if not token:
         body = _INBOX_FORM % {"min": UPLOAD_TOKEN_MIN_LEN,
+                              "cap": UPLOAD_API_MAX_JOBS_PER_TOKEN,
                               "script": json.dumps(REMEDIATION_TEMPLATE)}
         return HTMLResponse(INBOX_PAGE % {
             "css": PAGE_CSS, "nav": NAV, "footer": FOOTER, "body": body})
@@ -4711,8 +4736,11 @@ async def inbox(request: Request, token: str = "") -> HTMLResponse:
                if r["analysis"] not in ("none", "") else "")
             + f'</td><td><a href="/result/{r["job_id"]}">open</a></td></tr>'
             for r in rows)
+        cap = UPLOAD_API_MAX_JOBS_PER_TOKEN
+        full_note = (' &mdash; inbox full, new uploads are refused until you '
+                     'delete some or they expire' if len(rows) >= cap else '')
         body = (f'<div class="tokrow"><p class="muted" style="flex:1">'
-                f'{len(rows)} upload(s) for this token.</p>'
+                f'{len(rows)} of {cap} upload(s) for this token.{full_note}</p>'
                 '<button class="linkbtn danger" id="delall" type="button">'
                 'Delete all</button></div>'
                 '<table class="inbox"><thead><tr><th>Device</th><th>Uploaded</th>'

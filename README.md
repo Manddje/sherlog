@@ -115,6 +115,7 @@ Alle configuratie loopt via environment variables met veilige defaults:
 | `ENABLE_UPLOAD_API`      | *(uit)* | Zet de device drop-off API (`/api/diagnostics`) + `/inbox` aan. Default uit. Drop-off packages gebruiken dezelfde `JOBS_DIR` en `JOB_RETENTION_HOURS` als alle andere logs. |
 | `UPLOAD_TOKEN_MIN_LEN`   | `24`    | Minimale lengte van een (zelfgekozen) upload-token.                                            |
 | `UPLOAD_API_MAX_JOBS`    | `2000`  | Globale rem op het aantal drop-off-jobs (tegen disk-misbruik); daarboven `429`.                |
+| `UPLOAD_API_MAX_JOBS_PER_TOKEN` | `200` | Per-inbox rem op het aantal drop-off-jobs per token; daarboven `429`. Voorkomt dat één token de globale cap vult. |
 
 De Graph-verrijking is **optioneel en uit by default**: zonder de drie `GRAPH_*`
 vars doet de app geen externe call en blijft de RSOP-tabel zoals hij is (OMA-URI +
