@@ -562,17 +562,33 @@ def summarize(summary: ReportSummary) -> dict:
     warnings = 0
     not_detected = 0
 
+    # The upstream script (with -ShowErrorsInReport) emits the real PowerShell
+    # error as a separate "ErrorLog" row right after the failed-script row, with
+    # the full error message in Detail. We merge that message + any code back
+    # onto the preceding failed item so it shows in the Error column.
+    last_failed: list[dict] = []
     for row in summary.timeline:
         status, rtype = row["status"], row["type"]
-        # The error code (e.g. a failed PowerShell script's exit code) usually
-        # isn't in the short Detail column — the upstream script puts the real
-        # error message in the DetailToolTip (hover) of the failure row. Scan
-        # detail + log entry, plus the tooltip for failure/warning rows.
+        # The error code/text usually isn't in the short Detail column — also
+        # scan the full log entry and the DetailToolTip (hover) of failure rows.
         blob = row["detail"] + " " + row.get("logentry", "")
         if status in ("Failed", "ErrorLog", "Warning"):
             blob += " " + row.get("detailtooltip", "")
         codes = find_error_codes(blob)
         code = next(iter(codes), "")
+
+        if status == "ErrorLog":
+            for c in codes:
+                code_counter[c] += 1
+            msg = re.sub(r"\s+", " ", row["detail"]).strip()[:SUMMARY_DETAIL_CAP]
+            for d in last_failed:           # attach to the failed row above it
+                if code and not d.get("code"):
+                    d["code"] = code
+                    d["code_text"] = ERROR_CODES.get(code, "")
+                if msg and not d.get("error_msg"):
+                    d["error_msg"] = msg
+            continue
+
         if status in ("Success", "Failed") and rtype:
             bucket = counts.setdefault(rtype, {"success": 0, "failed": 0})
             bucket["success" if status == "Success" else "failed"] += 1
@@ -580,28 +596,22 @@ def summarize(summary: ReportSummary) -> dict:
             warnings += 1
         if status == "Not Detected":
             not_detected += 1
-        if status in ("Failed", "ErrorLog"):
+        if status == "Failed":
             for c in codes:
                 code_counter[c] += 1
+
+        if status not in ("Success", "Failed", "Not Detected", "Warning"):
+            continue
+        fi = {"date": row["date"], "type": rtype, "intent": row["intent"],
+              "detail": row["detail"][:SUMMARY_DETAIL_CAP],
+              "code": code, "code_text": ERROR_CODES.get(code, ""), "error_msg": ""}
+        it = {**fi, "status": status}
+        items.append(it)
         if status == "Failed":
-            failed_items.append({
-                "date": row["date"],
-                "type": rtype,
-                "intent": row["intent"],
-                "detail": row["detail"][:SUMMARY_DETAIL_CAP],
-                "code": code, "code_text": ERROR_CODES.get(code, ""),
-            })
-        # Per-type drill-down behind the summary chips: keep every outcome
-        # row, success included (failed_items above stays for old jobs).
-        if status in ("Success", "Failed", "Not Detected", "Warning"):
-            items.append({
-                "date": row["date"],
-                "type": rtype,
-                "intent": row["intent"],
-                "status": status,
-                "detail": row["detail"][:SUMMARY_DETAIL_CAP],
-                "code": code, "code_text": ERROR_CODES.get(code, ""),
-            })
+            failed_items.append(fi)
+            last_failed = [fi, it]   # ErrorLog rows below attach here
+        else:
+            last_failed = []
 
     return {
         "parse_ok": summary.parse_ok,
@@ -3135,6 +3145,20 @@ _SUMMARY_ITEMS_JS = """<script>
 </script>"""
 
 
+def _error_cell(i: dict) -> str:
+    """Error column cell: the error code when known, else a snippet of the
+    PowerShell error message (full text on hover)."""
+    code = str(i.get("code", ""))
+    emsg = str(i.get("error_msg", ""))
+    if code:
+        return (f'<td class="st-bad" title="{attr_escape(emsg or i.get("code_text", ""))}">'
+                f'{html_escape(code)}</td>')
+    if emsg:
+        short = emsg if len(emsg) <= 90 else emsg[:90] + "…"
+        return f'<td class="st-bad" title="{attr_escape(emsg)}">{html_escape(short)}</td>'
+    return "<td></td>"
+
+
 def _render_summary_items(items: List[dict]) -> str:
     """Drill-down table behind the summary chips: every outcome row, filtered
     client-side (default: failed only; chip click: everything of that type)."""
@@ -3142,9 +3166,7 @@ def _render_summary_items(items: List[dict]) -> str:
     for i in items:
         status = str(i.get("status", ""))
         cls = _SUMMARY_STATUS_CLASS.get(status, "")
-        code = str(i.get("code", ""))
-        err = (f'<td class="st-bad" title="{attr_escape(str(i.get("code_text", "")))}">'
-               f'{html_escape(code)}</td>') if code else "<td></td>"
+        err = _error_cell(i)
         rows.append(
             f'<tr class="it" data-type="{attr_escape(str(i.get("type", "")))}"'
             f' data-status="{attr_escape(status)}">'
@@ -3221,9 +3243,7 @@ def render_summary_panel(summary: Optional[dict]) -> str:
             f"<td>{html_escape(i['type'])}</td>"
             f"<td>{html_escape(i['intent'])}</td>"
             f"<td>{html_escape(i['detail'])}</td>"
-            + ((f'<td class="st-bad" title="{attr_escape(str(i.get("code_text", "")))}">'
-                f'{html_escape(str(i.get("code", "")))}</td>') if i.get("code")
-               else "<td></td>")
+            + _error_cell(i)
             + "</tr>"
             for i in failed_items
         )

@@ -1796,3 +1796,25 @@ def test_summary_error_code_from_detailtooltip():
     # Success row's tooltip (script content) is not scanned -> no false code.
     ok = next(i for i in s["items"] if i["status"] == "Success")
     assert ok["code"] == ""
+
+
+def test_summary_merges_errorlog_message_into_failed_script():
+    """With -ShowErrorsInReport the real PowerShell error is a separate ErrorLog
+    row; it is merged onto the preceding failed-script row (message or code)."""
+    import app as app_module
+    rs = app_module.ReportSummary()
+    rs.timeline = [
+        {"index": "1", "date": "t", "status": "Failed", "type": "Powershell script",
+         "intent": "Execute", "detail": "52f1bd15 for user System", "seconds": "1",
+         "logentry": "Line 1", "color": "Red", "detailtooltip": "script content"},
+        {"index": "2", "date": "t", "status": "ErrorLog", "type": "Powershell script",
+         "intent": "Execute", "detail": "The term 'Get-Foo' is not recognized.",
+         "seconds": "", "logentry": "", "color": "Red", "detailtooltip": ""},
+    ]
+    s = app_module.summarize(rs)
+    # ErrorLog is not a standalone item; its message lands on the failed row.
+    assert all(i["status"] != "ErrorLog" for i in s["items"])
+    failed = next(i for i in s["items"] if i["status"] == "Failed")
+    assert "not recognized" in failed["error_msg"]
+    assert [c["failed"] for c in s["counts"]] == [1]   # not double-counted
+    assert "not recognized" in app_module.render_summary_panel(s)
