@@ -2262,7 +2262,9 @@ HISTORY_SECTION = """<section class="card recent" id="recent" hidden>
     list.appendChild(li);
     section.hidden = false;
     // Prune entries whose job the server already cleaned up (retention).
-    fetch('/result/' + encodeURIComponent(e.id), { method: 'HEAD' })
+    // Use the lightweight status endpoint: it returns 404 for a missing job
+    // (a HEAD on /result/<id> would 405, so it never pruned).
+    fetch('/result/' + encodeURIComponent(e.id) + '/status')
       .then(r => { if (r.status === 404) drop(e.id, li); })
       .catch(() => {});
   }

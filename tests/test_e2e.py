@@ -149,6 +149,14 @@ def test_history_section_on_upload_pages(client):
         assert r.status_code == 200
         assert 'id="recent"' in r.text       # browser-side history list
         assert "sherlog.history" in r.text   # localStorage key
+        # History prunes vanished jobs via the status endpoint (a HEAD on
+        # /result/<id> returns 405, not 404, so it never pruned).
+        assert "/status'" in r.text and "method: 'HEAD'" not in r.text
+
+
+def test_status_endpoint_404_for_missing_job(client):
+    # The history-prune contract: a gone job's status is 404.
+    assert client.get("/result/deadbeefdeadbeef/status").status_code == 404
 
 
 def test_result_pages_record_history(client):
