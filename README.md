@@ -165,8 +165,8 @@ Direct vanaf de commandline kan ook:
 UPN/e-mail, device- en username worden in **alle tekstbestanden** vervangen door
 placeholders, en de zip-naam + upload-`X-Device-Name` worden geanonimiseerd. Dit
 is **best-effort, geen garantie**: binaries (event logs `.evtx`, Defender `.cab`,
-`.etl`, de geneste mdmdiag-zip) worden **niet** gescrubd en kunnen nog
-identifiers bevatten — controleer het pakket vóór delen.
+de geneste mdmdiag-zip) worden **niet** gescrubd en kunnen nog identifiers
+bevatten — controleer het pakket vóór delen.
 
 ```powershell
 .\Collect-IntuneDiagnostics.ps1 -Remote -Anonymize

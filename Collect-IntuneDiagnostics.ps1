@@ -36,9 +36,8 @@
     tenant/company name, domain(s), UPN/e-mail, device name and user name are
     replaced with placeholders in all TEXT files, and the zip name + upload device
     name are anonymized. This is best-effort, NOT a guarantee: binary files
-    (event logs .evtx, Defender .cab, .etl, the nested mdmdiag .zip) are NOT
-    scrubbed and may still contain identifiers — review the package before
-    sharing.
+    (event logs .evtx, Defender .cab, the nested mdmdiag .zip) are NOT scrubbed
+    and may still contain identifiers — review the package before sharing.
 
 .EXAMPLE
     .\Collect-IntuneDiagnostics.ps1
@@ -296,10 +295,10 @@ Invoke-Safe 'Defender support files...' {
 # 9. Windows Update
 # ============================================================
 # Get-WindowsUpdateLog is slow (symbol decode); skip in the slim remote profile.
+# Note: the raw USO *.etl traces are not collected — Sherlog cannot read .etl.
 if (-not $Remote) {
     Invoke-Safe 'Windows Update log (this may take a while)...' {
         Get-WindowsUpdateLog -LogPath (Join-Path $work 'WindowsUpdate\WindowsUpdate.log') -ErrorAction SilentlyContinue | Out-Null
-        Copy-Item "$env:ProgramData\USOShared\Logs\System\*.etl" (Join-Path $work 'WindowsUpdate') -Force -ErrorAction SilentlyContinue
     }
 }
 
@@ -328,7 +327,7 @@ Invoke-Safe 'Generating summary...' {
 
     $anonLine = if ($Anonymize) {
         "`n [Anonymized] Best-effort redaction of tenant/company/device data in" +
-        " TEXT files. Binaries (evtx/cab/etl/mdmdiag-zip) are NOT scrubbed —" +
+        " TEXT files. Binaries (evtx/cab/mdmdiag-zip) are NOT scrubbed —" +
         " review before sharing.`n"
     } else { '' }
 
@@ -361,7 +360,7 @@ See the subfolders for all details:
   Apps-IME\      - IME logs, app inventory
   System\        - msinfo32, drivers, hotfixes, scheduled tasks
   Defender\      - MpSupportFiles.cab, status
-  WindowsUpdate\ - WindowsUpdate.log, USO etl files
+  WindowsUpdate\ - WindowsUpdate.log
   Autopilot\     - setupact.log, provisioning logs
 ==========================================================
 "@
@@ -456,7 +455,7 @@ if ($Anonymize) {
         Write-Host "  Redacted $count text file(s) using $($final.Count) token(s)."
     }
     Write-Warning ('ANONYMIZE is best-effort and NOT a guarantee. Only TEXT files were ' +
-        'redacted; binary files (event logs .evtx, Defender .cab, .etl, the nested ' +
+        'redacted; binary files (event logs .evtx, Defender .cab, the nested ' +
         'mdmdiag .zip) are NOT scrubbed and may still contain tenant/company ' +
         'identifiers. Review the package before sharing.')
 }

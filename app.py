@@ -4455,7 +4455,7 @@ _INBOX_FORM = """
         <p class="muted anon-note" id="anon-note" hidden>We do our best to redact
           tenant- and company data (tenant id/name, domain, UPN/e-mail, device
           and user name) from all TEXT files &mdash; but this is best-effort, not
-          a guarantee. Binaries (event logs, cab, etl) are not scrubbed; review
+          a guarantee. Binaries (event logs, cab) are not scrubbed; review
           the package before sharing.</p>
         <pre class="scriptbox" id="script"></pre>
 
