@@ -4395,12 +4395,14 @@ INBOX_PAGE = """<!doctype html>
     border-bottom:1px solid var(--border);vertical-align:top}
   table.inbox th{color:var(--muted);font-weight:600}
   .tokrow{display:flex;gap:.5rem;flex-wrap:wrap;align-items:center;margin:.5rem 0}
-  .tokrow input{flex:1;min-width:16rem;padding:.55rem .8rem;border:1px solid var(--border);
-    border-radius:8px;background:var(--bg);color:var(--fg);font:inherit}
+  .tokrow input[type=text]{flex:1;min-width:16rem;padding:.55rem .8rem;
+    border:1px solid var(--border);border-radius:8px;background:var(--bg);
+    color:var(--fg);font:inherit}
   .muted{color:var(--muted);font-size:.9rem}
-  .anon{display:inline-flex;align-items:center;gap:.4rem;font-size:.9rem;
-    color:var(--fg);cursor:pointer;margin-left:auto}
-  .anon-note{margin:.4rem 0 0;max-width:48rem}
+  .anon{display:inline-flex;align-items:center;gap:.45rem;font-size:.9rem;
+    color:var(--fg);cursor:pointer;margin-left:auto;white-space:nowrap}
+  .anon input{margin:0}
+  .anon-note{margin:.4rem 0 0;max-width:48rem;color:#dc2626}
   .tokval{font-family:ui-monospace,Menlo,Consolas,monospace;word-break:break-all;
     background:var(--surface);border:1px solid var(--border);border-radius:6px;
     padding:.4rem .6rem;display:inline-block}
