@@ -2289,7 +2289,6 @@ _LOGO = ('<span class="dot"><svg width="15" height="15" viewBox="0 0 24 24" '
 NAV = ("""<header><nav class="nav">
   <a class="brand" href="/">%(logo)s Sherlog</a>
   <span>
-    <a class="navlink" href="/timeline">Timeline</a>
     <a class="navlink" href="/cmtrace">CMTrace</a>
     <a class="navlink" href="/diagnostics">Diagnostics</a>
     <a class="navlink" href="/errorcodes">Error codes</a>
@@ -2481,9 +2480,9 @@ LANDING_PAGE = """<!doctype html>
           <span>Deleted after %(retention)dh</span></p>
       </div>
       <div class="home-upload">
-        <form id="form" action="/analyze" method="post" enctype="multipart/form-data">
+        <form id="form" action="/diagnostics-analyze" method="post" enctype="multipart/form-data">
           <div class="drop" id="drop">
-            <strong>Drag &amp; drop</strong> a <code>.zip</code>,
+            <strong>Drag &amp; drop</strong> a diagnostics <code>.zip</code>,
             <code>.log</code> files <em>or a whole folder</em>, or
             <a href="#" id="pickfiles">choose files</a> &middot;
             <a href="#" id="pickdir">choose a folder</a>.
@@ -2495,26 +2494,15 @@ LANDING_PAGE = """<!doctype html>
           <div class="row">
             <p class="limits"><span class="badge">.log</span><span class="badge">.zip</span>
               Max <strong>%(max)d&nbsp;MB</strong></p>
-            <button class="btn go" type="submit" disabled>Analyze</button>
+            <button class="btn go" type="submit" disabled>Open</button>
           </div>
         </form>
-        <div class="or">or
-          <form class="inline" method="post" action="/demo">
-            <button class="linkbtn" type="submit">try with sample logs</button>
-          </form>
-        </div>
       </div>
     </section>
 
     <section class="tools">
       <h2 class="eyebrow">Tools</h2>
       <div class="tiles">
-        <a class="tile" href="/timeline">
-          <span class="ic">%(ic_timeline)s</span>
-          <span class="tx"><h3>Timeline Analyzer</h3>
-            <p>IME <code>.log</code> &rarr; interactive timeline of app installs,
-              scripts and errors with a failure summary.</p></span>
-        </a>
         <a class="tile" href="/cmtrace">
           <span class="ic">%(ic_cmtrace)s</span>
           <span class="tx"><h3>CMTrace Viewer</h3>
@@ -2546,10 +2534,10 @@ LANDING_PAGE = """<!doctype html>
           <a href="/collect-script">collector script</a>.</div></li>
         <li><span class="n">2</span><div><strong>Upload here.</strong> Drop a
           <code>.zip</code>, loose <code>.log</code> files or a folder &mdash;
-          a zip goes to Diagnostics, loose logs to the Timeline.</div></li>
+          a zip goes to Diagnostics, loose logs to the CMTrace viewer.</div></li>
         <li><span class="n">3</span><div><strong>Read it in the browser.</strong>
-          Timeline, log table or health dashboard &mdash; every result links
-          back to the raw evidence.</div></li>
+          A device health dashboard (with the Win32 timeline inside) or a colored
+          log table &mdash; every result links back to the raw evidence.</div></li>
       </ol>
     </section>
     %(recent)s
@@ -2581,7 +2569,7 @@ LANDING_PAGE = """<!doctype html>
     const files = [...input.files];
     // Route by content: a single .zip -> Diagnostics; anything else -> Timeline.
     const oneZip = files.length === 1 && /\\.zip$/i.test(files[0].name);
-    form.action = oneZip ? '/diagnostics-analyze' : '/analyze';
+    form.action = oneZip ? '/diagnostics-analyze' : '/cmtrace-view';
     buttons.forEach(b => b.disabled = files.length === 0);
   }
 
@@ -2793,7 +2781,7 @@ REPORT_PAGE = """<!doctype html>
     <a class="brand" href="/">%(logo)s Sherlog</a>
     <span>
       <a class="btn btn-ghost" href="/result/%(job)s/cmtrace">Raw logs (CMTrace)</a>
-      <a class="btn btn-ghost" href="/timeline">New analysis</a>
+      <a class="btn btn-ghost" href="/diagnostics">New analysis</a>
     </span>
   </div>
   <main class="report-wrap">
@@ -2905,7 +2893,9 @@ DIAG_PAGE = """<!doctype html>
   .check[data-section]:hover,.check[data-section]:focus-visible{border-color:var(--accent)}
   details.section{background:var(--surface);border:1px solid var(--border);
     border-radius:10px;padding:.4rem 1rem;font-size:.85rem;max-height:45vh;overflow:auto}
-  details.section>summary{cursor:pointer;font-weight:600;padding:.25rem 0}
+  /* Sticky summary so the collapse control stays reachable while scrolling. */
+  details.section>summary{cursor:pointer;font-weight:600;padding:.4rem 0;
+    position:sticky;top:0;z-index:2;background:var(--surface)}
   details.section .seclink{margin-left:.5rem;font-weight:400;font-size:.8rem;
     color:var(--accent);cursor:pointer}
   details.section table{border-collapse:collapse;width:100%%;margin-top:.5rem;
@@ -2913,8 +2903,9 @@ DIAG_PAGE = """<!doctype html>
   details.section th,details.section td{text-align:left;padding:.25rem .5rem;
     border-bottom:1px solid var(--row-border);vertical-align:top;
     overflow-wrap:anywhere;font-family:ui-monospace,Menlo,Consolas,monospace}
-  details.section th{color:var(--muted);font-weight:600;position:sticky;top:0;
-    background:var(--surface)}
+  /* Header row sticks just below the sticky summary. */
+  details.section th{color:var(--muted);font-weight:600;position:sticky;top:2rem;
+    z-index:1;background:var(--surface)}
   .acard{border:1px solid var(--border);border-radius:10px;padding:.75rem 1rem;
     background:var(--surface);display:flex;align-items:center;gap:.8rem;flex-wrap:wrap}
   .acard pre{margin:.4rem 0 0;width:100%%;max-height:10rem}
@@ -3060,7 +3051,7 @@ ERROR_PAGE = """<!doctype html>
     <div class="card">
       <h3 style="margin-top:0">stderr</h3><pre>%(stderr)s</pre>
       <h3>stdout</h3><pre>%(stdout)s</pre>
-      <p class="center"><a class="btn btn-ghost" href="/timeline">&larr; Try another upload</a></p>
+      <p class="center"><a class="btn btn-ghost" href="/diagnostics">&larr; Try another upload</a></p>
     </div>
   </main>
   %(footer)s
@@ -4001,7 +3992,7 @@ async def index() -> HTMLResponse:
         "css": PAGE_CSS, "nav": NAV, "footer": FOOTER, "recent": HISTORY_SECTION,
         "retention": JOB_RETENTION_HOURS, "max": MAX_UPLOAD_MB,
         "accept": ".log,.zip", "patternjson": json.dumps(r"\.(log|zip)$"),
-        "ic_timeline": _ICONS["timeline"], "ic_cmtrace": _ICONS["cmtrace"],
+        "ic_cmtrace": _ICONS["cmtrace"],
         "ic_diag": _ICONS["diag"], "ic_codes": _ICONS["codes"],
         "dropoff_tile": dropoff_tile,
     })
@@ -4027,18 +4018,6 @@ def render_upload_page(*, title: str, heading: str, intro: str,
         "accept": accept, "patternjson": json.dumps(pattern),
         "badges": badges, "droptext": droptext, "extra": extra,
     })
-
-
-@app.get("/timeline", response_class=HTMLResponse)
-async def timeline_upload_page() -> HTMLResponse:
-    return render_upload_page(
-        title="Timeline Analyzer",
-        heading="Build a logging timeline",
-        intro=("Upload your IME logs and get an interactive "
-               "<strong>timeline</strong> report &mdash; right in your browser."),
-        action="/analyze",
-        button="Build timeline",
-    )
 
 
 @app.get("/cmtrace", response_class=HTMLResponse)
@@ -4323,60 +4302,6 @@ async def stage_upload(request: Request):
 
     names = [Path(f.filename or "").name for f in files if f.filename]
     return job_id, input_dir, output_dir, names
-
-
-@app.post("/analyze")
-async def analyze(request: Request) -> Response:
-    staged = await stage_upload(request)
-    if isinstance(staged, Response):
-        return staged
-    job_id, input_dir, output_dir, names = staged
-
-    # Stored before the job task starts; run_job merges its state into this.
-    write_status(job_id, state="queued", uploads=names[:5])
-    spawn_job(run_job(job_id, input_dir, output_dir))
-    return RedirectResponse(url=f"/result/{job_id}", status_code=303)
-
-
-# The anonymised sample logs the repo tests against double as the homepage
-# demo data set.
-TESTDATA_DIR = APP_DIR / "testdata"
-
-
-@app.post("/demo")
-async def demo() -> Response:
-    """Run the timeline analysis on the bundled sample logs.
-
-    Reuses an existing pending/finished demo job when one is still within
-    retention, so repeated clicks don't queue duplicate analyses; the cleanup
-    task removes it like any job, after which a click simply rebuilds it.
-    """
-    if JOBS_DIR.is_dir():
-        for child in sorted(JOBS_DIR.iterdir()):
-            status = read_status(child.name)
-            if (status and status.get("demo")
-                    and status.get("state") in ("queued", "running", "done")):
-                return RedirectResponse(url=f"/result/{child.name}",
-                                        status_code=303)
-
-    samples = sorted(TESTDATA_DIR.glob("*.log")) if TESTDATA_DIR.is_dir() else []
-    if not samples:
-        return HTMLResponse("Sample logs are not available on this server.",
-                            status_code=503)
-
-    job_id = uuid.uuid4().hex
-    base = job_dir(job_id)
-    input_dir = base / "input"
-    output_dir = base / "output"
-    input_dir.mkdir(parents=True, exist_ok=True)
-    output_dir.mkdir(parents=True, exist_ok=True)
-    for p in samples:
-        shutil.copy(p, input_dir / p.name)
-
-    write_status(job_id, state="queued", demo=True,
-                 uploads=[f"{p.name} (sample)" for p in samples[:5]])
-    spawn_job(run_job(job_id, input_dir, output_dir))
-    return RedirectResponse(url=f"/result/{job_id}", status_code=303)
 
 
 @app.post("/cmtrace-view")

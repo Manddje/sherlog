@@ -70,18 +70,18 @@ def test_health_no_auth(client):
 def test_landing_shows_tools_and_dropzone(client):
     r = client.get("/")
     assert r.status_code == 200
-    # Tool tiles for every tool, with links.
-    assert "Timeline Analyzer" in r.text
+    # Timeline is no longer a standalone tool — only inside the diagnostics package.
+    assert "Timeline Analyzer" not in r.text
+    assert 'href="/timeline"' not in r.text
     assert "CMTrace Viewer" in r.text
     assert "Diagnostics Package" in r.text
     assert "Error codes" in r.text
-    for href in ('href="/timeline"', 'href="/cmtrace"', 'href="/diagnostics"',
-                 'href="/errorcodes"'):
+    for href in ('href="/cmtrace"', 'href="/diagnostics"', 'href="/errorcodes"'):
         assert href in r.text
-    # The homepage now has its own upload dropzone + the sample-logs demo.
+    # The homepage has its own upload dropzone (no sample-logs demo anymore).
     assert 'enctype="multipart/form-data"' in r.text
     assert 'id="drop"' in r.text
-    assert 'action="/demo"' in r.text
+    assert 'action="/demo"' not in r.text
     assert "How it works" in r.text
     # Cross-promo link in the header, opened safely in a new tab.
     assert 'https://payloadkit.app' in r.text
@@ -103,36 +103,14 @@ def test_static_screenshots_served(client):
     assert r.headers["content-type"] == "image/png"
 
 
-def test_demo_creates_and_reuses_job(client):
-    import app as app_module
-
-    # Creation path: stages the bundled sample logs into a fresh demo job.
-    r = client.post("/demo", follow_redirects=False)
-    assert r.status_code == 303
-    job_id = r.headers["location"].rstrip("/").rsplit("/", 1)[-1]
-    status = app_module.read_status(job_id)
-    assert status and status.get("demo") is True
-    assert any("sample" in n for n in status["uploads"])
-    assert (app_module.job_dir(job_id) / "input" /
-            "IntuneManagementExtension.log").is_file()
-
-    # Let the spawned analysis task settle (it fails fast without pwsh, and
-    # would otherwise race the state we set below), then mark it done.
-    deadline = time.time() + 30
-    while (app_module.read_status(job_id) or {}).get("state") in ("queued", "running"):
-        if time.time() > deadline:
-            raise AssertionError("demo job did not settle")
-        time.sleep(0.2)
-
-    # Reuse path: a pending/finished demo job wins over creating a new one.
-    app_module.update_status(job_id, state="done")
-    r2 = client.post("/demo", follow_redirects=False)
-    assert r2.status_code == 303
-    assert r2.headers["location"].rstrip("/").rsplit("/", 1)[-1] == job_id
+def test_standalone_timeline_removed(client):
+    # Timeline is only available inside a diagnostics package now.
+    assert client.get("/timeline").status_code == 404
+    assert client.post("/analyze").status_code == 404
+    assert client.post("/demo").status_code == 404
 
 
 @pytest.mark.parametrize("path,action", [
-    ("/timeline", "/analyze"),
     ("/cmtrace", "/cmtrace-view"),
 ])
 def test_upload_pages_show_limits(client, path, action):
@@ -144,7 +122,7 @@ def test_upload_pages_show_limits(client, path, action):
 
 
 def test_history_section_on_upload_pages(client):
-    for path in ("/", "/timeline", "/cmtrace"):
+    for path in ("/", "/cmtrace"):
         r = client.get(path)
         assert r.status_code == 200
         assert 'id="recent"' in r.text       # browser-side history list
@@ -219,45 +197,52 @@ def test_result_pages_record_history(client):
     assert f'"id": "{job_id}"' in r.text
 
 
-def test_full_flow_zip_produces_report(client):
+@pytest.mark.skipif(not __import__("shutil").which("pwsh"),
+                    reason="needs PowerShell (pwsh) for the real analysis")
+def test_full_flow_diagnostics_runs_timeline(client):
+    """Timeline now only runs inside a diagnostics package: upload a zip with
+    IME logs, the diag job runs the analysis, and /result/<id>/timeline shows
+    the native summary."""
+    import app as app_module
     data = _zip_of_testdata()
     r = client.post(
-        "/analyze",
-        files={"files": ("logs.zip", data, "application/zip")},
+        "/diagnostics-analyze",
+        files={"files": ("IntuneDiag.zip", data, "application/zip")},
         follow_redirects=False,
     )
     assert r.status_code == 303
     location = r.headers["location"]
     assert location.startswith("/result/")
-
-    html = _wait_for_result(client, location)
-    # Recognizable timeline-report content from the IME script.
-    assert "Timeline" in html
-    assert "Win32App" in html
-    assert "Get-IntuneManagementExtensionDiagnostics" in html
-
-    # The completed job derives a summary.json from the real report …
-    import app as app_module
     job_id = location.rstrip("/").rsplit("/", 1)[-1]
+    assert client.get(location).status_code == 200    # diagnostics page renders
+
+    # Wait for the in-package timeline analysis to finish.
+    deadline = time.time() + 300
+    while True:
+        analysis = client.get(f"/result/{job_id}/status").json().get("analysis")
+        if analysis not in ("queued", "running"):
+            break
+        if time.time() > deadline:
+            raise AssertionError("analysis did not finish")
+        time.sleep(1.0)
+    assert analysis == "done"
+
     summary_file = app_module.job_dir(job_id) / "output" / "summary.json"
     assert summary_file.is_file()
     model = app_module.read_summary(job_id)
-    assert model is not None and model["parse_ok"]
-    assert model["counts"]  # testdata contains Win32App/script events
+    assert model is not None and model["parse_ok"] and model["counts"]
 
-    # … and the wrapper page shows the summary panel above the iframe.
-    wrapper = client.get(location).text
-    assert 'class="summary"' in wrapper
-    assert "Analysis summary" in wrapper
-    # History records the original upload name, not the staged log paths.
-    assert '"logs.zip"' in wrapper
+    # The timeline report page (inside the diagnostics job) shows the summary.
+    rep = client.get(f"/result/{job_id}/timeline").text
+    assert "Analysis summary" in rep
+    assert "Win32App" in rep
 
 
 def test_oversized_upload_rejected(client):
     # MAX_UPLOAD_MB=1 in the fixture; send ~2 MB.
     big = b"x" * (2 * 1024 * 1024)
     r = client.post(
-        "/analyze",
+        "/cmtrace-view",
         files={"files": ("big.log", big, "text/plain")},
         follow_redirects=False,
     )
@@ -266,7 +251,7 @@ def test_oversized_upload_rejected(client):
 
 def test_wrong_extension_rejected(client):
     r = client.post(
-        "/analyze",
+        "/cmtrace-view",
         files={"files": ("evil.exe", b"nope", "application/octet-stream")},
         follow_redirects=False,
     )
@@ -276,13 +261,12 @@ def test_wrong_extension_rejected(client):
 def test_cmtrace_viewer(client):
     data = _zip_of_testdata()
     r = client.post(
-        "/analyze",
+        "/cmtrace-view",
         files={"files": ("logs.zip", data, "application/zip")},
         follow_redirects=False,
     )
-    location = r.headers["location"]
-    _wait_for_result(client, location)  # block until the job is done
-    job_id = location.rstrip("/").rsplit("/", 1)[-1]
+    location = r.headers["location"]   # -> /result/<id>/cmtrace (no analysis)
+    job_id = location.rstrip("/").split("/")[2]
 
     page = client.get(f"/result/{job_id}/cmtrace")
     assert page.status_code == 200
@@ -572,7 +556,7 @@ def test_zip_slip_rejected(client):
     with zipfile.ZipFile(buf, "w") as zf:
         zf.writestr("../../escape.log", "pwned")
     r = client.post(
-        "/analyze",
+        "/cmtrace-view",
         files={"files": ("evil.zip", buf.getvalue(), "application/zip")},
         follow_redirects=False,
     )
@@ -695,7 +679,7 @@ def test_landing_and_nav_show_diagnostics(client):
 
 
 def test_dark_mode_toggle_on_every_page(client):
-    for path in ("/", "/timeline", "/cmtrace", "/diagnostics"):
+    for path in ("/", "/cmtrace", "/diagnostics"):
         page = client.get(path)
         assert "localStorage.getItem('sherlog.theme')" in page.text  # head init
         assert 'onclick="sherlogTheme()"' in page.text               # nav toggle
@@ -703,7 +687,7 @@ def test_dark_mode_toggle_on_every_page(client):
 
 
 def test_about_dialog_on_every_page(client):
-    for path in ("/", "/timeline", "/cmtrace", "/diagnostics"):
+    for path in ("/", "/cmtrace", "/diagnostics"):
         page = client.get(path)
         assert 'id="about"' in page.text
         assert "Kris Mandemaker" in page.text

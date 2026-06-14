@@ -4,12 +4,14 @@ Webapplicatie ([sherlog.nl](https://sherlog.nl)) die Microsoft Intune Management
 Extension (IME) logbestanden analyseert en het resultaat als
 HTML-timelinerapport in de browser toont.
 
-De homepage biedt drie losse tools: de **Timeline Analyzer** (`/timeline`),
-de **CMTrace Viewer** (`/cmtrace`) en het **Diagnostics Package**
-(`/diagnostics`). Je uploadt logs (een `.zip` of losse `.log`-bestanden,
-bijvoorbeeld uit `C:\ProgramData\Microsoft\IntuneManagementExtension\Logs` of
-een Intune "Collect Diagnostics"-export). Voor de timeline draait de server
-het analysescript headless en serveert het gegenereerde rapport.
+De homepage biedt het **Diagnostics Package** (`/diagnostics`) en de
+**CMTrace Viewer** (`/cmtrace`). Je uploadt een diagnostics-`.zip` (→ device
+health + analyse) of losse `.log`-bestanden (→ CMTrace-viewer), bijvoorbeeld uit
+`C:\ProgramData\Microsoft\IntuneManagementExtension\Logs` of een Intune
+"Collect Diagnostics"-export. De **timeline-analyse is geen losse tool meer** —
+die draait automatisch op de IME-logs **binnen een diagnostics-pakket**: de
+server draait het analysescript headless en toont het rapport bij
+`/result/<id>/timeline`.
 
 Eén container, twee lagen:
 
@@ -43,7 +45,7 @@ en biedt drie dingen in één resultaatpagina:
    machinecertificaten. Ontbreekt een bronbestand, dan toont de check
    "unknown" (grijs) in plaats van een fout.
 2. **Automatische timeline-analyse** — op de IME-logs in het pakket
-   (`Apps-IME\Logs`) draait dezelfde analyse als de Timeline Analyzer; het
+   (`Apps-IME\Logs`) draait de timeline-analyse (alleen hier beschikbaar); het
    rapport en het samenvattingspaneel verschijnen zodra de analyse klaar is.
 3. **File browser** — alle bestanden in het pakket zijn direct te bekijken:
    `.log` in de CMTrace-viewer, tekstbestanden (`.txt`, `.reg`, `.xml`, …)
@@ -59,12 +61,9 @@ niet op de server, geen cookies of login. De lijst staat op de homepage en de
 uploadpagina's; jobs die de server heeft opgeruimd (na `JOB_RETENTION_HOURS`)
 verdwijnen er automatisch uit.
 
-De homepage toont screenshots van de drie tools (statische assets in
-`static/`) en heeft een **demo-knop** ("Try it with sample logs",
-`POST /demo`) die de timeline-analyse draait op de meegeleverde
-geanonimiseerde voorbeeldlogs uit `testdata/` — die map zit daarom ook in de
-Docker-image. Een bestaande demo-job wordt hergebruikt zolang de retentie hem
-niet heeft opgeruimd.
+De homepage heeft een drag-&-drop dropzone (een `.zip` → Diagnostics, losse
+`.log`-bestanden → CMTrace-viewer) en icon-tegels naar de tools. De
+geanonimiseerde voorbeeldlogs uit `testdata/` worden door de tests gebruikt.
 
 ## Credits
 
@@ -87,9 +86,10 @@ Vereist: Docker met Compose.
 docker compose up --build
 ```
 
-Open daarna <http://localhost:8080>. De homepage laat je kiezen tussen de
-Timeline Analyzer en de CMTrace Viewer. De app draait standaard als **publieke
-tool zonder login**: iedereen kan logs uploaden en het rapport bekijken.
+Open daarna <http://localhost:8080>. De homepage laat je een diagnostics-pakket
+of losse logs uploaden (Diagnostics / CMTrace Viewer). De app draait standaard
+als **publieke tool zonder login**: iedereen kan logs uploaden en het rapport
+bekijken.
 Optioneel kun je er basic auth voor zetten (zie hieronder).
 
 ### Environment variables
