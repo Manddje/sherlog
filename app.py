@@ -452,6 +452,9 @@ _TIMELINE_COLS = ("index", "date", "status", "type", "intent",
 _DOWNLOAD_COLS = ("app_type", "app_name", "dl_sec", "size_mb", "mbps", "do_pct")
 _CELL_CAP = 1000  # bound memory per parsed cell
 SUMMARY_DETAIL_CAP = 300
+# The full PowerShell error message (ExecutionMsg) is shown in the Error column;
+# allow much more than the short detail so the whole error is visible.
+SUMMARY_ERROR_CAP = 4000
 SUMMARY_MAX_FAILED_ITEMS = 50
 SUMMARY_MAX_ITEMS = 500
 
@@ -580,7 +583,7 @@ def summarize(summary: ReportSummary) -> dict:
         if status == "ErrorLog":
             for c in codes:
                 code_counter[c] += 1
-            msg = re.sub(r"\s+", " ", row["detail"]).strip()[:SUMMARY_DETAIL_CAP]
+            msg = re.sub(r"\s+", " ", row["detail"]).strip()[:SUMMARY_ERROR_CAP]
             for d in last_failed:           # attach to the failed row above it
                 if code and not d.get("code"):
                     d["code"] = code
@@ -2778,7 +2781,7 @@ REPORT_PAGE = """<!doctype html>
   details.summary h3{margin:.8rem 0 .3rem;font-size:.98rem}
   details.summary table{border-collapse:collapse;width:100%%;font-size:.86rem}
   details.summary th,details.summary td{text-align:left;padding:.3rem .6rem;
-    border-bottom:1px solid var(--border);vertical-align:top}
+    border-bottom:1px solid var(--border);vertical-align:top;overflow-wrap:anywhere}
   details.summary .code{margin:.2rem 0}
   .sum-chip[data-type],.sum-chip[data-status]{cursor:pointer}
   .sum-chip[data-type]:hover,.sum-chip[data-status]:hover{border-color:var(--accent)}
@@ -2941,7 +2944,7 @@ DIAG_PAGE = """<!doctype html>
   details.summary h3{margin:.7rem 0 .3rem;font-size:.95rem}
   details.summary table{border-collapse:collapse;width:100%%;font-size:.86rem}
   details.summary th,details.summary td{text-align:left;padding:.25rem .6rem;
-    border-bottom:1px solid var(--border);vertical-align:top}
+    border-bottom:1px solid var(--border);vertical-align:top;overflow-wrap:anywhere}
   details.summary .code{margin:.2rem 0}
   .sum-chip[data-type],.sum-chip[data-status]{cursor:pointer}
   .sum-chip[data-type]:hover,.sum-chip[data-status]:hover{border-color:var(--accent)}
@@ -3150,12 +3153,14 @@ def _error_cell(i: dict) -> str:
     PowerShell error message (full text on hover)."""
     code = str(i.get("code", ""))
     emsg = str(i.get("error_msg", ""))
+    if code and emsg:
+        return (f'<td class="st-bad">{html_escape(code)} &mdash; '
+                f'{html_escape(emsg)}</td>')
     if code:
-        return (f'<td class="st-bad" title="{attr_escape(emsg or i.get("code_text", ""))}">'
+        return (f'<td class="st-bad" title="{attr_escape(i.get("code_text", ""))}">'
                 f'{html_escape(code)}</td>')
     if emsg:
-        short = emsg if len(emsg) <= 90 else emsg[:90] + "…"
-        return f'<td class="st-bad" title="{attr_escape(emsg)}">{html_escape(short)}</td>'
+        return f'<td class="st-bad">{html_escape(emsg)}</td>'
     return "<td></td>"
 
 
