@@ -1527,6 +1527,7 @@ def build_dashboard(input_dir: Path) -> dict:
             "columns": ["Area", "Setting", "Intune name", "Value", "OMA-URI"],
             "widths": [13, 20, 23, 12, 32],
             "rows": rows,
+            "searchable": True,
         })
 
     # Proactive Remediations / platform scripts (SideCarPolicies executions).
@@ -1581,6 +1582,7 @@ def build_dashboard(input_dir: Path) -> dict:
                       (f'{r["code"]} — {r["code_text"]}' if r["code_text"]
                        else r["code"])]
                      for r in compliance],
+            "searchable": True,
         })
 
     # Network: WinHTTP proxy + firewall profile states.
@@ -2917,6 +2919,9 @@ DIAG_PAGE = """<!doctype html>
   /* Sticky summary so the collapse control stays reachable while scrolling. */
   details.section>summary{cursor:pointer;font-weight:600;padding:.4rem 0;
     position:sticky;top:0;z-index:2;background:var(--surface)}
+  details.section .secsearch{display:block;width:100%%;max-width:26rem;
+    margin:.1rem 0 .5rem;padding:.4rem .6rem;font:inherit;
+    border:1px solid var(--border2);border-radius:6px;background:var(--bg);color:var(--fg)}
   details.section .seclink{margin-left:.5rem;font-weight:400;font-size:.8rem;
     color:var(--accent);cursor:pointer}
   details.section table{border-collapse:collapse;width:100%%;margin-top:.5rem;
@@ -3046,6 +3051,16 @@ DIAG_PAGE = """<!doctype html>
     card.addEventListener('click', () => openSection(card));
     card.addEventListener('keydown', ev => {
       if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); openSection(card); }
+    });
+  });
+
+  // Per-section row filter (e.g. Policy settings, Compliance).
+  document.querySelectorAll('.secsearch').forEach(inp => {
+    const trs = [...inp.closest('details').querySelectorAll('tbody tr')];
+    inp.addEventListener('input', () => {
+      const q = inp.value.toLowerCase();
+      for (const tr of trs)
+        tr.style.display = (!q || tr.textContent.toLowerCase().includes(q)) ? '' : 'none';
     });
   });
 
@@ -3360,10 +3375,12 @@ def render_dashboard_panel(dash: Optional[dict]) -> str:
             for row in rows)
         key = sec.get("key")
         keyattr = f' data-key="{attr_escape(key)}"' if isinstance(key, str) and key else ""
+        search = ('<input class="secsearch" type="search" autocomplete="off"'
+                  ' placeholder="Filter rows…">' if sec.get("searchable") else "")
         parts.append(
             f'<details class="section"{keyattr}><summary>'
             f'{html_escape(str(sec.get("title", "")))}{link}</summary>'
-            f'<table>{colgroup}<thead><tr>{head}</tr></thead>'
+            f'{search}<table>{colgroup}<thead><tr>{head}</tr></thead>'
             f'<tbody>{body}</tbody></table></details>')
     return "".join(parts)
 

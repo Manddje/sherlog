@@ -1435,10 +1435,12 @@ def test_build_dashboard_policy_settings_section(tmp_path):
     # Fixed column widths render as a <colgroup> so the Value column isn't
     # crushed by the long OMA-URI column.
     assert sec["widths"] and len(sec["widths"]) == len(sec["columns"])
+    assert sec.get("searchable") is True            # has a row filter
     html = app_module.render_dashboard_panel(dash)
     assert 'href="https://learn.microsoft.com/windows/client-management/mdm/policy-csp-' in html
     assert 'rel="noopener"' in html
     assert "<colgroup>" in html and html.count("<col ") == len(sec["columns"])
+    assert 'class="secsearch"' in html              # filter input rendered
 
 
 # --- Settings-Catalog name enrichment (Microsoft Graph, optional) ----------
