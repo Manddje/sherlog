@@ -2781,7 +2781,8 @@ REPORT_PAGE = """<!doctype html>
   details.summary h3{margin:.8rem 0 .3rem;font-size:.98rem}
   details.summary table{border-collapse:collapse;width:100%%;font-size:.86rem}
   details.summary th,details.summary td{text-align:left;padding:.3rem .6rem;
-    border-bottom:1px solid var(--border);vertical-align:top;overflow-wrap:anywhere}
+    border-bottom:1px solid var(--border);vertical-align:top}
+  details.summary td.errcell{overflow-wrap:anywhere;min-width:18rem}
   details.summary .code{margin:.2rem 0}
   .sum-chip[data-type],.sum-chip[data-status]{cursor:pointer}
   .sum-chip[data-type]:hover,.sum-chip[data-status]:hover{border-color:var(--accent)}
@@ -2944,7 +2945,8 @@ DIAG_PAGE = """<!doctype html>
   details.summary h3{margin:.7rem 0 .3rem;font-size:.95rem}
   details.summary table{border-collapse:collapse;width:100%%;font-size:.86rem}
   details.summary th,details.summary td{text-align:left;padding:.25rem .6rem;
-    border-bottom:1px solid var(--border);vertical-align:top;overflow-wrap:anywhere}
+    border-bottom:1px solid var(--border);vertical-align:top}
+  details.summary td.errcell{overflow-wrap:anywhere;min-width:18rem}
   details.summary .code{margin:.2rem 0}
   .sum-chip[data-type],.sum-chip[data-status]{cursor:pointer}
   .sum-chip[data-type]:hover,.sum-chip[data-status]:hover{border-color:var(--accent)}
@@ -3154,13 +3156,13 @@ def _error_cell(i: dict) -> str:
     code = str(i.get("code", ""))
     emsg = str(i.get("error_msg", ""))
     if code and emsg:
-        return (f'<td class="st-bad">{html_escape(code)} &mdash; '
+        return (f'<td class="st-bad errcell">{html_escape(code)} &mdash; '
                 f'{html_escape(emsg)}</td>')
     if code:
-        return (f'<td class="st-bad" title="{attr_escape(i.get("code_text", ""))}">'
+        return (f'<td class="st-bad errcell" title="{attr_escape(i.get("code_text", ""))}">'
                 f'{html_escape(code)}</td>')
     if emsg:
-        return f'<td class="st-bad">{html_escape(emsg)}</td>'
+        return f'<td class="st-bad errcell">{html_escape(emsg)}</td>'
     return "<td></td>"
 
 
