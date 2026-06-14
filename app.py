@@ -907,14 +907,45 @@ def policy_doc_url(area: str, setting: str) -> str:
     return f"{_POLICY_DOC_BASE}{area.lower()}#{setting.lower()}"
 
 
-def parse_policymanager_settings(reg: dict, limit: int = 5000) -> List[dict]:
+def _index_policy_providers(providers: dict) -> dict:
+    """Index a PolicyManager-Providers.reg dump as
+    {(provider_id, scope, area): {value_name: value}} for value lookups.
+    provider_id is lowercased and brace-stripped to match the WinningProvider."""
+    rx = re.compile(
+        r"\\PolicyManager\\Providers\\([^\\]+)\\default\\([^\\]+)\\([^\\]+)$",
+        re.IGNORECASE)
+    out: dict = {}
+    for key, vals in providers.items():
+        m = rx.search(key)
+        if m:
+            pid = m.group(1).strip("{}").lower()
+            out[(pid, m.group(2).lower(), m.group(3).lower())] = vals
+    return out
+
+
+def parse_policymanager_settings(reg: dict, providers: Optional[dict] = None,
+                                 limit: int = 5000) -> List[dict]:
     """One row per applied PolicyManager setting, coupled to its CSP name.
 
     A setting is any `<Setting>_WinningProvider` value under
-    `…\\PolicyManager\\current\\<scope>\\<area>`; the bare `<Setting>` value
-    holds the data (absent for ADMX-node settings). Each row carries the
-    OMA-URI and a Microsoft Learn deep-link (the Intune setting name).
+    `…\\PolicyManager\\current\\<scope>\\<area>`. The value comes from the bare
+    `<Setting>` value when present; otherwise it is looked up in the providers
+    hive (PolicyManager-Providers.reg) under the winning provider's subtree —
+    where the actual value lives for most non-ADMX settings.
     """
+    prov_idx = _index_policy_providers(providers) if providers else {}
+
+    def provider_value(wp: str, scope: str, area: str, setting: str) -> str:
+        scope_l, area_l = scope.lower(), area.lower()
+        # Prefer the winning provider; fall back to any provider that has it.
+        vals = prov_idx.get((wp, scope_l, area_l))
+        if vals and setting in vals:
+            return str(vals[setting])
+        for (_pid, s, a), pv in prov_idx.items():
+            if s == scope_l and a == area_l and setting in pv:
+                return str(pv[setting])
+        return ""
+
     rx = re.compile(r"\\PolicyManager\\current\\([^\\]+)\\([^\\]+)$", re.IGNORECASE)
     out: List[dict] = []
     for key, vals in reg.items():
@@ -929,6 +960,9 @@ def parse_policymanager_settings(reg: dict, limit: int = 5000) -> List[dict]:
             admx = (area.upper().startswith("ADMX_")
                     or f"{setting}_ADMXInstanceData" in vals)
             value = vals.get(setting, "")
+            if value == "" and prov_idx:
+                wp = str(vals[name]).strip("{}").lower()
+                value = provider_value(wp, scope, area, setting)
             out.append({
                 "scope": scope, "area": area, "setting": setting,
                 "value": "" if value == "" else str(value),
@@ -1126,6 +1160,7 @@ _DASH_SOURCES = {
     "ime_reg": ("Registry/IntuneManagementExtension.reg",),
     "enrollments": ("Registry/Enrollments.reg",),
     "policymanager": ("Registry/PolicyManager-Current.reg",),
+    "policymanager_providers": ("Registry/PolicyManager-Providers.reg",),
     "proxy": ("Network/winhttp-proxy.txt",),
     "firewall": ("Network/firewall-profiles.txt",),
 }
@@ -1331,7 +1366,8 @@ def build_dashboard(input_dir: Path) -> dict:
         })
         # Per-setting table: couple each applied setting to its CSP/OMA-URI
         # name with a deep-link to the Microsoft Learn Policy CSP doc.
-        pm_settings = parse_policymanager_settings(reg("policymanager"))
+        pm_settings = parse_policymanager_settings(
+            reg("policymanager"), reg("policymanager_providers"))
         rows = []
         for s in pm_settings[:2000]:
             oma = ({"text": s["oma_uri"], "href": s["doc_url"]} if s["doc_url"]

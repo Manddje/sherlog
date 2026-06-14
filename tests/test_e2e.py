@@ -1354,6 +1354,35 @@ def test_parse_policymanager_settings_couples_csp_name():
     assert admx["oma_uri"]                 # OMA-URI still built
 
 
+_PM_CURRENT_NOVAL = (
+    "[HKLM\\SOFTWARE\\Microsoft\\PolicyManager\\current\\device\\ApplicationManagement]\r\n"
+    "\"AllowAppStoreAutoUpdate\"=dword:00000001\r\n"
+    "\"AllowAppStoreAutoUpdate_WinningProvider\"=\"{11111111-1111-1111-1111-111111111111}\"\r\n"
+    "\"MSIAllowUserControlOverInstall_WinningProvider\"=\"{11111111-1111-1111-1111-111111111111}\"\r\n"
+)
+_PM_PROVIDERS = (
+    "[HKLM\\SOFTWARE\\Microsoft\\PolicyManager\\Providers"
+    "\\{11111111-1111-1111-1111-111111111111}\\default\\device\\ApplicationManagement]\r\n"
+    "\"MSIAllowUserControlOverInstall\"=dword:00000001\r\n"
+)
+
+
+def test_policymanager_value_from_providers_hive():
+    import app as app_module
+    cur = app_module.parse_reg(_PM_CURRENT_NOVAL)
+    prov = app_module.parse_reg(_PM_PROVIDERS)
+    # Without the providers hive the value is missing in `current`.
+    no_prov = {r["setting"]: r for r in
+               app_module.parse_policymanager_settings(cur)}
+    assert no_prov["MSIAllowUserControlOverInstall"]["value"] == ""
+    assert no_prov["AllowAppStoreAutoUpdate"]["value"] == "1"
+    # With the providers hive it is filled from the winning provider's subtree.
+    with_prov = {r["setting"]: r for r in
+                 app_module.parse_policymanager_settings(cur, prov)}
+    assert with_prov["MSIAllowUserControlOverInstall"]["value"] == "1"
+    assert with_prov["AllowAppStoreAutoUpdate"]["value"] == "1"  # bare value kept
+
+
 def test_build_dashboard_policy_settings_section(tmp_path):
     import app as app_module
     inp = tmp_path / "pkg"
