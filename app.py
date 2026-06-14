@@ -4736,6 +4736,7 @@ async def inbox(request: Request, token: str = "") -> HTMLResponse:
                if r["analysis"] not in ("none", "") else "")
             + f'</td><td><a href="/result/{r["job_id"]}">open</a> '
             f'<button class="linkbtn danger" type="button" '
+            f'style="margin-left:1rem" '
             f'data-job="{r["job_id"]}">delete</button></td></tr>'
             for r in rows)
         cap = UPLOAD_API_MAX_JOBS_PER_TOKEN
