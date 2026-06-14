@@ -2516,12 +2516,6 @@ LANDING_PAGE = """<!doctype html>
             <p>Device health dashboard, Win32 app status, applied policies (RSOP)
               with Intune names, plus a file viewer.</p></span>
         </a>
-        <a class="tile" href="/errorcodes">
-          <span class="ic">%(ic_codes)s</span>
-          <span class="tx"><h3>Error codes</h3>
-            <p>Searchable reference of Intune / Win32, Windows, network, DO and
-              MSI codes with plain-language fixes.</p></span>
-        </a>
         %(dropoff_tile)s
       </div>
     </section>
@@ -4006,7 +4000,7 @@ async def index() -> HTMLResponse:
         "retention": JOB_RETENTION_HOURS, "max": MAX_UPLOAD_MB,
         "accept": ".log,.zip", "patternjson": json.dumps(r"\.(log|zip)$"),
         "ic_cmtrace": _ICONS["cmtrace"],
-        "ic_diag": _ICONS["diag"], "ic_codes": _ICONS["codes"],
+        "ic_diag": _ICONS["diag"],
         "dropoff_tile": dropoff_tile,
     })
 
