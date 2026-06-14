@@ -4734,7 +4734,9 @@ async def inbox(request: Request, token: str = "") -> HTMLResponse:
             f'<td>{html_escape(r["state"])}'
             + (f' · analysis {html_escape(r["analysis"])}'
                if r["analysis"] not in ("none", "") else "")
-            + f'</td><td><a href="/result/{r["job_id"]}">open</a></td></tr>'
+            + f'</td><td><a href="/result/{r["job_id"]}">open</a> '
+            f'<button class="linkbtn danger" type="button" '
+            f'data-job="{r["job_id"]}">delete</button></td></tr>'
             for r in rows)
         cap = UPLOAD_API_MAX_JOBS_PER_TOKEN
         full_note = (' &mdash; inbox full, new uploads are refused until you '
@@ -4752,7 +4754,16 @@ async def inbox(request: Request, token: str = "") -> HTMLResponse:
                 'This cannot be undone."))return;'
                 'fetch("/inbox/delete",{method:"POST",headers:{"X-Upload-Token":'
                 + json.dumps(token) + '}}).then(function(){location.reload();});'
-                '});</script>')
+                '});'
+                'document.querySelectorAll("button[data-job]").forEach('
+                'function(b){b.addEventListener("click",function(){'
+                'if(!confirm("Delete this upload from the server? '
+                'This cannot be undone."))return;'
+                'fetch("/inbox/delete-one",{method:"POST",headers:{'
+                '"X-Upload-Token":' + json.dumps(token)
+                + ',"X-Job-Id":b.getAttribute("data-job")}})'
+                '.then(function(){location.reload();});'
+                '});});</script>')
     else:
         body = ('<p>No uploads found for this token yet. Deploy the collector '
                 'with this token via Intune, then refresh.</p>'
@@ -4779,6 +4790,29 @@ async def inbox_delete(request: Request, token: str = "") -> JSONResponse:
                 and delete_job(child.name)):
             deleted += 1
     return JSONResponse({"deleted": deleted})
+
+
+@app.post("/inbox/delete-one")
+async def inbox_delete_one(request: Request, token: str = "",
+                           job: str = "") -> JSONResponse:
+    """Delete a single drop-off package, but only when it belongs to this token.
+    The token hash on the job must match, so an inbox can only delete its own."""
+    if not ENABLE_UPLOAD_API:
+        return JSONResponse({"error": "inbox disabled"}, status_code=404)
+    if not token:
+        token = request.headers.get("X-Upload-Token", "")
+    if not job:
+        job = request.headers.get("X-Job-Id", "")
+    if not token or len(token) < UPLOAD_TOKEN_MIN_LEN:
+        return JSONResponse({"error": "missing or too-short token"}, status_code=401)
+    if not job.isalnum():
+        return JSONResponse({"error": "invalid job id"}, status_code=400)
+    st = read_status(job)
+    want = token_hash(token)
+    if (not st or st.get("source") != "api"
+            or not secrets.compare_digest(str(st.get("upload_token_hash", "")), want)):
+        return JSONResponse({"error": "not found"}, status_code=404)
+    return JSONResponse({"deleted": bool(delete_job(job))})
 
 
 @app.get("/result/{job_id}", response_class=HTMLResponse)

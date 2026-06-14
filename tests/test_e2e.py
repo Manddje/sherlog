@@ -1572,6 +1572,33 @@ def test_api_upload_and_inbox(upload_client):
     assert "PC01" not in other.text
 
 
+def test_api_delete_one(upload_client):
+    """A token can delete a single one of its own uploads; a different token
+    cannot, and only the targeted job is removed."""
+    import app as app_module
+    h = {"Content-Type": "application/zip"}
+    j1 = upload_client.post("/api/diagnostics", content=_diag_zip(),
+                            headers={**h, "X-Upload-Token": _TOK}).json()["job_id"]
+    j2 = upload_client.post("/api/diagnostics", content=_diag_zip(),
+                            headers={**h, "X-Upload-Token": _TOK}).json()["job_id"]
+    # Per-row delete buttons are present in the listing.
+    listing = upload_client.get("/inbox", params={"token": _TOK}).text
+    assert f'data-job="{j1}"' in listing and f'data-job="{j2}"' in listing
+
+    # A different token may not delete this job (404, untouched).
+    bad = upload_client.post("/inbox/delete-one",
+                             headers={"X-Upload-Token": "z" * 30, "X-Job-Id": j1})
+    assert bad.status_code == 404
+    assert app_module.read_status(j1) is not None
+
+    # The owning token deletes only the targeted job.
+    ok = upload_client.post("/inbox/delete-one",
+                            headers={"X-Upload-Token": _TOK, "X-Job-Id": j1})
+    assert ok.status_code == 200 and ok.json()["deleted"] is True
+    assert app_module.read_status(j1) is None
+    assert app_module.read_status(j2) is not None
+
+
 def test_api_token_too_short(upload_client):
     r = upload_client.post("/api/diagnostics", content=_diag_zip(),
                            headers={"X-Upload-Token": "short",
