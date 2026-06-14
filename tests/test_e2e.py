@@ -159,6 +159,49 @@ def test_status_endpoint_404_for_missing_job(client):
     assert client.get("/result/deadbeefdeadbeef/status").status_code == 404
 
 
+def test_delete_job_removes_it_server_side(client):
+    """The history 'Delete all' calls POST /result/<id>/delete per job."""
+    r = client.post(
+        "/cmtrace-view",
+        files={"files": ("a.log", b"<![LOG[hi]LOG]!><time=\"1\" date=\"2\" "
+                                  b"component=\"C\" type=\"1\" thread=\"3\">",
+                         "text/plain")},
+        follow_redirects=False,
+    )
+    job_id = r.headers["location"].rstrip("/").split("/")[2]
+    assert client.get(f"/result/{job_id}/status").status_code == 200
+    d = client.post(f"/result/{job_id}/delete")
+    assert d.status_code == 200 and d.json()["deleted"] is True
+    assert client.get(f"/result/{job_id}/status").status_code == 404
+    # The homepage history wires the button to this endpoint.
+    assert 'id="recent-clear"' in client.get("/").text
+
+
+def test_inbox_delete_all(upload_client):
+    import app as app_module
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr("Identity/dsregcmd-status.txt", "AzureAdJoined : YES\n")
+    pkg = buf.getvalue()
+    job_id = upload_client.post(
+        "/api/diagnostics", content=pkg,
+        headers={"X-Upload-Token": _TOK, "Content-Type": "application/zip"},
+    ).json()["job_id"]
+    assert "id=\"delall\"" in upload_client.get("/inbox", params={"token": _TOK}).text
+    d = upload_client.post("/inbox/delete", headers={"X-Upload-Token": _TOK})
+    assert d.status_code == 200 and d.json()["deleted"] == 1
+    assert app_module.read_status(job_id) is None      # gone from disk
+    assert "PC01" not in upload_client.get("/inbox", params={"token": _TOK}).text
+    # A too-short token is rejected.
+    assert upload_client.post("/inbox/delete",
+                              headers={"X-Upload-Token": "short"}).status_code == 401
+
+
+def test_inbox_delete_disabled_by_default(client):
+    assert client.post("/inbox/delete",
+                       headers={"X-Upload-Token": "a" * 30}).status_code == 404
+
+
 def test_result_pages_record_history(client):
     # Logs-only flow: CMTRACE_PAGE embeds a history-record snippet.
     r = client.post(

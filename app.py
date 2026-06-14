@@ -170,6 +170,15 @@ def status_path(job_id: str) -> Path:
     return job_dir(job_id) / "job.json"
 
 
+def delete_job(job_id: str) -> bool:
+    """Remove a job directory from disk. Returns True if it existed. Total."""
+    d = job_dir(job_id)
+    if not d.is_dir():
+        return False
+    shutil.rmtree(d, ignore_errors=True)
+    return True
+
+
 def write_status(job_id: str, **fields) -> None:
     status_path(job_id).write_text(json.dumps(fields), encoding="utf-8")
 
@@ -2095,6 +2104,9 @@ PAGE_CSS = """
     padding-right:.5rem; }
   .recent{ margin-top:1.25rem; }
   .recent h2{ margin:0 0 .5rem; font-size:1.1rem; }
+  .recent-head{ display:flex; justify-content:space-between; align-items:baseline; gap:1rem; }
+  .linkbtn.danger{ color:#dc2626; }
+  .linkbtn.danger:hover{ text-decoration:underline; }
   .recent ul{ list-style:none; margin:0; padding:0; }
   .recent li{ display:flex; align-items:center; gap:.7rem; padding:.5rem .2rem;
     border-bottom:1px solid var(--border); font-size:.92rem; }
@@ -2209,7 +2221,8 @@ FOOTER = ("""<footer>
 # sets no cookies. Result pages upsert an entry (history_record_js); this
 # section renders the list and silently prunes jobs the server has deleted.
 HISTORY_SECTION = """<section class="card recent" id="recent" hidden>
-  <h2>Recent uploads</h2>
+  <div class="recent-head"><h2>Recent uploads</h2>
+    <button class="linkbtn danger" id="recent-clear" type="button">Delete all</button></div>
   <ul id="recent-list"></ul>
 </section>
 <script>
@@ -2268,6 +2281,17 @@ HISTORY_SECTION = """<section class="card recent" id="recent" hidden>
       .then(r => { if (r.status === 404) drop(e.id, li); })
       .catch(() => {});
   }
+  // Delete all: remove every listed job from the server, then clear the list.
+  const clearBtn = document.getElementById('recent-clear');
+  if (clearBtn) clearBtn.addEventListener('click', () => {
+    if (!hist.length) return;
+    if (!confirm('Delete all ' + hist.length +
+                 ' uploads from the server? This cannot be undone.')) return;
+    const ids = hist.map(e => e.id);
+    Promise.all(ids.map(id => fetch('/result/' + encodeURIComponent(id) +
+                '/delete', { method: 'POST' }).catch(() => {})))
+      .then(() => { hist = []; save(); list.innerHTML = ''; section.hidden = true; });
+  });
 })();
 </script>"""
 
@@ -4512,16 +4536,46 @@ async def inbox(request: Request, token: str = "") -> HTMLResponse:
                if r["analysis"] not in ("none", "") else "")
             + f'</td><td><a href="/result/{r["job_id"]}">open</a></td></tr>'
             for r in rows)
-        body = (f'<p class="muted">{len(rows)} upload(s) for this token.</p>'
+        body = (f'<div class="tokrow"><p class="muted" style="flex:1">'
+                f'{len(rows)} upload(s) for this token.</p>'
+                '<button class="linkbtn danger" id="delall" type="button">'
+                'Delete all</button></div>'
                 '<table class="inbox"><thead><tr><th>Device</th><th>Uploaded</th>'
                 '<th>Status</th><th></th></tr></thead><tbody>'
-                f'{trs}</tbody></table>')
+                f'{trs}</tbody></table>'
+                '<script>'
+                'document.getElementById("delall").addEventListener("click",function(){'
+                'if(!confirm("Delete all uploads for this token from the server? '
+                'This cannot be undone."))return;'
+                'fetch("/inbox/delete",{method:"POST",headers:{"X-Upload-Token":'
+                + json.dumps(token) + '}}).then(function(){location.reload();});'
+                '});</script>')
     else:
         body = ('<p>No uploads found for this token yet. Deploy the collector '
                 'with this token via Intune, then refresh.</p>'
                 '<p class="muted"><a href="/inbox">&larr; use another token</a></p>')
     return HTMLResponse(INBOX_PAGE % {
         "css": PAGE_CSS, "nav": NAV, "footer": FOOTER, "body": body})
+
+
+@app.post("/inbox/delete")
+async def inbox_delete(request: Request, token: str = "") -> JSONResponse:
+    """Delete every drop-off package for a token (the inbox 'Delete all')."""
+    if not ENABLE_UPLOAD_API:
+        return JSONResponse({"error": "inbox disabled"}, status_code=404)
+    if not token:
+        token = request.headers.get("X-Upload-Token", "")
+    if not token or len(token) < UPLOAD_TOKEN_MIN_LEN:
+        return JSONResponse({"error": "missing or too-short token"}, status_code=401)
+    want = token_hash(token)
+    deleted = 0
+    for child in iter_job_dirs():
+        st = read_status(child.name)
+        if (st and st.get("source") == "api"
+                and secrets.compare_digest(str(st.get("upload_token_hash", "")), want)
+                and delete_job(child.name)):
+            deleted += 1
+    return JSONResponse({"deleted": deleted})
 
 
 @app.get("/result/{job_id}", response_class=HTMLResponse)
@@ -4759,6 +4813,15 @@ async def job_status(job_id: str) -> JSONResponse:
         "state": status.get("state"),
         "analysis": (status.get("analysis") or {}).get("state"),
     })
+
+
+@app.post("/result/{job_id}/delete")
+async def delete_result(job_id: str) -> JSONResponse:
+    """Delete one job from disk (used by the 'Delete all' in the history list).
+    Knowing the unguessable job id is the authorization, as it is for viewing."""
+    if not job_id.isalnum():
+        return JSONResponse({"error": "invalid job id"}, status_code=400)
+    return JSONResponse({"deleted": delete_job(job_id)})
 
 
 @app.get("/result/{job_id}/timeline", response_class=HTMLResponse)
