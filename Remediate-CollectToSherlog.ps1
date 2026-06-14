@@ -1,20 +1,21 @@
 <#
 .SYNOPSIS
-    Intune remediation script: collect a slim Intune diagnostics package and
-    upload it to a Sherlog drop-off inbox.
+    Intune Remediation DETECTION script: collect a slim Intune diagnostics
+    package and upload it to a Sherlog drop-off inbox.
 
 .DESCRIPTION
-    Deploy this single script as a Remediation (Devices > Scripts and
-    remediations) and trigger it on-demand ("Run remediation") per device, or
-    assign it to a group. It downloads Collect-IntuneDiagnostics.ps1 from your
-    Sherlog server and runs it with the slim -Remote profile, uploading the zip
-    with your token. Review the uploads at <SherlogBase>/inbox?token=<token>.
+    Intune Remediations require a detection script; paste this in the DETECTION
+    slot (no remediation script needed). Create it under Devices > Scripts and
+    remediations, assign it to a group, or run it on-demand ("Run remediation").
+    It downloads Collect-IntuneDiagnostics.ps1 from your Sherlog server, runs it
+    with the slim -Remote profile and uploads the zip with your token. Review the
+    uploads at <SherlogBase>/inbox?token=<token>.
 
-    Runs as SYSTEM. Output is kept short to fit the 2048-char remediation cap.
+    Runs as SYSTEM. Output is kept short to fit the 2048-char output cap.
 
 .NOTES
     Edit the two settings below. Generate the token on the Sherlog /inbox page.
-    Run in 64-bit PowerShell. Trigger it on-demand with "Run remediation".
+    Run in 64-bit PowerShell. Paste as the Detection script (it always runs).
 #>
 
 # ---- settings -------------------------------------------------------------

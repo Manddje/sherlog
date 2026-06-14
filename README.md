@@ -145,12 +145,15 @@ token zelf — en houdt geen token-register bij.
    `$SherlogBase` en `$UploadToken` in.
 3. Intune-admincenter → **Devices → Scripts and remediations** → custom script
    package, **Run in 64-bit PowerShell: Yes**, **logged-on credentials: No**.
-   Plak `Remediate-CollectToSherlog.ps1` als remediation-script.
-4. Selecteer een device → **Run remediation** (on-demand). Het script draait als
-   SYSTEM, verzamelt het slimme `-Remote`-profiel en POST't de zip.
+   Plak `Remediate-CollectToSherlog.ps1` als **detection-script** — Intune
+   vereist een detection-script; dit ene script doet de collectie, dus een
+   remediation-script is niet nodig (leeg laten).
+4. Wijs toe aan een device-groep (de detection draait op schema), of selecteer
+   een device → **Run remediation** (on-demand). Draait als SYSTEM, verzamelt
+   het slimme `-Remote`-profiel en POST't de zip.
 5. Open `<sherlog>/inbox?token=<token>` en klik de device-upload open.
 
-> Het remediation-script staat ook kant-en-klaar (met je token al ingevuld) op
+> Het detection-script staat ook kant-en-klaar (met je token al ingevuld) op
 > de `/inbox`-pagina nadat je een token genereert.
 
 Direct vanaf de commandline kan ook:

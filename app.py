@@ -4049,21 +4049,22 @@ COLLECT_SCRIPT = APP_DIR / "Collect-IntuneDiagnostics.ps1"
 # the inbox can always show it, even if the file isn't in the running image.
 REMEDIATION_TEMPLATE = r"""<#
 .SYNOPSIS
-    Intune remediation script: collect a slim Intune diagnostics package and
-    upload it to a Sherlog drop-off inbox.
+    Intune Remediation DETECTION script: collect a slim Intune diagnostics
+    package and upload it to a Sherlog drop-off inbox.
 
 .DESCRIPTION
-    Deploy this single script as a Remediation (Devices > Scripts and
-    remediations) and trigger it on-demand ("Run remediation") per device, or
-    assign it to a group. It downloads Collect-IntuneDiagnostics.ps1 from your
-    Sherlog server and runs it with the slim -Remote profile, uploading the zip
-    with your token. Review the uploads at <SherlogBase>/inbox?token=<token>.
+    Intune Remediations require a detection script; paste this in the DETECTION
+    slot (no remediation script needed). Create it under Devices > Scripts and
+    remediations, assign it to a group, or run it on-demand ("Run remediation").
+    It downloads Collect-IntuneDiagnostics.ps1 from your Sherlog server, runs it
+    with the slim -Remote profile and uploads the zip with your token. Review the
+    uploads at <SherlogBase>/inbox?token=<token>.
 
-    Runs as SYSTEM. Output is kept short to fit the 2048-char remediation cap.
+    Runs as SYSTEM. Output is kept short to fit the 2048-char output cap.
 
 .NOTES
     Edit the two settings below. Generate the token on the Sherlog /inbox page.
-    Run in 64-bit PowerShell. Trigger it on-demand with "Run remediation".
+    Run in 64-bit PowerShell. Paste as the Detection script (it always runs).
 #>
 
 # ---- settings -------------------------------------------------------------
@@ -4516,7 +4517,7 @@ INBOX_PAGE = """<!doctype html>
 # filled in, plus a short Intune deployment guide.
 _INBOX_FORM = """
       <p>Enter your upload token to open this device inbox, or generate a new one
-         to use in your Intune remediation script.</p>
+         to use in your Intune detection script.</p>
       <form method="get" action="/inbox" class="tokrow">
         <input name="token" id="tok" type="text" placeholder="upload token"
                autocomplete="off" minlength="%(min)d" required>
@@ -4532,7 +4533,7 @@ _INBOX_FORM = """
            upload secret <em>and</em> your inbox key
            (<code>/inbox?token=&lt;token&gt;</code>).</p>
 
-        <h2>Remediation script (token filled in)</h2>
+        <h2>Detection script (token filled in)</h2>
         <div class="tokrow">
           <button class="btn btn-ghost" type="button" id="copy">Copy script</button>
           <button class="btn btn-ghost" type="button" id="dl">Download .ps1</button>
@@ -4551,12 +4552,16 @@ _INBOX_FORM = """
           <li>Copy or download the script above (your token is already in it).</li>
           <li>Intune admin center &rarr; <strong>Devices</strong> &rarr;
               <strong>Scripts and remediations</strong> &rarr; <strong>Create</strong>.</li>
-          <li>Paste the script above as the <strong>Remediation script</strong>.</li>
+          <li>Paste the script above as the <strong>Detection script</strong>.
+              Intune requires a detection script; this single script does the
+              collection, so <strong>no remediation script is needed</strong>
+              (leave it empty).</li>
           <li>Settings: <strong>Run script in 64-bit PowerShell</strong> =
               <code>Yes</code>; <strong>Run using logged-on credentials</strong> =
               <code>No</code> (runs as SYSTEM); signature check = <code>No</code>.</li>
-          <li>Assign to a device group, <em>or</em> run it targeted: pick a device
-              &rarr; <strong>Run remediation</strong>.</li>
+          <li>Assign to a device group (the detection script runs on schedule),
+              <em>or</em> run it on-demand: pick a device &rarr;
+              <strong>Run remediation</strong>.</li>
           <li>After a few minutes the device upload appears in
               <a id="inboxlink" href="/inbox">this inbox</a> &mdash; refresh it.</li>
         </ol>
