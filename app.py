@@ -1016,6 +1016,117 @@ def count_event_issues(text: str) -> dict:
     }
 
 
+def parse_eventlog_records(text: str) -> List[dict]:
+    """Parse the Format-List blocks of a *-ErrorsWarnings.txt dump into records
+    {time, id, level, message}. Message may span several lines (kept last by the
+    collector's Select-Object), so it runs to the end of its block."""
+    out: List[dict] = []
+    for block in re.split(r"\n[ \t]*\n", text):
+        if "Message" not in block and "LevelDisplayName" not in block:
+            continue
+
+        def field(name: str) -> str:
+            m = re.search(rf"^\s*{name}\s*:\s*(.*)$", block, re.MULTILINE)
+            return m.group(1).strip() if m else ""
+
+        mm = re.search(r"^\s*Message\s*:\s*(.*)", block, re.MULTILINE | re.DOTALL)
+        message = re.sub(r"\s+", " ", mm.group(1)).strip() if mm else ""
+        rec = {"time": field("TimeCreated"), "id": field("Id"),
+               "level": field("LevelDisplayName"), "message": message}
+        if any(rec.values()):
+            out.append(rec)
+    return out
+
+
+# --- Compliance (best-effort, log-derived) ----------------------------------
+# Authoritative compliant/non-compliant state is service-side (Graph) and not in
+# an offline package; this surfaces compliance-related entries + errors found in
+# the event logs, IME logs, IME registry and the mdmdiag report.
+_COMPLIANCE_RE = re.compile(r"compli(?:ance|ant)", re.IGNORECASE)
+_COMPLIANCE_FAIL_RE = re.compile(r"not\s*compliant|noncompliant|\bfail", re.IGNORECASE)
+
+
+def _compliance_row(source: str, time: str, level: str, message: str,
+                    src: str) -> dict:
+    message = re.sub(r"\s+", " ", message).strip()[:SUMMARY_DETAIL_CAP]
+    codes = find_error_codes(message)
+    code = next(iter(codes), "")
+    is_err = (level.lower() == "error" or bool(code)
+              or bool(_COMPLIANCE_FAIL_RE.search(message)))
+    return {"source": source, "time": time, "level": level, "message": message,
+            "code": code, "code_text": codes.get(code, ""), "error": is_err,
+            "src": src}
+
+
+def collect_compliance(input_dir: Path, limit: int = 300) -> List[dict]:
+    """Best-effort compliance entries from every offline source in the package."""
+    rows: List[dict] = []
+
+    def relpath(p: Path) -> str:
+        return p.relative_to(input_dir).as_posix()
+
+    # 1. DeviceManagement / MDM event logs (text summaries).
+    for p in sorted(input_dir.rglob("*-ErrorsWarnings.txt")):
+        rel = relpath(p)
+        name = p.name.replace("-ErrorsWarnings.txt", "")
+        for r in parse_eventlog_records(read_text_tolerant(p)):
+            if _COMPLIANCE_RE.search(r["message"]):
+                rows.append(_compliance_row(name, r["time"], r["level"],
+                                            r["message"], rel))
+                if len(rows) >= limit:
+                    return rows
+
+    # 2. IME logs (custom compliance scripts, ComplianceHandler).
+    for p in sorted(input_dir.rglob("*.log")):
+        rel = relpath(p)
+        if "apps-ime" not in rel.lower():
+            continue
+        records, _ = parse_cmtrace(read_text_tolerant(p))
+        for rec in records:
+            if _COMPLIANCE_RE.search(rec.get("msg", "")):
+                rows.append(_compliance_row(p.name, rec.get("time", ""), "",
+                                            rec["msg"], rel))
+                if len(rows) >= limit:
+                    return rows
+
+    # 3. IME registry: SideCarPolicies compliance keys.
+    imereg = _find_package_file(input_dir, ("Registry/IntuneManagementExtension.reg",))
+    if imereg:
+        rel = relpath(imereg)
+        reg = parse_reg(read_text_tolerant(imereg))
+        for key, vals in reg.items():
+            if "complian" not in key.lower():
+                continue
+            detail = ", ".join(
+                f"{k}={vals[k]}" for k in vals
+                if k.lower() in ("result", "errorcode", "errormessage",
+                                 "resultdetails", "state", "lastexecution"))
+            tail = key.split("\\")[-1]
+            msg = f"{tail} (compliance)" + (f": {detail}" if detail else "")
+            rows.append(_compliance_row("IME registry", "", "", msg, rel))
+            if len(rows) >= limit:
+                return rows
+
+    # 4. mdmdiag DefaultReport (HTML/XML) — keyword snippets.
+    for p in sorted(input_dir.rglob("*.htm*")) + sorted(input_dir.rglob("*.xml")):
+        rel = relpath(p)
+        if "mdm" not in rel.lower():
+            continue
+        plain = re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", read_text_tolerant(p)))
+        seen = set()
+        for m in _COMPLIANCE_RE.finditer(plain):
+            snip = plain[max(0, m.start() - 60):m.start() + 100].strip()
+            if snip in seen:
+                continue
+            seen.add(snip)
+            rows.append(_compliance_row("mdmdiag report", "", "", snip, rel))
+            if len(rows) >= limit:
+                return rows
+            if len(seen) >= 20:
+                break
+    return rows
+
+
 # --- Settings-Catalog name enrichment (optional, Microsoft Graph) ------------
 # Maps a Policy CSP setting to its friendly Intune display name. The catalog is
 # global Microsoft metadata (no tenant/log data), fetched once and cached. Every
@@ -1422,6 +1533,29 @@ def build_dashboard(input_dir: Path) -> dict:
             "status": "bad" if tot_e else "warn" if tot_w else "ok",
             "detail": f"{tot_e} errors, {tot_w} warnings across {len(ev_files)} logs",
             "src": dm.relative_to(input_dir).as_posix(),
+        })
+
+    # Compliance (best-effort, log-derived): event logs, IME logs/registry, mdmdiag.
+    compliance = collect_compliance(input_dir)
+    if compliance:
+        errs = sum(1 for r in compliance if r["error"])
+        warns = sum(1 for r in compliance if r["level"].lower() == "warning")
+        checks.append({
+            "label": "Compliance",
+            "status": "bad" if errs else "warn" if warns else "ok",
+            "detail": (f"{len(compliance)} log entries"
+                       + (f", {errs} errors" if errs else "")),
+            "section": "compliance",
+        })
+        sections.append({
+            "title": f"Compliance ({len(compliance)})",
+            "key": "compliance",
+            "columns": ["Source", "Time", "Message", "Error"],
+            "widths": [16, 14, 52, 18],
+            "rows": [[r["source"], r["time"], r["message"],
+                      (f'{r["code"]} — {r["code_text"]}' if r["code_text"]
+                       else r["code"])]
+                     for r in compliance],
         })
 
     # Network: WinHTTP proxy + firewall profile states.
@@ -2766,8 +2900,9 @@ DIAG_PAGE = """<!doctype html>
   .st.ok{background:#16a34a}.st.bad{background:#dc2626}
   .st.warn{background:#d97706}.st.unknown{background:#9ca3af}
   .check .det{color:var(--muted);font-size:.85rem;margin-top:.2rem;word-break:break-word}
-  .check[data-file]{cursor:pointer}
-  .check[data-file]:hover,.check[data-file]:focus-visible{border-color:var(--accent)}
+  .check[data-file],.check[data-section]{cursor:pointer}
+  .check[data-file]:hover,.check[data-file]:focus-visible,
+  .check[data-section]:hover,.check[data-section]:focus-visible{border-color:var(--accent)}
   details.section{background:var(--surface);border:1px solid var(--border);
     border-radius:10px;padding:.4rem 1rem;font-size:.85rem;max-height:45vh;overflow:auto}
   details.section>summary{cursor:pointer;font-weight:600;padding:.25rem 0}
@@ -2874,6 +3009,19 @@ DIAG_PAGE = """<!doctype html>
     card.addEventListener('click', () => openSource(card));
     card.addEventListener('keydown', ev => {
       if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); openSource(card); }
+    });
+  });
+  // Cards that open a detail section instead of a file (e.g. Compliance).
+  function openSection(card) {
+    const d = document.querySelector('details.section[data-key="' + card.dataset.section + '"]');
+    if (!d) return;
+    d.open = true;
+    d.scrollIntoView({behavior: 'smooth', block: 'start'});
+  }
+  document.querySelectorAll('.check[data-section]').forEach(card => {
+    card.addEventListener('click', () => openSection(card));
+    card.addEventListener('keydown', ev => {
+      if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); openSection(card); }
     });
   });
 
@@ -3115,12 +3263,17 @@ def render_dashboard_panel(dash: Optional[dict]) -> str:
         # recorded a source (older dashboard.json files have none).
         attrs = ""
         src = c.get("src")
+        section_key = c.get("section")
         if isinstance(src, str) and src:
             line = c.get("line")
             attrs = (f' data-file="{attr_escape(src)}"'
                      + (f' data-line="{line}"' if isinstance(line, int) else "")
                      + f' role="link" tabindex="0"'
                        f' title="Open {attr_escape(src)}"')
+        elif isinstance(section_key, str) and section_key:
+            # Card opens its matching detail section instead of a file.
+            attrs = (f' data-section="{attr_escape(section_key)}"'
+                     f' role="link" tabindex="0" title="Show details"')
         cards.append(
             f'<div class="check"{attrs}>'
             f'<span class="lbl"><span class="st {st}"></span>'
@@ -3162,8 +3315,10 @@ def render_dashboard_panel(dash: Optional[dict]) -> str:
         body = "".join(
             "<tr>" + "".join(render_cell(cell) for cell in row) + "</tr>"
             for row in rows)
+        key = sec.get("key")
+        keyattr = f' data-key="{attr_escape(key)}"' if isinstance(key, str) and key else ""
         parts.append(
-            f'<details class="section"><summary>'
+            f'<details class="section"{keyattr}><summary>'
             f'{html_escape(str(sec.get("title", "")))}{link}</summary>'
             f'<table>{colgroup}<thead><tr>{head}</tr></thead>'
             f'<tbody>{body}</tbody></table></details>')

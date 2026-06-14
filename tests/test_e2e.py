@@ -1690,3 +1690,47 @@ def test_device_scripts_are_ascii_only():
     assert text.isascii(), "Collect-IntuneDiagnostics.ps1 must be ASCII-only"
     assert app_module.REMEDIATION_TEMPLATE.isascii(), \
         "REMEDIATION_TEMPLATE must be ASCII-only"
+
+
+# --- Compliance card (best-effort, log-derived) ----------------------------
+
+def test_collect_compliance_and_card(tmp_path):
+    import app as app_module
+    inp = tmp_path / "pkg"
+    (inp / "EventLogs").mkdir(parents=True)
+    (inp / "Apps-IME" / "Logs").mkdir(parents=True)
+    (inp / "EventLogs" / "DeviceManagement-Admin-ErrorsWarnings.txt").write_text(
+        "TimeCreated : 1/2/2026 10:00\nId : 404\nLevelDisplayName : Error\n"
+        "Message : ComplianceState evaluation failed 0x87D1041C not compliant\n\n"
+        "TimeCreated : 1/2/2026 10:01\nId : 200\nLevelDisplayName : Information\n"
+        "Message : Sync session completed\n", encoding="utf-8")
+    (inp / "Apps-IME" / "Logs" / "IntuneManagementExtension.log").write_text(
+        '<![LOG[ComplianceHandler: evaluated compliant=true]LOG]!>'
+        '<time="11:00:00.0" date="1-2-2026" component="IME" type="1" thread="4">',
+        encoding="utf-8")
+
+    rows = app_module.collect_compliance(inp)
+    assert len(rows) == 2                                  # non-compliance line skipped
+    err = next(r for r in rows if r["error"])
+    assert err["code"] == "0x87D1041C" and err["code_text"]
+    assert any(not r["error"] for r in rows)              # the IME 'compliant=true' row
+
+    dash = app_module.build_dashboard(inp)
+    card = next(c for c in dash["checks"] if c["label"] == "Compliance")
+    assert card["status"] == "bad" and card["section"] == "compliance"
+    sec = next(s for s in dash["sections"] if s.get("key") == "compliance")
+    assert sec["columns"] == ["Source", "Time", "Message", "Error"]
+
+    html = app_module.render_dashboard_panel(dash)
+    assert 'data-section="compliance"' in html            # card opens the section
+    assert 'data-key="compliance"' in html                # the target section
+
+
+def test_no_compliance_card_without_signals(tmp_path):
+    import app as app_module
+    inp = tmp_path / "pkg"
+    (inp / "Identity").mkdir(parents=True)
+    (inp / "Identity" / "dsregcmd-status.txt").write_text("AzureAdJoined : YES\n",
+                                                          encoding="utf-8")
+    dash = app_module.build_dashboard(inp)
+    assert not any(c["label"] == "Compliance" for c in dash["checks"])
