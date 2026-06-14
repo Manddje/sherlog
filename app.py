@@ -448,7 +448,7 @@ def _evtx_row_class(level: str) -> str:
 # pseudo-tags; the parser ignores unknown tags and keeps accumulating cell text.
 
 _TIMELINE_COLS = ("index", "date", "status", "type", "intent",
-                  "detail", "seconds", "logentry")
+                  "detail", "seconds", "logentry", "color", "detailtooltip")
 _DOWNLOAD_COLS = ("app_type", "app_name", "dl_sec", "size_mb", "mbps", "do_pct")
 _CELL_CAP = 1000  # bound memory per parsed cell
 SUMMARY_DETAIL_CAP = 300
@@ -564,9 +564,14 @@ def summarize(summary: ReportSummary) -> dict:
 
     for row in summary.timeline:
         status, rtype = row["status"], row["type"]
-        # The error code (e.g. a failed PowerShell script's exit code) often sits
-        # in the full log entry rather than the short detail column — scan both.
-        codes = find_error_codes(row["detail"] + " " + row.get("logentry", ""))
+        # The error code (e.g. a failed PowerShell script's exit code) usually
+        # isn't in the short Detail column — the upstream script puts the real
+        # error message in the DetailToolTip (hover) of the failure row. Scan
+        # detail + log entry, plus the tooltip for failure/warning rows.
+        blob = row["detail"] + " " + row.get("logentry", "")
+        if status in ("Failed", "ErrorLog", "Warning"):
+            blob += " " + row.get("detailtooltip", "")
+        codes = find_error_codes(blob)
         code = next(iter(codes), "")
         if status in ("Success", "Failed") and rtype:
             bucket = counts.setdefault(rtype, {"success": 0, "failed": 0})

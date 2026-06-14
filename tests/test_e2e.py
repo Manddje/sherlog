@@ -1771,3 +1771,28 @@ def test_summary_shows_failed_script_error_code():
     assert ("0x87D1041C", 1) in [(e["code"], e["count"]) for e in s["top_errors"]]
     html = app_module.render_summary_panel(s)
     assert "<th>Error</th>" in html and "0x87D1041C" in html
+
+
+def test_summary_error_code_from_detailtooltip():
+    """The upstream report puts a failed script's real error in DetailToolTip
+    (hover), not Detail — that column is parsed and scanned for failure rows."""
+    import app as app_module
+    html = (
+        '<table id="ObservedTimeline"><tr><th>Index</th><th>Date</th>'
+        '<th>Status</th><th>Type</th><th>Intent</th><th>Detail</th>'
+        '<th>Seconds</th><th>LogEntry</th><th>Color</th><th>DetailToolTip</th></tr>'
+        '<tr><td>1</td><td>2026-05-27</td><td>Failed</td><td>Powershell script</td>'
+        '<td>Execute</td><td>See Powershell error message. Hover for details.</td>'
+        '<td>3</td><td>Line 1234</td><td>Red</td>'
+        '<td>The system cannot find the file specified. 0x80070002</td></tr>'
+        '<tr><td>2</td><td>2026-05-27</td><td>Success</td><td>Win32App</td>'
+        '<td>Required</td><td>ok</td><td>1</td><td>Line 9</td><td>Green</td>'
+        '<td>script content</td></tr></table>')
+    rs = app_module.parse_report_summary(html)
+    assert "detailtooltip" in rs.timeline[0]
+    s = app_module.summarize(rs)
+    failed = next(i for i in s["items"] if i["status"] == "Failed")
+    assert failed["code"] == "0x80070002"
+    # Success row's tooltip (script content) is not scanned -> no false code.
+    ok = next(i for i in s["items"] if i["status"] == "Success")
+    assert ok["code"] == ""
