@@ -31,9 +31,22 @@
     The self-chosen secret the admin generated on the Sherlog /inbox page. It
     authorizes the upload and is the key to view the uploads at /inbox.
 
+.PARAMETER Anonymize
+    Best-effort redaction of tenant and company data from the package: tenant id,
+    tenant/company name, domain(s), UPN/e-mail, device name and user name are
+    replaced with placeholders in all TEXT files, and the zip name + upload device
+    name are anonymized. This is best-effort, NOT a guarantee: binary files
+    (event logs .evtx, Defender .cab, .etl, the nested mdmdiag .zip) are NOT
+    scrubbed and may still contain identifiers — review the package before
+    sharing.
+
 .EXAMPLE
     .\Collect-IntuneDiagnostics.ps1
     .\Collect-IntuneDiagnostics.ps1 -OutputPath D:\Diag
+
+.EXAMPLE
+    # Share-safe, best-effort anonymized package:
+    .\Collect-IntuneDiagnostics.ps1 -Remote -Anonymize
 
 .EXAMPLE
     # Unattended drop-off (e.g. from an Intune remediation script):
@@ -49,7 +62,8 @@ param(
     [string]$OutputPath = 'C:\Temp',
     [switch]$Remote,
     [string]$UploadUrl,
-    [string]$UploadToken
+    [string]$UploadToken,
+    [switch]$Anonymize
 )
 
 # ============================================================
@@ -65,7 +79,16 @@ if (-not $isAdmin) {
 }
 
 $timestamp = Get-Date -Format 'yyyyMMdd-HHmmss'
-$work      = Join-Path $OutputPath "IntuneDiag-$env:COMPUTERNAME-$timestamp"
+# Device label for the zip name and upload header. Anonymized to a stable,
+# non-identifying hash of the computer name when -Anonymize is set, so the
+# filename and inbox don't leak the hostname.
+$deviceLabel = $env:COMPUTERNAME
+if ($Anonymize) {
+    $h = [System.Security.Cryptography.SHA256]::Create().ComputeHash(
+        [Text.Encoding]::UTF8.GetBytes("$env:COMPUTERNAME"))
+    $deviceLabel = 'anon-' + (-join ($h[0..3] | ForEach-Object { $_.ToString('x2') }))
+}
+$work      = Join-Path $OutputPath "IntuneDiag-$deviceLabel-$timestamp"
 $zipFile   = "$work.zip"
 
 $folders = @('MDM','EventLogs','Registry','Identity','Network','Apps-IME','System','Defender','WindowsUpdate','Autopilot')
@@ -303,6 +326,12 @@ Invoke-Safe 'Generating summary...' {
         Where-Object Level -eq 2 |
         Select-Object -First 10 TimeCreated, Id, Message
 
+    $anonLine = if ($Anonymize) {
+        "`n [Anonymized] Best-effort redaction of tenant/company/device data in" +
+        " TEXT files. Binaries (evtx/cab/etl/mdmdiag-zip) are NOT scrubbed —" +
+        " review before sharing.`n"
+    } else { '' }
+
     $summary = @"
 ==========================================================
  INTUNE DIAGNOSTICS SUMMARY
@@ -310,6 +339,7 @@ Invoke-Safe 'Generating summary...' {
  Date   : $(Get-Date)
  User   : $env:USERNAME
 ==========================================================
+$anonLine
 
 [Identity]
   AzureAdJoined : $aadJoined
@@ -340,10 +370,100 @@ See the subfolders for all details:
 }
 
 # ============================================================
-# 12. Package everything
+# 11b. Anonymize (best-effort) — text files only
+# Stop the transcript first so CollectionTranscript.log is scrubbed too.
 # ============================================================
 Stop-Transcript | Out-Null
+if ($Anonymize) {
+    Invoke-Safe 'Anonymizing text files (best-effort)...' {
+        $map = [System.Collections.Generic.List[object]]::new()
+        function Add-Redact($val, $tag) {
+            if ($null -eq $val) { return }
+            $v = "$val".Trim()
+            if ($v.Length -ge 3 -and @('WORKGROUP','Unknown','N/A','None') -notcontains $v) {
+                $map.Add([pscustomobject]@{ Value = $v; Tag = $tag })
+            }
+        }
+        $dsreg = dsregcmd /status
+        function Get-Dsreg($name) {
+            $line = $dsreg |
+                Select-String ('^\s*' + [regex]::Escape($name) + '\s*:\s*(.+?)\s*$') |
+                Select-Object -First 1
+            if ($line) { $line.Matches[0].Groups[1].Value } else { '' }
+        }
+        Add-Redact (Get-Dsreg 'TenantId')               '<TENANT-ID>'
+        Add-Redact (Get-Dsreg 'TenantName')             '<TENANT>'
+        Add-Redact (Get-Dsreg 'TenantDisplayName')      '<COMPANY>'
+        Add-Redact (Get-Dsreg 'Executing Account Name') '<UPN>'
 
+        Get-ChildItem 'HKLM:\SYSTEM\CurrentControlSet\Control\CloudDomainJoin\JoinInfo' `
+            -ErrorAction SilentlyContinue | ForEach-Object {
+                $p = Get-ItemProperty $_.PSPath -ErrorAction SilentlyContinue
+                Add-Redact $p.TenantId    '<TENANT-ID>'
+                Add-Redact $p.TenantName  '<TENANT>'
+                Add-Redact $p.UserEmail   '<UPN>'
+                Add-Redact $p.DisplayName '<COMPANY>'
+            }
+
+        $cv = Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion' `
+            -ErrorAction SilentlyContinue
+        Add-Redact $cv.RegisteredOrganization '<COMPANY>'
+        Add-Redact $cv.RegisteredOwner        '<USER>'
+
+        Add-Redact $env:COMPUTERNAME   '<DEVICE>'
+        Add-Redact $env:USERNAME       '<USER>'
+        Add-Redact $env:USERDNSDOMAIN  '<DOMAIN>'
+        Add-Redact $env:USERDOMAIN     '<DOMAIN>'
+        # Domain part of any UPN we found.
+        foreach ($u in @($map | Where-Object { $_.Tag -eq '<UPN>' })) {
+            if ($u.Value -match '@(.+)$') { Add-Redact $matches[1] '<DOMAIN>' }
+        }
+
+        # Longest values first so a domain inside a UPN doesn't get partially
+        # replaced; de-dup case-insensitively.
+        $seen = @{}
+        $final = foreach ($r in ($map | Sort-Object { $_.Value.Length } -Descending)) {
+            $k = $r.Value.ToLower()
+            if (-not $seen.ContainsKey($k)) { $seen[$k] = $true; $r }
+        }
+
+        $emailRe = [regex]'(?i)[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}'
+        $textExt = '.txt','.log','.reg','.xml','.html','.htm','.json','.csv','.ini','.config'
+        $count = 0
+        Get-ChildItem $work -Recurse -File |
+            Where-Object { $textExt -contains $_.Extension.ToLower() } | ForEach-Object {
+                try {
+                    $bytes = [IO.File]::ReadAllBytes($_.FullName)
+                    if ($bytes.Length -ge 2 -and $bytes[0] -eq 0xFF -and $bytes[1] -eq 0xFE) {
+                        $enc = [Text.Encoding]::Unicode
+                    } elseif ($bytes.Length -ge 2 -and $bytes[0] -eq 0xFE -and $bytes[1] -eq 0xFF) {
+                        $enc = [Text.Encoding]::BigEndianUnicode
+                    } elseif ($bytes.Length -ge 3 -and $bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF) {
+                        $enc = New-Object Text.UTF8Encoding($true)
+                    } else {
+                        $enc = New-Object Text.UTF8Encoding($false)
+                    }
+                    $text = $enc.GetString($bytes)
+                    if ($text.Length -gt 0 -and $text[0] -eq [char]0xFEFF) { $text = $text.Substring(1) }
+                    foreach ($r in $final) {
+                        $text = [regex]::Replace($text, [regex]::Escape($r.Value), $r.Tag, 'IgnoreCase')
+                    }
+                    $text = $emailRe.Replace($text, '<EMAIL>')
+                    [IO.File]::WriteAllBytes($_.FullName, $enc.GetPreamble() + $enc.GetBytes($text))
+                    $count++
+                } catch { Write-Warning "  Could not anonymize $($_.Name): $($_.Exception.Message)" }
+            }
+        Write-Host "  Redacted $count text file(s) using $($final.Count) token(s)."
+    }
+    Write-Warning ('ANONYMIZE is best-effort and NOT a guarantee. Only TEXT files were ' +
+        'redacted; binary files (event logs .evtx, Defender .cab, .etl, the nested ' +
+        'mdmdiag .zip) are NOT scrubbed and may still contain tenant/company ' +
+        'identifiers. Review the package before sharing.')
+}
+
+# ============================================================
+# 12. Package everything
+# ============================================================
 Write-Step 'Packaging everything...'
 Compress-Archive -Path "$work\*" -DestinationPath $zipFile -Force
 Remove-Item $work -Recurse -Force
@@ -365,7 +485,7 @@ if ($UploadUrl) {
             $resp = Invoke-RestMethod -Uri $UploadUrl -Method Post -InFile $zipFile `
                 -ContentType 'application/zip' -Headers @{
                     'X-Upload-Token' = $UploadToken
-                    'X-Device-Name'  = $env:COMPUTERNAME
+                    'X-Device-Name'  = $deviceLabel
                 }
             $base = ($UploadUrl -replace '/api/diagnostics/?$', '')
             Write-Host "Uploaded. Review at: $base$($resp.url)" -ForegroundColor Green

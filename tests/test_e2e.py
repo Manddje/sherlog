@@ -1661,3 +1661,22 @@ def test_inbox_form_has_generator(upload_client):
     assert "Collect-IntuneDiagnostics.ps1" in r.text   # embedded script body
     assert "Deploy in Intune" in r.text
     assert "Run remediation" in r.text
+
+
+def test_inbox_anonymize_toggle(upload_client):
+    r = upload_client.get("/inbox")
+    assert 'id="anon"' in r.text                       # the toggle
+    assert "best-effort" in r.text                     # disclaimer text
+    # Toggle on inserts -Anonymize into the collector call.
+    assert "'-Remote -Anonymize -OutputPath'" in r.text
+
+
+def test_collector_has_anonymize_option():
+    text = (REPO_ROOT / "Collect-IntuneDiagnostics.ps1").read_text(encoding="utf-8")
+    assert "[switch]$Anonymize" in text
+    assert "<TENANT-ID>" in text and "<COMPANY>" in text and "<UPN>" in text
+    # Best-effort disclaimer present.
+    assert "best-effort" in text.lower()
+    # The inbox JS rewrites this exact token in the remediation template.
+    import app as app_module
+    assert "-Remote -OutputPath" in app_module.REMEDIATION_TEMPLATE

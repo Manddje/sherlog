@@ -4398,6 +4398,9 @@ INBOX_PAGE = """<!doctype html>
   .tokrow input{flex:1;min-width:16rem;padding:.55rem .8rem;border:1px solid var(--border);
     border-radius:8px;background:var(--bg);color:var(--fg);font:inherit}
   .muted{color:var(--muted);font-size:.9rem}
+  .anon{display:inline-flex;align-items:center;gap:.4rem;font-size:.9rem;
+    color:var(--fg);cursor:pointer;margin-left:auto}
+  .anon-note{margin:.4rem 0 0;max-width:48rem}
   .tokval{font-family:ui-monospace,Menlo,Consolas,monospace;word-break:break-all;
     background:var(--surface);border:1px solid var(--border);border-radius:6px;
     padding:.4rem .6rem;display:inline-block}
@@ -4444,7 +4447,14 @@ _INBOX_FORM = """
         <div class="tokrow">
           <button class="btn btn-ghost" type="button" id="copy">Copy script</button>
           <button class="btn btn-ghost" type="button" id="dl">Download .ps1</button>
+          <label class="anon"><input type="checkbox" id="anon">
+            Anonymize tenant/company</label>
         </div>
+        <p class="muted anon-note" id="anon-note" hidden>We do our best to redact
+          tenant- and company data (tenant id/name, domain, UPN/e-mail, device
+          and user name) from all TEXT files &mdash; but this is best-effort, not
+          a guarantee. Binaries (event logs, cab, etl) are not scrubbed; review
+          the package before sharing.</p>
         <pre class="scriptbox" id="script"></pre>
 
         <h2>Deploy in Intune</h2>
@@ -4465,7 +4475,9 @@ _INBOX_FORM = """
 
       <script>
         var SCRIPT_TPL = %(script)s;
+        var lastToken = '';
         function fillScript(token) {
+          lastToken = token;
           var base = window.location.origin;
           var s = SCRIPT_TPL
             .replace(/\\$SherlogBase\\s*=\\s*'[^']*'/, "$SherlogBase = '" + base + "'")
@@ -4473,12 +4485,19 @@ _INBOX_FORM = """
           // Also fill the placeholders in the comment text so the shown script
           // is fully concrete.
           s = s.split('<SherlogBase>').join(base).split('<token>').join(token);
+          // Add the -Anonymize switch to the collector call when the toggle is on.
+          var anon = document.getElementById('anon').checked;
+          document.getElementById('anon-note').hidden = !anon;
+          if (anon) s = s.replace('-Remote -OutputPath', '-Remote -Anonymize -OutputPath');
           document.getElementById('script').textContent = s;
           document.getElementById('tokshow').textContent = token;
           document.getElementById('inboxlink').href = '/inbox?token=' + encodeURIComponent(token);
           document.getElementById('result').hidden = !s;
           return s;
         }
+        document.getElementById('anon').addEventListener('change', function () {
+          if (lastToken) fillScript(lastToken);
+        });
         document.getElementById('gen').addEventListener('click', function () {
           var b = new Uint8Array(32); crypto.getRandomValues(b);
           var s = btoa(String.fromCharCode.apply(null, b))

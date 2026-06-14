@@ -160,6 +160,18 @@ Direct vanaf de commandline kan ook:
     -UploadUrl 'https://sherlog.nl/api/diagnostics' -UploadToken '<token>'
 ```
 
+**Anonimiseren (best-effort).** Voeg `-Anonymize` toe (of zet de toggle aan op
+`/inbox`) om tenant- en company-gegevens te redigeren: tenant-id/naam, domein(en),
+UPN/e-mail, device- en username worden in **alle tekstbestanden** vervangen door
+placeholders, en de zip-naam + upload-`X-Device-Name` worden geanonimiseerd. Dit
+is **best-effort, geen garantie**: binaries (event logs `.evtx`, Defender `.cab`,
+`.etl`, de geneste mdmdiag-zip) worden **niet** gescrubd en kunnen nog
+identifiers bevatten — controleer het pakket vóór delen.
+
+```powershell
+.\Collect-IntuneDiagnostics.ps1 -Remote -Anonymize
+```
+
 **Opslag & retentie.** Drop-off packages worden net als alle andere logs in
 `JOBS_DIR` opgeslagen en na `JOB_RETENTION_HOURS` (default 24u) opgeruimd. Wil je
 ze langer bewaren én over redeploys behouden: mount `JOBS_DIR` op een persistent
