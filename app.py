@@ -59,7 +59,8 @@ from typing import List, Optional
 from urllib.parse import quote
 
 from fastapi import FastAPI, Request
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
+from fastapi.responses import (FileResponse, HTMLResponse, JSONResponse,
+                               RedirectResponse, Response)
 from starlette.datastructures import UploadFile
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.staticfiles import StaticFiles
@@ -2780,6 +2781,7 @@ REPORT_PAGE = """<!doctype html>
   <div class="topbar">
     <a class="brand" href="/">%(logo)s Sherlog</a>
     <span>
+      <a class="btn btn-ghost" href="/result/%(job)s">&larr; Device health</a>
       <a class="btn btn-ghost" href="/result/%(job)s/cmtrace">Raw logs (CMTrace)</a>
       <a class="btn btn-ghost" href="/diagnostics">New analysis</a>
     </span>
@@ -2953,6 +2955,8 @@ DIAG_PAGE = """<!doctype html>
   <div class="topbar">
     <a class="brand" href="/">%(logo)s Sherlog</a>
     <span>
+      <a class="btn btn-ghost" id="dlfile" href="#">Download file</a>
+      <a class="btn btn-ghost" href="/result/%(job)s/download">Download package</a>
       <a class="btn btn-ghost" href="/result/%(job)s/cmtrace">Raw logs (CMTrace)</a>
       <a class="btn btn-ghost" href="/diagnostics">New upload</a>
     </span>
@@ -2973,17 +2977,26 @@ DIAG_PAGE = """<!doctype html>
   const side = document.getElementById('side');
   const view = document.getElementById('view');
   const files = [...side.querySelectorAll('.file')];
+  const dlfile = document.getElementById('dlfile');
+  function setDownload(name) {
+    if (!dlfile) return;
+    if (name) { dlfile.href = '/result/' + job + '/files/download?file=' +
+                              encodeURIComponent(name); dlfile.hidden = false; }
+    else { dlfile.hidden = true; }
+  }
   function select(el, line) {
     files.forEach(f => f.classList.toggle('active', f === el));
     view.src = '/result/' + job + '/files/view?file=' +
                encodeURIComponent(el.dataset.file) +
                (line ? '#L' + encodeURIComponent(line) : '');
+    setDownload(el.dataset.file);
   }
   side.addEventListener('click', ev => {
     const f = ev.target.closest('.file');
     if (f && f.dataset.file) select(f);
   });
   (files.find(f => f.dataset.file === first) || null)?.classList.add('active');
+  setDownload(first);
 
   // Health-check cards deep-link to the evidence line in their source file.
   function openSource(card) {
@@ -4948,6 +4961,53 @@ async def diag_timeline(job_id: str) -> Response:
 
 
 _SANDBOX_HEADERS = {"Content-Security-Policy": "sandbox allow-scripts"}
+
+
+def _safe_filename(name: str, default: str) -> str:
+    """A download filename without path/odd chars."""
+    name = re.sub(r"[^A-Za-z0-9._-]+", "_", name).strip("._") or default
+    return name[:120]
+
+
+@app.get("/result/{job_id}/files/download")
+async def diag_file_download(job_id: str, file: str) -> Response:
+    """Download one package file (the currently open file in the viewer)."""
+    if not job_id.isalnum():
+        return HTMLResponse("Invalid job id.", status_code=400)
+    status = read_status(job_id)
+    if status is None or status.get("kind") != "diag":
+        return HTMLResponse("Files not available.", status_code=404)
+    if file not in list_input_files(job_id, exts=DIAG_KEEP_EXTS):
+        return HTMLResponse("Unknown file.", status_code=404)
+    path = job_dir(job_id) / "input" / file
+    return FileResponse(path, filename=_safe_filename(Path(file).name, "file"),
+                        media_type="application/octet-stream")
+
+
+@app.get("/result/{job_id}/download")
+async def diag_package_download(job_id: str) -> Response:
+    """Download the whole package as a zip (rebuilt from the extracted files;
+    the original upload zip is not retained)."""
+    if not job_id.isalnum():
+        return HTMLResponse("Invalid job id.", status_code=400)
+    status = read_status(job_id)
+    if status is None or status.get("kind") != "diag":
+        return HTMLResponse("Package not available.", status_code=404)
+    input_dir = job_dir(job_id) / "input"
+    if not input_dir.is_dir():
+        return HTMLResponse("No files in this package.", status_code=404)
+    dest = job_dir(job_id) / "output" / "package.zip"
+
+    def build() -> None:
+        with zipfile.ZipFile(dest, "w", zipfile.ZIP_DEFLATED) as zf:
+            for p in sorted(input_dir.rglob("*")):
+                if p.is_file():
+                    zf.write(p, p.relative_to(input_dir).as_posix())
+
+    await asyncio.to_thread(build)
+    name = _safe_filename(f"{status.get('device') or 'IntuneDiag'}-{job_id[:8]}",
+                          "IntuneDiag") + ".zip"
+    return FileResponse(dest, media_type="application/zip", filename=name)
 
 
 @app.get("/result/{job_id}/files/view", response_class=HTMLResponse)

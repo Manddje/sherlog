@@ -1718,3 +1718,37 @@ def test_no_compliance_card_without_signals(tmp_path):
                                                           encoding="utf-8")
     dash = app_module.build_dashboard(inp)
     assert not any(c["label"] == "Compliance" for c in dash["checks"])
+
+
+def test_diag_downloads(client):
+    """Download the open file and the whole package zip from a diagnostics job."""
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr("Identity/dsregcmd-status.txt", "AzureAdJoined : YES\n")
+        zf.writestr("Apps-IME/Logs/IntuneManagementExtension.log",
+                    '<![LOG[hi]LOG]!><time="1" date="2" component="C" '
+                    'type="1" thread="3">')
+    r = client.post("/diagnostics-analyze",
+                    files={"files": ("IntuneDiag.zip", buf.getvalue(),
+                                     "application/zip")}, follow_redirects=False)
+    job_id = r.headers["location"].rstrip("/").rsplit("/", 1)[-1]
+
+    page = client.get(f"/result/{job_id}").text
+    assert 'id="dlfile"' in page                      # download-open-file button
+    assert f'href="/result/{job_id}/download"' in page  # download-package button
+
+    # Single file download.
+    fd = client.get(f"/result/{job_id}/files/download",
+                    params={"file": "Identity/dsregcmd-status.txt"})
+    assert fd.status_code == 200
+    assert "attachment" in fd.headers.get("content-disposition", "")
+    assert "AzureAdJoined" in fd.text
+    # Membership check still rejects unknown/traversal.
+    assert client.get(f"/result/{job_id}/files/download",
+                      params={"file": "../x.txt"}).status_code == 404
+
+    # Whole-package zip (rebuilt from the extracted files).
+    dz = client.get(f"/result/{job_id}/download")
+    assert dz.status_code == 200 and dz.headers["content-type"] == "application/zip"
+    members = zipfile.ZipFile(io.BytesIO(dz.content)).namelist()
+    assert "Identity/dsregcmd-status.txt" in members
