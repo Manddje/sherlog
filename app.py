@@ -2049,10 +2049,10 @@ PAGE_CSS = """
   .badges{ display:flex; flex-wrap:wrap; gap:.5rem; margin:1.2rem 0 0; }
   .badges span{ font-size:.78rem; font-weight:600; color:var(--muted);
     border:1px solid var(--border); border-radius:999px; padding:.2rem .65rem; }
-  .home-upload .drop{ min-height:8rem; display:flex; align-items:center;
-    justify-content:center; text-align:center; }
+  .home-upload .drop{ padding:2.25rem 1.25rem; line-height:1.6; }
+  .home-upload .row{ margin-top:1rem; }
   .home-upload .or{ text-align:center; color:var(--muted); font-size:.9rem;
-    margin:.7rem 0 0; }
+    margin:.8rem 0 0; }
   .inline{ display:inline; }
   .linkbtn{ background:none; border:0; color:var(--accent); cursor:pointer;
     font:inherit; padding:0; }
@@ -2075,7 +2075,9 @@ PAGE_CSS = """
   .stepper{ list-style:none; margin:0; padding:0; display:grid;
     grid-template-columns:repeat(3,1fr); gap:1.1rem; }
   @media (max-width:760px){ .stepper{ grid-template-columns:1fr; } }
-  .stepper li{ display:flex; gap:.7rem; color:var(--muted); }
+  .stepper li{ display:flex; gap:.7rem; color:var(--muted); min-width:0; }
+  .stepper li div{ min-width:0; overflow-wrap:anywhere; line-height:1.5; }
+  .stepper code{ overflow-wrap:anywhere; }
   .stepper .n{ flex:none; width:1.6rem; height:1.6rem; border-radius:50%;
     background:var(--accent); color:#fff; font-weight:700; font-size:.85rem;
     display:flex; align-items:center; justify-content:center; }
@@ -2336,11 +2338,11 @@ LANDING_PAGE = """<!doctype html>
             <button class="btn go" type="submit" disabled>Analyze</button>
           </div>
         </form>
-        <p class="or">or
+        <div class="or">or
           <form class="inline" method="post" action="/demo">
             <button class="linkbtn" type="submit">try with sample logs</button>
           </form>
-        </p>
+        </div>
       </div>
     </section>
 
