@@ -903,6 +903,54 @@ def parse_sidecar_scripts(reg: dict) -> List[dict]:
     return out
 
 
+def parse_omadm_accounts(reg: dict) -> dict:
+    """MDM session health from an OMADM-Accounts.reg dump.
+
+    Pulls LastSessionResult (an HRESULT; 0/empty == success) plus the
+    server last-access/last-success timestamps from the account key(s) under
+    `…\\Provisioning\\OMADM\\Accounts\\<GUID>`. These values can live on the
+    account key itself or a child (e.g. an AcctInfo/Protected subkey), so we
+    scan every key under \\OMADM\\Accounts\\ and take the first non-empty hit.
+    Total: a missing or unparsable dump yields {}.
+    """
+    wanted = ("LastSessionResult", "ServerLastSuccessTime", "ServerLastAccessTime")
+    found: dict = {}
+    rx = re.compile(r"\\OMADM\\Accounts\\", re.IGNORECASE)
+    for key, vals in reg.items():
+        if not rx.search(key):
+            continue
+        for name in wanted:
+            if name in found:
+                continue
+            for vname, data in vals.items():
+                if vname.lower() == name.lower() and data not in (None, ""):
+                    found[name] = data
+                    break
+    if not found:
+        return {}
+    return {
+        "last_session_result": found.get("LastSessionResult"),
+        "server_last_success": str(found.get("ServerLastSuccessTime", "")),
+        "server_last_access": str(found.get("ServerLastAccessTime", "")),
+    }
+
+
+def count_push_events(records) -> dict:
+    """Tally WNS push-notification Event IDs from parse_evtx_file records.
+
+    1010 = notification routed to the IME AUMID, 1225 = raw payload delivered.
+    A healthy on-demand-action channel shows both. Total over any record list.
+    """
+    out = {"ev1010": 0, "ev1225": 0}
+    for r in records or ():
+        eid = r.get("event_id")
+        if eid in (1010, "1010"):
+            out["ev1010"] += 1
+        elif eid in (1225, "1225"):
+            out["ev1225"] += 1
+    return out
+
+
 def parse_policymanager(reg: dict) -> dict:
     """Summarize PolicyManager\\current\\<scope>\\<area> settings + providers."""
     areas: "dict[str, int]" = {}
@@ -1309,6 +1357,7 @@ _DASH_SOURCES = {
     "win32apps": ("Registry/Win32Apps.reg",),
     "ime_reg": ("Registry/IntuneManagementExtension.reg",),
     "enrollments": ("Registry/Enrollments.reg",),
+    "omadm": ("Registry/OMADM-Accounts.reg",),
     "policymanager": ("Registry/PolicyManager-Current.reg",),
     "policymanager_providers": ("Registry/PolicyManager-Providers.reg",),
     "proxy": ("Network/winhttp-proxy.txt",),
@@ -1440,6 +1489,28 @@ def build_dashboard(input_dir: Path) -> dict:
         checks.append({"label": "Machine certificates", "status": "unknown",
                        "detail": "no certificate overview found"})
 
+    # MDM sync health: an expired management certificate keeps moving the
+    # last-checkin date forward (the TLS handshake accepts it) while real
+    # policy/app sync is dead — the device looks healthy but isn't. Correlate
+    # the machine-cert expiry above with the OMADM account's session state.
+    omadm = parse_omadm_accounts(parse_reg(read("omadm")) if read("omadm") else {})
+    if omadm:
+        lsr = omadm.get("last_session_result")
+        session_failed = lsr not in (None, "", 0, "0")
+        expired = [c for c in (certs or []) if c["expired"]]
+        if expired and (session_failed or omadm.get("server_last_access")):
+            status = "bad"
+            detail = "checks in but management may be dead — expired MDM certificate"
+        elif session_failed:
+            code = hresult_code(lsr) or str(lsr)
+            status = "bad"
+            detail = f"last MDM session failed ({code})"
+        else:
+            status = "ok"
+            detail = "MDM session healthy"
+        checks.append({"label": "MDM sync health", "status": status,
+                       "detail": detail, **link("omadm")})
+
     apps = parse_installed_apps(read("apps"))
     if apps:
         checks.append({
@@ -1477,6 +1548,17 @@ def build_dashboard(input_dir: Path) -> dict:
                        else f"{len(w32)} tracked, all healthy"),
             **link("win32apps"),
         })
+        # Targeted hint for the recurring Autopilot pre-provisioning bug where
+        # an app installs but is never detected (0x87D1041C, e.g. Company Portal).
+        if any(a["error_code"] == "0x87D1041C" for a in w32):
+            checks.append({
+                "label": "Company Portal / ESP",
+                "status": "warn",
+                "detail": "app installed but not detected (0x87D1041C) — known "
+                          "Autopilot pre-provisioning bug (InstallService "
+                          "FixInstallUnderSystemContext); see the app's error",
+                **link("win32apps"),
+            })
         sections.append({
             "title": f"Win32 app deployment status ({len(w32)})",
             "src": src_of("win32apps"),
@@ -1546,6 +1628,26 @@ def build_dashboard(input_dir: Path) -> dict:
             "status": "ok",
             "detail": f"{npol} policies executed" + (f", last {last}" if last else ""),
             **link("ime_reg"),
+        })
+
+    # Push channel for on-demand remediations / sync: WNS gives no failure
+    # signal in the portal, so the PushNotification-Platform log is the only
+    # evidence. Event ID 1010 (routed to IME) followed by 1225 (payload) means
+    # the wake-up channel works; their absence means instant actions may never
+    # reach the device.
+    push_evtx = next(iter(input_dir.rglob("PushNotification-Platform.evtx")), None)
+    if push_evtx is not None:
+        recs, _ = parse_evtx_file(push_evtx)
+        pc = count_push_events(recs)
+        n = pc["ev1010"] + pc["ev1225"]
+        seen = pc["ev1010"] and pc["ev1225"]
+        checks.append({
+            "label": "Push / remediation channel",
+            "status": "ok" if seen else "warn",
+            "detail": (f"push channel active ({n} notifications)" if seen
+                       else "no push notifications observed — on-demand "
+                            "remediations/sync may not reach the device"),
+            "src": push_evtx.relative_to(input_dir).as_posix(),
         })
 
     # MDM / Entra event-log health: aggregate the Error/Warning rows the
@@ -3536,7 +3638,14 @@ ERROR_CODES: dict[str, str] = {
     "0x87D1041C": "The app installed successfully, but the detection rules did "
                   "not find it afterwards (or the user uninstalled it). Check "
                   "the app's detection rule: file path, MSI product code or "
-                  "registry key.",
+                  "registry key. During Autopilot pre-provisioning this is also "
+                  "a known Microsoft bug (May 2026): the InstallService "
+                  "'FixInstallUnderSystemContext' feature "
+                  "(OneSettings FIXINSTALLUNDERSYSTEMCONTEXT=1) redirected "
+                  "system-context Store installs to a per-user path with no "
+                  "logged-on user token, so package registration — and thus "
+                  "detection — never completed (e.g. Company Portal). Microsoft "
+                  "reverted the feature; affected devices recover on retry.",
     "0x87D5501C": "Download failed: the downloaded file could not be found. "
                   "The content was removed or corrupted before installation.",
     "0x87D5501D": "Download failed because of an input/output error. Intune "

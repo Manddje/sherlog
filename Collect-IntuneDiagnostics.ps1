@@ -133,6 +133,7 @@ $eventLogs = @{
     'Provisioning-Diagnostics'    = 'Microsoft-Windows-Provisioning-Diagnostics-Provider/Admin'
     'CodeIntegrity'               = 'Microsoft-Windows-CodeIntegrity/Operational'
     'TaskScheduler'               = 'Microsoft-Windows-TaskScheduler/Operational'
+    'PushNotification-Platform'   = 'Microsoft-Windows-PushNotification-Platform/Operational'
     'Application'                 = 'Application'
     'System'                      = 'System'
 }
@@ -165,6 +166,7 @@ $regKeys = @{
     'EnrollmentStatusTracking' = 'HKLM\SOFTWARE\Microsoft\Windows\Autopilot\EnrollmentStatusTracking'
     'FirstSync'                = 'HKLM\SOFTWARE\Microsoft\Windows\Autopilot'
     'CloudDomainJoin'          = 'HKLM\SYSTEM\CurrentControlSet\Control\CloudDomainJoin'
+    'OMADM-Accounts'           = 'HKLM\SOFTWARE\Microsoft\Provisioning\OMADM\Accounts'
     'MDM-Uninstall'            = 'HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall'
     'InternetSettings'         = 'HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Internet Settings'
 }
@@ -353,8 +355,8 @@ $($recentErrors | Format-List | Out-String)
 
 See the subfolders for all details:
   MDM\           - mdmdiagnosticstool output (HTML report, registry dump, evtx)
-  EventLogs\     - evtx exports + errors/warnings as text
-  Registry\      - Enrollments, PolicyManager, IME, Autopilot
+  EventLogs\     - evtx exports + errors/warnings as text (incl. push notifications)
+  Registry\      - Enrollments, PolicyManager, IME, Autopilot, OMADM accounts
   Identity\      - dsregcmd, certificates
   Network\       - ipconfig, proxy, firewall, endpoint connectivity
   Apps-IME\      - IME logs, app inventory

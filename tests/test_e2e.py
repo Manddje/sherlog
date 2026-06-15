@@ -1880,3 +1880,76 @@ def test_summary_merges_errorlog_message_into_failed_script():
     assert "not recognized" in failed["error_msg"]
     assert [c["failed"] for c in s["counts"]] == [1]   # not double-counted
     assert "not recognized" in app_module.render_summary_panel(s)
+
+
+def test_parse_omadm_accounts():
+    import app as app_module
+    reg = app_module.parse_reg(
+        "Windows Registry Editor Version 5.00\n\n"
+        r"[HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Provisioning\OMADM\Accounts\{12345678-1234-1234-1234-123456789012}]"
+        "\n"
+        '"LastSessionResult"=dword:00000000\n'
+        '"ServerLastAccessTime"="2026-06-14T10:00:00Z"\n'
+        '"ServerLastSuccessTime"="2026-05-01T10:00:00Z"\n'
+    )
+    om = app_module.parse_omadm_accounts(reg)
+    assert om["last_session_result"] == 0
+    assert om["server_last_access"] == "2026-06-14T10:00:00Z"
+    assert om["server_last_success"] == "2026-05-01T10:00:00Z"
+    # Total: no OMADM key -> empty.
+    assert app_module.parse_omadm_accounts({}) == {}
+
+
+def test_count_push_events():
+    import app as app_module
+    recs = [
+        {"event_id": 1010}, {"event_id": 1225}, {"event_id": 1010},
+        {"event_id": 99},
+    ]
+    assert app_module.count_push_events(recs) == {"ev1010": 2, "ev1225": 1}
+    assert app_module.count_push_events([]) == {"ev1010": 0, "ev1225": 0}
+    assert app_module.count_push_events(None) == {"ev1010": 0, "ev1225": 0}
+
+
+def test_build_dashboard_zombie_sync_and_esp_hint(client, tmp_path):
+    """Expired machine cert + a recent OMADM access time -> 'MDM sync health'
+    flags the device as managed-but-dead; a 0x87D1041C Win32 app surfaces the
+    Company Portal / ESP hint."""
+    import app as app_module
+    pkg = tmp_path / "pkg"
+    (pkg / "Registry").mkdir(parents=True)
+    (pkg / "Identity").mkdir(parents=True)
+
+    (pkg / "Identity" / "certs-machine-overview.txt").write_text(
+        "Subject : CN=device\nNotAfter : 1-1-2020\n"
+        "Thumbprint : ABC123\nExpired : True\n",
+        encoding="utf-8",
+    )
+    (pkg / "Registry" / "OMADM-Accounts.reg").write_text(
+        "Windows Registry Editor Version 5.00\n\n"
+        r"[HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Provisioning\OMADM\Accounts\{12345678-1234-1234-1234-123456789012}]"
+        "\n"
+        '"LastSessionResult"=dword:00000000\n'
+        '"ServerLastAccessTime"="2026-06-14T10:00:00Z"\n',
+        encoding="utf-8",
+    )
+    base = (r"HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\IntuneManagementExtension"
+            r"\Win32Apps\S-1-12-1-111\{aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee}_1")
+    (pkg / "Registry" / "Win32Apps.reg").write_text(
+        "Windows Registry Editor Version 5.00\n\n"
+        f"[{base}]\n\n"
+        f"[{base}\\EnforcementStateMessage]\n"
+        '"EnforcementStateMessage"="{\\"EnforcementState\\":3000,'
+        '\\"ErrorCode\\":-2016345060}"\n',
+        encoding="utf-8",
+    )
+
+    dash = app_module.build_dashboard(pkg)
+    by_label = {c["label"]: c for c in dash["checks"]}
+
+    assert by_label["MDM sync health"]["status"] == "bad"
+    assert "expired" in by_label["MDM sync health"]["detail"].lower()
+    assert by_label["Company Portal / ESP"]["status"] == "warn"
+    assert "0x87D1041C" in by_label["Company Portal / ESP"]["detail"]
+    # Underlying Win32 app was decoded with the enriched error code.
+    assert by_label["Win32 apps"]["status"] == "bad"
