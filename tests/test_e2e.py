@@ -1953,3 +1953,53 @@ def test_build_dashboard_zombie_sync_and_esp_hint(client, tmp_path):
     assert "0x87D1041C" in by_label["Company Portal / ESP"]["detail"]
     # Underlying Win32 app was decoded with the enriched error code.
     assert by_label["Win32 apps"]["status"] == "bad"
+
+
+def test_collect_log_error_codes(tmp_path):
+    import app as app_module
+    pkg = tmp_path / "pkg"
+    (pkg / "Apps-IME" / "Logs").mkdir(parents=True)
+    log = pkg / "Apps-IME" / "Logs" / "IntuneManagementExtension.log"
+    log.write_text(
+        "benign first line\n"
+        "install failed with 0x87D1041C while detecting app\n"
+        "another line, code 0x87D1041C again\n"
+        "unrelated 0xDEADBEEF not in table\n",
+        encoding="utf-8",
+    )
+    found = app_module.collect_log_error_codes(pkg)
+    assert len(found) == 1
+    e = found[0]
+    assert e["code"] == "0x87D1041C"
+    assert e["count"] == 2
+    assert e["src"] == "Apps-IME/Logs/IntuneManagementExtension.log"
+    assert e["line"] == 2          # 1-based record index of first hit
+    assert e["explanation"]
+    # Empty package -> no codes.
+    assert app_module.collect_log_error_codes(tmp_path / "empty") == []
+
+
+def test_build_dashboard_known_error_codes_table(tmp_path):
+    import app as app_module
+    pkg = tmp_path / "pkg"
+    (pkg / "Apps-IME" / "Logs").mkdir(parents=True)
+    (pkg / "Apps-IME" / "Logs" / "IntuneManagementExtension.log").write_text(
+        "app install error 0x87D1041C detected\n", encoding="utf-8")
+
+    dash = app_module.build_dashboard(pkg)
+    by_label = {c["label"]: c for c in dash["checks"]}
+    assert by_label["Known error codes"]["status"] == "bad"
+    assert by_label["Known error codes"]["section"] == "errorcodes"
+
+    sec = next(s for s in dash["sections"] if s.get("key") == "errorcodes")
+    code_cell = sec["rows"][0][0]
+    assert code_cell["text"] == "0x87D1041C"
+    assert code_cell["file"] == "Apps-IME/Logs/IntuneManagementExtension.log"
+    assert isinstance(code_cell["line"], int)
+
+    # The render wires the deep-link (seclink + data-file/data-line).
+    html = app_module.render_dashboard_panel(dash)
+    assert 'class="seclink"' in html
+    assert 'data-file="Apps-IME/Logs/IntuneManagementExtension.log"' in html
+    assert "data-line=" in html
+    assert "0x87D1041C" in html

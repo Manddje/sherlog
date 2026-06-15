@@ -1136,6 +1136,38 @@ def _compliance_row(source: str, time: str, level: str, message: str,
             "src": src}
 
 
+def collect_log_error_codes(input_dir: Path, max_files: int = 200,
+                            cap: int = 50) -> List[dict]:
+    """Known Intune/Windows error codes found in the package's log files.
+
+    Walks every `.log` and the distilled `*-ErrorsWarnings.txt` event summaries,
+    runs the same `find_error_codes` lookup the CMTrace viewer uses, and records
+    per code the total occurrence count plus the first occurrence's source file
+    and line. The line is the 1-based record index from `parse_cmtrace`, which
+    matches the file viewer's `#L{i}` anchor (it numbers non-blank rows). Total:
+    unreadable files are skipped, never raised.
+
+    Returns `[{code, explanation, count, src, line}]` sorted by count desc then
+    code, capped at `cap` entries.
+    """
+    files = sorted(set(input_dir.rglob("*.log"))
+                   | set(input_dir.rglob("*-ErrorsWarnings.txt")))[:max_files]
+    agg: "dict[str, dict]" = {}
+    for p in files:
+        rel = p.relative_to(input_dir).as_posix()
+        records, _ = parse_cmtrace(read_text_tolerant(p))
+        for i, rec in enumerate(records, 1):
+            for code, expl in find_error_codes(rec.get("msg", "")).items():
+                e = agg.get(code)
+                if e is None:
+                    agg[code] = {"code": code, "explanation": expl, "count": 1,
+                                 "src": rel, "line": i}
+                else:
+                    e["count"] += 1
+    out = sorted(agg.values(), key=lambda e: (-e["count"], e["code"]))
+    return out[:cap]
+
+
 def collect_compliance(input_dir: Path, limit: int = 300) -> List[dict]:
     """Best-effort compliance entries from every offline source in the package."""
     rows: List[dict] = []
@@ -1689,6 +1721,31 @@ def build_dashboard(input_dir: Path) -> dict:
                       (f'{r["code"]} — {r["code_text"]}' if r["code_text"]
                        else r["code"])]
                      for r in compliance],
+            "searchable": True,
+        })
+
+    # Known error codes spotted anywhere in the package's log files. Each row
+    # deep-links (via the seclink cell) to the first occurrence's log line.
+    errcodes = collect_log_error_codes(input_dir)
+    if errcodes:
+        total = sum(e["count"] for e in errcodes)
+        checks.append({
+            "label": "Known error codes",
+            "status": "bad",
+            "detail": f"{len(errcodes)} distinct code(s), {total} occurrence(s) in logs",
+            "section": "errorcodes",
+        })
+        sections.append({
+            "title": f"Known error codes in logs ({len(errcodes)})",
+            "key": "errorcodes",
+            "columns": ["Code", "Count", "Log", "Explanation"],
+            "widths": [14, 8, 24, 54],
+            "rows": [[
+                {"text": e["code"], "file": e["src"], "line": e["line"]},
+                str(e["count"]),
+                e["src"].rsplit("/", 1)[-1],
+                e["explanation"],
+            ] for e in errcodes],
             "searchable": True,
         })
 
@@ -3470,11 +3527,20 @@ def render_dashboard_panel(dash: Optional[dict]) -> str:
 
         def render_cell(cell) -> str:
             # A dict cell {text, href} becomes an external link (e.g. the
-            # Microsoft Learn deep-link for a policy setting); else plain text.
+            # Microsoft Learn deep-link for a policy setting); a {text, file}
+            # cell becomes an in-package deep-link to a log line, reusing the
+            # seclink handler that the health-check cards use; else plain text.
             if isinstance(cell, dict) and cell.get("href"):
                 return (f'<td><a href="{attr_escape(str(cell["href"]))}"'
                         f' target="_blank" rel="noopener">'
                         f'{html_escape(str(cell.get("text", "")))}</a></td>')
+            if isinstance(cell, dict) and cell.get("file"):
+                ln = cell.get("line")
+                f = attr_escape(str(cell["file"]))
+                return (f'<td><span class="seclink" data-file="{f}"'
+                        + (f' data-line="{int(ln)}"' if isinstance(ln, int) else "")
+                        + f' role="link" tabindex="0" title="Open {f}">'
+                        + f'{html_escape(str(cell.get("text", "")))}</span></td>')
             return f"<td>{html_escape(str(cell))}</td>"
 
         body = "".join(
