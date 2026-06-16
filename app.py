@@ -3324,6 +3324,17 @@ def render_summary_panel(summary: Optional[dict]) -> str:
             f"<th>Intent</th><th>Detail</th><th>Error</th></tr>{rows}</table>"
         )
 
+    out = []
+    # The analysis summary itself (chips, error codes, drill-down) — only when
+    # there is something beyond the downloads table to show.
+    if counts or warnings or not_detected or failed_items or items or top_errors:
+        open_attr = " open" if (total_failed or warnings or not_detected) else ""
+        heading = (f"Analysis summary &mdash; {total_failed} failed, "
+                   f"{total_success} succeeded")
+        out.append(f'<details class="summary"{open_attr}><summary>{heading}'
+                   f'</summary>{"".join(parts)}</details>')
+
+    # App downloads as a separate, sibling collapsible panel.
     if downloads:
         rows = "".join(
             f"<tr><td>{html_escape(d['app_type'])}</td>"
@@ -3334,17 +3345,15 @@ def render_summary_panel(summary: Optional[dict]) -> str:
             f"<td>{html_escape(d['do_pct'])}</td></tr>"
             for d in downloads
         )
-        parts.append(
-            "<h3>App downloads</h3><table><tr><th>Type</th><th>App</th>"
+        table = (
+            "<table><tr><th>Type</th><th>App</th>"
             "<th>DL sec</th><th>Size (MB)</th><th>MB/s</th>"
             f"<th>Delivery Optimization %</th></tr>{rows}</table>"
         )
+        out.append(f'<details class="summary"><summary>App downloads '
+                   f'({len(downloads)})</summary>{table}</details>')
 
-    open_attr = " open" if (total_failed or warnings or not_detected) else ""
-    heading = (f"Analysis summary &mdash; {total_failed} failed, "
-               f"{total_success} succeeded")
-    return (f'<details class="summary"{open_attr}><summary>{heading}</summary>'
-            f'{"".join(parts)}</details>')
+    return "".join(out)
 
 
 def render_dashboard_panel(dash: Optional[dict]) -> str:
