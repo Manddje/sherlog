@@ -3059,11 +3059,19 @@ DIAG_PAGE = """<!doctype html>
                               encodeURIComponent(name); dlfile.hidden = false; }
     else { dlfile.hidden = true; }
   }
+  // The viewer iframe is sandboxed without allow-same-origin, so the parent
+  // cannot drive its contentWindow — only set src. A fragment-only change
+  // (#L<n>) on an already-loaded file does not reliably re-scroll, so a
+  // deep-link into the log currently shown would land in the wrong place (or
+  // not move). Bump a nonce on every deep-link so the URL always changes and
+  // the browser does a fresh load that honours the #L anchor every time.
+  let navSeq = 0;
   function select(el, line) {
     files.forEach(f => f.classList.toggle('active', f === el));
-    view.src = '/result/' + job + '/files/view?file=' +
-               encodeURIComponent(el.dataset.file) +
-               (line ? '#L' + encodeURIComponent(line) : '');
+    let url = '/result/' + job + '/files/view?file=' +
+              encodeURIComponent(el.dataset.file);
+    if (line) url += '&n=' + (++navSeq) + '#L' + encodeURIComponent(line);
+    view.src = url;
     setDownload(el.dataset.file);
   }
   side.addEventListener('click', ev => {
