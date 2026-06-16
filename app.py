@@ -540,7 +540,7 @@ def parse_report_summary(html: str) -> ReportSummary:
 
 
 _HEX_CODE_RE = re.compile(r"0x[0-9A-Fa-f]{8}")
-_SIGNED_DEC_RE = re.compile(r"-2\d{9}")
+_SIGNED_DEC_RE = re.compile(r"-\d{10}")
 _EXIT_CODE_RE = re.compile(r"\b(?:exit|error)\s*code[:\s]+(\d{3,4})\b", re.IGNORECASE)
 
 
@@ -3256,31 +3256,6 @@ def _render_summary_items(items: List[dict]) -> str:
     )
 
 
-# Self-contained tab UI for the summary panel (Overview / App downloads).
-# Inline style+script so it works in every page that embeds the panel
-# (timeline result, diag page, diag timeline); CSP allows 'unsafe-inline'.
-_SUMMARY_TABS_ASSETS = """<style>
-.sumtabbar{display:flex;gap:.25rem;border-bottom:1px solid var(--border);
-  margin:.4rem 0 .7rem}
-.sumtab{background:none;border:0;padding:.4rem .85rem;cursor:pointer;
-  color:var(--muted);font:inherit;font-weight:600;border-bottom:2px solid transparent;
-  margin-bottom:-1px}
-.sumtab:hover{color:var(--fg)}
-.sumtab.is-active{color:var(--fg);border-bottom-color:var(--accent)}
-.sumpane{display:none}
-.sumpane.is-active{display:block}
-</style><script>
-document.querySelectorAll('.sumtabs').forEach(function(box){
-  var tabs=box.querySelectorAll('.sumtab'), panes=box.querySelectorAll('.sumpane');
-  tabs.forEach(function(t){t.addEventListener('click',function(){
-    var p=t.dataset.pane;
-    tabs.forEach(function(x){x.classList.toggle('is-active',x===t);});
-    panes.forEach(function(x){x.classList.toggle('is-active',x.dataset.pane===p);});
-  });});
-});
-</script>"""
-
-
 def render_summary_panel(summary: Optional[dict]) -> str:
     """Collapsible summary panel for the result page.
 
@@ -3349,11 +3324,6 @@ def render_summary_panel(summary: Optional[dict]) -> str:
             f"<th>Intent</th><th>Detail</th><th>Error</th></tr>{rows}</table>"
         )
 
-    overview = "".join(parts)
-    open_attr = " open" if (total_failed or warnings or not_detected) else ""
-    heading = (f"Analysis summary &mdash; {total_failed} failed, "
-               f"{total_success} succeeded")
-
     if downloads:
         rows = "".join(
             f"<tr><td>{html_escape(d['app_type'])}</td>"
@@ -3364,28 +3334,17 @@ def render_summary_panel(summary: Optional[dict]) -> str:
             f"<td>{html_escape(d['do_pct'])}</td></tr>"
             for d in downloads
         )
-        dl_table = (
-            "<table><tr><th>Type</th><th>App</th>"
+        parts.append(
+            "<h3>App downloads</h3><table><tr><th>Type</th><th>App</th>"
             "<th>DL sec</th><th>Size (MB)</th><th>MB/s</th>"
             f"<th>Delivery Optimization %</th></tr>{rows}</table>"
         )
-        body = (
-            '<div class="sumtabs">'
-            '<div class="sumtabbar">'
-            '<button type="button" class="sumtab is-active" data-pane="overview">'
-            'Overview</button>'
-            '<button type="button" class="sumtab" data-pane="downloads">'
-            f'App downloads ({len(downloads)})</button>'
-            '</div>'
-            f'<div class="sumpane is-active" data-pane="overview">{overview}</div>'
-            f'<div class="sumpane" data-pane="downloads">{dl_table}</div>'
-            '</div>' + _SUMMARY_TABS_ASSETS
-        )
-    else:
-        body = overview
 
+    open_attr = " open" if (total_failed or warnings or not_detected) else ""
+    heading = (f"Analysis summary &mdash; {total_failed} failed, "
+               f"{total_success} succeeded")
     return (f'<details class="summary"{open_attr}><summary>{heading}</summary>'
-            f'{body}</details>')
+            f'{"".join(parts)}</details>')
 
 
 def render_dashboard_panel(dash: Optional[dict]) -> str:
@@ -4033,8 +3992,9 @@ def _render_records_page(filename: str, head: str, rows: List[str],
       const k = '0x' + m[0].slice(2).toUpperCase();
       if (CODES[k]) found.set(k, CODES[k]);
     }
-    // IME often logs HRESULTs as signed decimals (-2016345060 = 0x87D1041C).
-    for (const m of text.matchAll(/-2\\d{9}/g)) {
+    // IME often logs HRESULTs as signed decimals (-2016345060 = 0x87D1041C;
+    // -1073741502 = 0xC0000142). Match any 10-digit negative, then mask to 32 bits.
+    for (const m of text.matchAll(/-\\d{10}/g)) {
       const k = '0x' + (Number(m[0]) >>> 0).toString(16).toUpperCase();
       if (CODES[k]) found.set(k + ' (' + m[0] + ')', CODES[k]);
     }
