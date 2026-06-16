@@ -3256,6 +3256,31 @@ def _render_summary_items(items: List[dict]) -> str:
     )
 
 
+# Self-contained tab UI for the summary panel (Overview / App downloads).
+# Inline style+script so it works in every page that embeds the panel
+# (timeline result, diag page, diag timeline); CSP allows 'unsafe-inline'.
+_SUMMARY_TABS_ASSETS = """<style>
+.sumtabbar{display:flex;gap:.25rem;border-bottom:1px solid var(--border);
+  margin:.4rem 0 .7rem}
+.sumtab{background:none;border:0;padding:.4rem .85rem;cursor:pointer;
+  color:var(--muted);font:inherit;font-weight:600;border-bottom:2px solid transparent;
+  margin-bottom:-1px}
+.sumtab:hover{color:var(--fg)}
+.sumtab.is-active{color:var(--fg);border-bottom-color:var(--accent)}
+.sumpane{display:none}
+.sumpane.is-active{display:block}
+</style><script>
+document.querySelectorAll('.sumtabs').forEach(function(box){
+  var tabs=box.querySelectorAll('.sumtab'), panes=box.querySelectorAll('.sumpane');
+  tabs.forEach(function(t){t.addEventListener('click',function(){
+    var p=t.dataset.pane;
+    tabs.forEach(function(x){x.classList.toggle('is-active',x===t);});
+    panes.forEach(function(x){x.classList.toggle('is-active',x.dataset.pane===p);});
+  });});
+});
+</script>"""
+
+
 def render_summary_panel(summary: Optional[dict]) -> str:
     """Collapsible summary panel for the result page.
 
@@ -3324,17 +3349,11 @@ def render_summary_panel(summary: Optional[dict]) -> str:
             f"<th>Intent</th><th>Detail</th><th>Error</th></tr>{rows}</table>"
         )
 
-    out = []
-    # The analysis summary itself (chips, error codes, drill-down) — only when
-    # there is something beyond the downloads table to show.
-    if counts or warnings or not_detected or failed_items or items or top_errors:
-        open_attr = " open" if (total_failed or warnings or not_detected) else ""
-        heading = (f"Analysis summary &mdash; {total_failed} failed, "
-                   f"{total_success} succeeded")
-        out.append(f'<details class="summary"{open_attr}><summary>{heading}'
-                   f'</summary>{"".join(parts)}</details>')
+    overview = "".join(parts)
+    open_attr = " open" if (total_failed or warnings or not_detected) else ""
+    heading = (f"Analysis summary &mdash; {total_failed} failed, "
+               f"{total_success} succeeded")
 
-    # App downloads as a separate, sibling collapsible panel.
     if downloads:
         rows = "".join(
             f"<tr><td>{html_escape(d['app_type'])}</td>"
@@ -3345,15 +3364,28 @@ def render_summary_panel(summary: Optional[dict]) -> str:
             f"<td>{html_escape(d['do_pct'])}</td></tr>"
             for d in downloads
         )
-        table = (
+        dl_table = (
             "<table><tr><th>Type</th><th>App</th>"
             "<th>DL sec</th><th>Size (MB)</th><th>MB/s</th>"
             f"<th>Delivery Optimization %</th></tr>{rows}</table>"
         )
-        out.append(f'<details class="summary"><summary>App downloads '
-                   f'({len(downloads)})</summary>{table}</details>')
+        body = (
+            '<div class="sumtabs">'
+            '<div class="sumtabbar">'
+            '<button type="button" class="sumtab is-active" data-pane="overview">'
+            'Overview</button>'
+            '<button type="button" class="sumtab" data-pane="downloads">'
+            f'App downloads ({len(downloads)})</button>'
+            '</div>'
+            f'<div class="sumpane is-active" data-pane="overview">{overview}</div>'
+            f'<div class="sumpane" data-pane="downloads">{dl_table}</div>'
+            '</div>' + _SUMMARY_TABS_ASSETS
+        )
+    else:
+        body = overview
 
-    return "".join(out)
+    return (f'<details class="summary"{open_attr}><summary>{heading}</summary>'
+            f'{body}</details>')
 
 
 def render_dashboard_panel(dash: Optional[dict]) -> str:
