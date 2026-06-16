@@ -1116,26 +1116,6 @@ def parse_eventlog_records(text: str) -> List[dict]:
     return out
 
 
-# --- Compliance (best-effort, log-derived) ----------------------------------
-# Authoritative compliant/non-compliant state is service-side (Graph) and not in
-# an offline package; this surfaces compliance-related entries + errors found in
-# the event logs, IME logs, IME registry and the mdmdiag report.
-_COMPLIANCE_RE = re.compile(r"compli(?:ance|ant)", re.IGNORECASE)
-_COMPLIANCE_FAIL_RE = re.compile(r"not\s*compliant|noncompliant|\bfail", re.IGNORECASE)
-
-
-def _compliance_row(source: str, time: str, level: str, message: str,
-                    src: str) -> dict:
-    message = re.sub(r"\s+", " ", message).strip()[:SUMMARY_DETAIL_CAP]
-    codes = find_error_codes(message)
-    code = next(iter(codes), "")
-    is_err = (level.lower() == "error" or bool(code)
-              or bool(_COMPLIANCE_FAIL_RE.search(message)))
-    return {"source": source, "time": time, "level": level, "message": message,
-            "code": code, "code_text": codes.get(code, ""), "error": is_err,
-            "src": src}
-
-
 def collect_log_error_codes(input_dir: Path, max_files: int = 200,
                             cap: int = 50) -> List[dict]:
     """Known Intune/Windows error codes found in the package's log files.
@@ -1166,75 +1146,6 @@ def collect_log_error_codes(input_dir: Path, max_files: int = 200,
                     e["count"] += 1
     out = sorted(agg.values(), key=lambda e: (-e["count"], e["code"]))
     return out[:cap]
-
-
-def collect_compliance(input_dir: Path, limit: int = 300) -> List[dict]:
-    """Best-effort compliance entries from every offline source in the package."""
-    rows: List[dict] = []
-
-    def relpath(p: Path) -> str:
-        return p.relative_to(input_dir).as_posix()
-
-    # 1. DeviceManagement / MDM event logs (text summaries).
-    for p in sorted(input_dir.rglob("*-ErrorsWarnings.txt")):
-        rel = relpath(p)
-        name = p.name.replace("-ErrorsWarnings.txt", "")
-        for r in parse_eventlog_records(read_text_tolerant(p)):
-            if _COMPLIANCE_RE.search(r["message"]):
-                rows.append(_compliance_row(name, r["time"], r["level"],
-                                            r["message"], rel))
-                if len(rows) >= limit:
-                    return rows
-
-    # 2. IME logs (custom compliance scripts, ComplianceHandler).
-    for p in sorted(input_dir.rglob("*.log")):
-        rel = relpath(p)
-        if "apps-ime" not in rel.lower():
-            continue
-        records, _ = parse_cmtrace(read_text_tolerant(p))
-        for rec in records:
-            if _COMPLIANCE_RE.search(rec.get("msg", "")):
-                rows.append(_compliance_row(p.name, rec.get("time", ""), "",
-                                            rec["msg"], rel))
-                if len(rows) >= limit:
-                    return rows
-
-    # 3. IME registry: SideCarPolicies compliance keys.
-    imereg = _find_package_file(input_dir, ("Registry/IntuneManagementExtension.reg",))
-    if imereg:
-        rel = relpath(imereg)
-        reg = parse_reg(read_text_tolerant(imereg))
-        for key, vals in reg.items():
-            if "complian" not in key.lower():
-                continue
-            detail = ", ".join(
-                f"{k}={vals[k]}" for k in vals
-                if k.lower() in ("result", "errorcode", "errormessage",
-                                 "resultdetails", "state", "lastexecution"))
-            tail = key.split("\\")[-1]
-            msg = f"{tail} (compliance)" + (f": {detail}" if detail else "")
-            rows.append(_compliance_row("IME registry", "", "", msg, rel))
-            if len(rows) >= limit:
-                return rows
-
-    # 4. mdmdiag DefaultReport (HTML/XML) — keyword snippets.
-    for p in sorted(input_dir.rglob("*.htm*")) + sorted(input_dir.rglob("*.xml")):
-        rel = relpath(p)
-        if "mdm" not in rel.lower():
-            continue
-        plain = re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", read_text_tolerant(p)))
-        seen = set()
-        for m in _COMPLIANCE_RE.finditer(plain):
-            snip = plain[max(0, m.start() - 60):m.start() + 100].strip()
-            if snip in seen:
-                continue
-            seen.add(snip)
-            rows.append(_compliance_row("mdmdiag report", "", "", snip, rel))
-            if len(rows) >= limit:
-                return rows
-            if len(seen) >= 20:
-                break
-    return rows
 
 
 # --- Settings-Catalog name enrichment (optional, Microsoft Graph) ------------
@@ -1580,17 +1491,6 @@ def build_dashboard(input_dir: Path) -> dict:
                        else f"{len(w32)} tracked, all healthy"),
             **link("win32apps"),
         })
-        # Targeted hint for the recurring Autopilot pre-provisioning bug where
-        # an app installs but is never detected (0x87D1041C, e.g. Company Portal).
-        if any(a["error_code"] == "0x87D1041C" for a in w32):
-            checks.append({
-                "label": "Company Portal / ESP",
-                "status": "warn",
-                "detail": "app installed but not detected (0x87D1041C) — known "
-                          "Autopilot pre-provisioning bug (InstallService "
-                          "FixInstallUnderSystemContext); see the app's error",
-                **link("win32apps"),
-            })
         sections.append({
             "title": f"Win32 app deployment status ({len(w32)})",
             "src": src_of("win32apps"),
@@ -1700,30 +1600,6 @@ def build_dashboard(input_dir: Path) -> dict:
             "src": dm.relative_to(input_dir).as_posix(),
         })
 
-    # Compliance (best-effort, log-derived): event logs, IME logs/registry, mdmdiag.
-    compliance = collect_compliance(input_dir)
-    if compliance:
-        errs = sum(1 for r in compliance if r["error"])
-        warns = sum(1 for r in compliance if r["level"].lower() == "warning")
-        checks.append({
-            "label": "Compliance",
-            "status": "bad" if errs else "warn" if warns else "ok",
-            "detail": (f"{len(compliance)} log entries"
-                       + (f", {errs} errors" if errs else "")),
-            "section": "compliance",
-        })
-        sections.append({
-            "title": f"Compliance ({len(compliance)})",
-            "key": "compliance",
-            "columns": ["Source", "Time", "Message", "Error"],
-            "widths": [16, 14, 52, 18],
-            "rows": [[r["source"], r["time"], r["message"],
-                      (f'{r["code"]} — {r["code_text"]}' if r["code_text"]
-                       else r["code"])]
-                     for r in compliance],
-            "searchable": True,
-        })
-
     # Known error codes spotted anywhere in the package's log files. Each row
     # deep-links (via the seclink cell) to the first occurrence's log line.
     errcodes = collect_log_error_codes(input_dir)
@@ -1735,6 +1611,16 @@ def build_dashboard(input_dir: Path) -> dict:
             "detail": f"{len(errcodes)} distinct code(s), {total} occurrence(s) in logs",
             "section": "errorcodes",
         })
+
+        def errcode_explanation(e: dict) -> str:
+            # Targeted hint for the recurring Autopilot pre-provisioning bug
+            # where an app (e.g. Company Portal) installs but is never detected.
+            if e["code"] == "0x87D1041C":
+                return (e["explanation"] + " — app installed but not detected; "
+                        "known Autopilot pre-provisioning bug (InstallService "
+                        "FixInstallUnderSystemContext)").lstrip(" —")
+            return e["explanation"]
+
         sections.append({
             "title": f"Known error codes in logs ({len(errcodes)})",
             "key": "errorcodes",
@@ -1744,7 +1630,7 @@ def build_dashboard(input_dir: Path) -> dict:
                 {"text": e["code"], "file": e["src"], "line": e["line"]},
                 str(e["count"]),
                 e["src"].rsplit("/", 1)[-1],
-                e["explanation"],
+                errcode_explanation(e),
             ] for e in errcodes],
             "searchable": True,
         })
@@ -3204,7 +3090,7 @@ DIAG_PAGE = """<!doctype html>
       if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); openSource(card); }
     });
   });
-  // Cards that open a detail section instead of a file (e.g. Compliance).
+  // Cards that open a detail section instead of a file (e.g. Known error codes).
   function openSection(card) {
     const d = document.querySelector('details.section[data-key="' + card.dataset.section + '"]');
     if (!d) return;
@@ -3218,7 +3104,7 @@ DIAG_PAGE = """<!doctype html>
     });
   });
 
-  // Per-section row filter (e.g. Policy settings, Compliance).
+  // Per-section row filter (e.g. Policy settings).
   document.querySelectorAll('.secsearch').forEach(inp => {
     const trs = [...inp.closest('details').querySelectorAll('tbody tr')];
     inp.addEventListener('input', () => {

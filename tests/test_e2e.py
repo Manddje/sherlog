@@ -1738,50 +1738,6 @@ def test_device_scripts_are_ascii_only():
         "REMEDIATION_TEMPLATE must be ASCII-only"
 
 
-# --- Compliance card (best-effort, log-derived) ----------------------------
-
-def test_collect_compliance_and_card(tmp_path):
-    import app as app_module
-    inp = tmp_path / "pkg"
-    (inp / "EventLogs").mkdir(parents=True)
-    (inp / "Apps-IME" / "Logs").mkdir(parents=True)
-    (inp / "EventLogs" / "DeviceManagement-Admin-ErrorsWarnings.txt").write_text(
-        "TimeCreated : 1/2/2026 10:00\nId : 404\nLevelDisplayName : Error\n"
-        "Message : ComplianceState evaluation failed 0x87D1041C not compliant\n\n"
-        "TimeCreated : 1/2/2026 10:01\nId : 200\nLevelDisplayName : Information\n"
-        "Message : Sync session completed\n", encoding="utf-8")
-    (inp / "Apps-IME" / "Logs" / "IntuneManagementExtension.log").write_text(
-        '<![LOG[ComplianceHandler: evaluated compliant=true]LOG]!>'
-        '<time="11:00:00.0" date="1-2-2026" component="IME" type="1" thread="4">',
-        encoding="utf-8")
-
-    rows = app_module.collect_compliance(inp)
-    assert len(rows) == 2                                  # non-compliance line skipped
-    err = next(r for r in rows if r["error"])
-    assert err["code"] == "0x87D1041C" and err["code_text"]
-    assert any(not r["error"] for r in rows)              # the IME 'compliant=true' row
-
-    dash = app_module.build_dashboard(inp)
-    card = next(c for c in dash["checks"] if c["label"] == "Compliance")
-    assert card["status"] == "bad" and card["section"] == "compliance"
-    sec = next(s for s in dash["sections"] if s.get("key") == "compliance")
-    assert sec["columns"] == ["Source", "Time", "Message", "Error"]
-
-    html = app_module.render_dashboard_panel(dash)
-    assert 'data-section="compliance"' in html            # card opens the section
-    assert 'data-key="compliance"' in html                # the target section
-
-
-def test_no_compliance_card_without_signals(tmp_path):
-    import app as app_module
-    inp = tmp_path / "pkg"
-    (inp / "Identity").mkdir(parents=True)
-    (inp / "Identity" / "dsregcmd-status.txt").write_text("AzureAdJoined : YES\n",
-                                                          encoding="utf-8")
-    dash = app_module.build_dashboard(inp)
-    assert not any(c["label"] == "Compliance" for c in dash["checks"])
-
-
 def test_diag_downloads(client):
     """Download the open file and the whole package zip from a diagnostics job."""
     buf = io.BytesIO()
@@ -1911,10 +1867,10 @@ def test_count_push_events():
     assert app_module.count_push_events(None) == {"ev1010": 0, "ev1225": 0}
 
 
-def test_build_dashboard_zombie_sync_and_esp_hint(client, tmp_path):
+def test_build_dashboard_zombie_sync(client, tmp_path):
     """Expired machine cert + a recent OMADM access time -> 'MDM sync health'
-    flags the device as managed-but-dead; a 0x87D1041C Win32 app surfaces the
-    Company Portal / ESP hint."""
+    flags the device as managed-but-dead; a 0x87D1041C Win32 app is decoded
+    with the enriched error code."""
     import app as app_module
     pkg = tmp_path / "pkg"
     (pkg / "Registry").mkdir(parents=True)
@@ -1949,8 +1905,8 @@ def test_build_dashboard_zombie_sync_and_esp_hint(client, tmp_path):
 
     assert by_label["MDM sync health"]["status"] == "bad"
     assert "expired" in by_label["MDM sync health"]["detail"].lower()
-    assert by_label["Company Portal / ESP"]["status"] == "warn"
-    assert "0x87D1041C" in by_label["Company Portal / ESP"]["detail"]
+    # No standalone Company Portal / ESP card any more.
+    assert "Company Portal / ESP" not in by_label
     # Underlying Win32 app was decoded with the enriched error code.
     assert by_label["Win32 apps"]["status"] == "bad"
 
@@ -1996,6 +1952,8 @@ def test_build_dashboard_known_error_codes_table(tmp_path):
     assert code_cell["text"] == "0x87D1041C"
     assert code_cell["file"] == "Apps-IME/Logs/IntuneManagementExtension.log"
     assert isinstance(code_cell["line"], int)
+    # The Autopilot pre-provisioning hint is folded into the explanation cell.
+    assert "Autopilot pre-provisioning" in sec["rows"][0][3]
 
     # The render wires the deep-link (seclink + data-file/data-line).
     html = app_module.render_dashboard_panel(dash)
