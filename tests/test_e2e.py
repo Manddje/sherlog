@@ -1961,3 +1961,90 @@ def test_build_dashboard_known_error_codes_table(tmp_path):
     assert 'data-file="Apps-IME/Logs/IntuneManagementExtension.log"' in html
     assert "data-line=" in html
     assert "0x87D1041C" in html
+
+
+# --- XSS hardening: inline-<script> JSON + hostile filenames ----------------
+
+def test_js_json_neutralises_script_breakout():
+    import json
+
+    import app as app_module
+    out = app_module.js_json("</script><img src=x onerror=alert(1)>")
+    # No raw HTML metacharacters can survive into a <script> block.
+    assert "<" not in out and ">" not in out
+    # Still valid JSON that round-trips to the original value.
+    assert json.loads(out) == "</script><img src=x onerror=alert(1)>"
+
+
+def test_history_record_js_escapes_filename():
+    """A crafted upload filename must not be able to close the inline <script>."""
+    import app as app_module
+    js = app_module.history_record_js(
+        "abc123", "logs", "done",
+        ["</script><script>alert(1)</script>.log"])
+    # The only literal </script> in the snippet is its own closing tag; the
+    # filename's </script> sequences are \u-escaped.
+    assert js.count("</script>") == 1
+    assert "\\u003c/script\\u003e" in js
+
+
+def test_cmtrace_page_escapes_breakout_filename(client):
+    """A flat .log upload whose name carries HTML metacharacters reaches the
+    (non-sandboxed) CMTRACE_PAGE via history + firstjson; both must be escaped."""
+    payload = ("<![LOG[hi]LOG]!><time=\"1\" date=\"2\" component=\"C\" "
+               "context=\"\" type=\"1\" thread=\"3\" file=\"\">").encode()
+    r = client.post(
+        "/cmtrace-view",
+        files={"files": ("x<img src=q onerror=alert(1)>.log", payload,
+                         "text/plain")},
+        follow_redirects=True,
+    )
+    assert r.status_code == 200
+    # The raw metacharacters from the filename never appear unescaped in the
+    # page chrome; js_json emitted the \u-escaped form instead.
+    assert "<img src=q onerror=alert(1)>" not in r.text
+    assert "\\u003cimg src=q onerror=alert(1)\\u003e" in r.text
+
+
+def test_diag_zip_rejects_unsafe_member_names(client):
+    """Zip members with control chars or < > " are skipped at extraction, so a
+    hostile filename never becomes the first-file pointer on the diag page."""
+    import app as app_module
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr("Apps-IME/Logs/IntuneManagementExtension.log",
+                    '<![LOG[hi]LOG]!><time="1" date="2" component="C" '
+                    'type="1" thread="3">')
+        zf.writestr("Apps-IME/Logs/x<script>evil</script>.log", "payload")
+        zf.writestr("Identity/dsregcmd-status.txt", "AzureAdJoined : YES\n")
+    r = client.post(
+        "/diagnostics-analyze",
+        files={"files": ("IntuneDiag.zip", buf.getvalue(), "application/zip")},
+        follow_redirects=False,
+    )
+    assert r.status_code == 303
+    job_id = r.headers["location"].split("/")[2]
+    files = app_module.list_input_files(job_id, exts=app_module.DIAG_KEEP_EXTS)
+    assert not any("<" in f or ">" in f for f in files)   # unsafe one not staged
+    skipped = [s["name"] for s in (app_module.read_status(job_id) or {}).get(
+        "skipped", [])]
+    assert any("<script>" in n for n in skipped)          # recorded as skipped
+    assert "<script>evil</script>" not in client.get(f"/result/{job_id}").text
+
+
+def test_delete_refuses_api_drop_off_jobs(upload_client):
+    """An untokened /result/{id}/delete must not remove a token-scoped drop-off
+    job; only /inbox/delete[-one] with the matching token can."""
+    import app as app_module
+    job_id = upload_client.post(
+        "/api/diagnostics", content=_diag_zip(),
+        headers={"X-Upload-Token": _TOK, "Content-Type": "application/zip"},
+    ).json()["job_id"]
+    r = upload_client.post(f"/result/{job_id}/delete")
+    assert r.status_code == 403
+    assert app_module.read_status(job_id) is not None     # still on disk
+    d = upload_client.post(
+        "/inbox/delete-one",
+        headers={"X-Upload-Token": _TOK, "X-Job-Id": job_id})
+    assert d.json()["deleted"] is True
+    assert app_module.read_status(job_id) is None

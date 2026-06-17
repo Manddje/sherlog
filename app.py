@@ -362,6 +362,13 @@ def parse_cmtrace(text: str, limit: int = CMTRACE_MAX_LINES) -> tuple[List[dict]
     return records, truncated
 
 
+def read_and_parse_cmtrace(path: Path) -> tuple[List[dict], bool]:
+    """read_text_tolerant + parse_cmtrace in one call. Both steps are CPU-bound
+    over an up-to-MAX_UPLOAD_MB file, so the view routes run this in a worker
+    thread (asyncio.to_thread) to keep the single uvicorn worker responsive."""
+    return parse_cmtrace(read_text_tolerant(path))
+
+
 # --- EVTX (Windows event log) parsing ----------------------------------------
 # python-evtx renders each record as the standard Event XML. Offline rendering
 # of localized message tables is impossible on Linux, so the message is the
@@ -1866,6 +1873,14 @@ async def _extract_diag_zip(dest_zip: Path, input_dir: Path) -> tuple[int, list]
     return count, skipped
 
 
+# Defence in depth against the inline-<script> XSS sink: a member name with
+# control chars or HTML metacharacters (< > ") is never a legitimate
+# diagnostics filename, and such a name reaches a non-sandboxed page as JSON
+# (e.g. the first-file pointer). js_json already neutralises it at render time;
+# refusing it at extraction closes the class regardless of the rendering layer.
+_UNSAFE_MEMBER_RE = re.compile(r'[\x00-\x1f<>"]')
+
+
 def extract_zip_members(zip_path: Path, dest_dir: Path, keep_exts: set,
                         depth: int = 0,
                         budget: Optional[list] = None) -> tuple[int, list]:
@@ -1892,6 +1907,12 @@ def extract_zip_members(zip_path: Path, dest_dir: Path, keep_exts: set,
             # normalisation the package extracts as flat files with literal
             # backslashes and every path-based lookup misses.
             member = info.filename.replace("\\", "/")
+            # Skip names with control chars or HTML metacharacters (see
+            # _UNSAFE_MEMBER_RE): never a real package file, and a vector into
+            # the inline-script JSON sink.
+            if _UNSAFE_MEMBER_RE.search(member):
+                skipped.append({"name": member, "size": info.file_size})
+                continue
             ext = Path(member).suffix.lower()
             nested_zip = ext == ".zip" and depth == 0
             if ext not in keep_exts and not nested_zip:
@@ -1995,6 +2016,11 @@ def expand_cab_files(root: Path, keep_exts: set,
             # anything resolving outside the input dir is dropped.
             resolved = f.resolve()
             if base != resolved and base not in resolved.parents:
+                f.unlink(missing_ok=True)
+                continue
+            rel_member = f"{rel}!/{f.relative_to(dest).as_posix()}"
+            if _UNSAFE_MEMBER_RE.search(rel_member):
+                skipped.append({"name": rel_member, "size": f.stat().st_size})
                 f.unlink(missing_ok=True)
                 continue
             if f.suffix.lower() not in keep_exts:
@@ -2521,8 +2547,8 @@ def history_record_js(job_id: str, tool: str, state: str, files: List[str]) -> s
     """Inline script that upserts this job into the browser's own history
     (localStorage); the server keeps no per-user state. Keeps the original
     timestamp on update so a busy->done transition doesn't bump the order."""
-    entry = json.dumps({"id": job_id, "tool": tool, "state": state,
-                        "files": files[:5]})
+    entry = js_json({"id": job_id, "tool": tool, "state": state,
+                     "files": files[:5]})
     return ("""<script>
 (function () {
   const KEY = 'sherlog.history';
@@ -3173,6 +3199,23 @@ def attr_escape(s: str) -> str:
     """Escape for double-quoted HTML attribute values (filenames from
     untrusted zips can contain quotes)."""
     return html_escape(s).replace('"', "&quot;")
+
+
+def js_json(value) -> str:
+    """json.dumps result that is safe to embed inside an inline <script>.
+
+    json.dumps does NOT escape ``<``, ``>`` or ``/``, so a value like an
+    uploaded filename containing ``</script>`` would terminate the script
+    element and inject markup into the (non-sandboxed) app-chrome page. Encode
+    the breakout characters as \\uXXXX escapes; this is still valid JSON/JS and
+    parses back to the original string. Also escape the U+2028/U+2029 line
+    separators, which are literal newlines in a JS string. Use this everywhere
+    JSON is written into a <script> block; the on-disk json.dumps (job.json,
+    dashboards, caches) stays plain json.dumps."""
+    return (json.dumps(value)
+            .replace("<", "\\u003c").replace(">", "\\u003e")
+            .replace("&", "\\u0026")
+            .replace(" ", "\\u2028").replace(" ", "\\u2029"))
 
 
 # The upstream script appends an author/branding banner (<footer> with author
@@ -4102,7 +4145,7 @@ def _render_records_page(filename: str, head: str, rows: List[str],
 </body></html>""" % {
         "file": html_escape(filename), "css": _CMTRACE_CSS, "comp": comp_sel,
         "head": head, "note": note, "rows": "\n".join(rows),
-        "codes": json.dumps(ERROR_CODES), "meta": json.dumps(meta_labels),
+        "codes": js_json(ERROR_CODES), "meta": js_json(meta_labels),
     }
 
 
@@ -4137,7 +4180,7 @@ async def index() -> HTMLResponse:
     return HTMLResponse(LANDING_PAGE % {
         "css": PAGE_CSS, "nav": NAV, "footer": FOOTER, "recent": HISTORY_SECTION,
         "retention": JOB_RETENTION_HOURS, "max": MAX_UPLOAD_MB,
-        "accept": ".log,.zip", "patternjson": json.dumps(r"\.(log|zip)$"),
+        "accept": ".log,.zip", "patternjson": js_json(r"\.(log|zip)$"),
         "ic_cmtrace": _ICONS["cmtrace"],
         "ic_diag": _ICONS["diag"],
         "dropoff_tile": dropoff_tile,
@@ -4161,7 +4204,7 @@ def render_upload_page(*, title: str, heading: str, intro: str,
         "css": PAGE_CSS, "nav": NAV, "footer": FOOTER, "max": MAX_UPLOAD_MB,
         "title": title, "heading": heading, "intro": intro,
         "action": action, "button": button, "recent": HISTORY_SECTION,
-        "accept": accept, "patternjson": json.dumps(pattern),
+        "accept": accept, "patternjson": js_json(pattern),
         "badges": badges, "droptext": droptext, "extra": extra,
     })
 
@@ -4366,7 +4409,7 @@ async def error_codes_page() -> HTMLResponse:
     """Searchable reference of every error code Sherlog can explain."""
     return HTMLResponse(ERRORCODES_PAGE % {
         "css": PAGE_CSS, "nav": NAV, "footer": FOOTER,
-        "codes": json.dumps(ERROR_CODES),
+        "codes": js_json(ERROR_CODES),
     })
 
 
@@ -4498,7 +4541,7 @@ async def diagnostics_analyze(request: Request) -> Response:
     finally:
         shutil.rmtree(base / "tmp", ignore_errors=True)
 
-    dashboard = build_dashboard(input_dir)
+    dashboard = await asyncio.to_thread(build_dashboard, input_dir)
     (output_dir / "dashboard.json").write_text(json.dumps(dashboard),
                                                encoding="utf-8")
 
@@ -4590,7 +4633,7 @@ async def api_diagnostics(request: Request) -> Response:
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
-    dashboard = build_dashboard(input_dir)
+    dashboard = await asyncio.to_thread(build_dashboard, input_dir)
     (output_dir / "dashboard.json").write_text(json.dumps(dashboard),
                                                encoding="utf-8")
 
@@ -4794,7 +4837,7 @@ async def inbox(request: Request, token: str = "") -> HTMLResponse:
     if not token:
         body = _INBOX_FORM % {"min": UPLOAD_TOKEN_MIN_LEN,
                               "cap": UPLOAD_API_MAX_JOBS_PER_TOKEN,
-                              "script": json.dumps(REMEDIATION_TEMPLATE)}
+                              "script": js_json(REMEDIATION_TEMPLATE)}
         return HTMLResponse(INBOX_PAGE % {
             "css": PAGE_CSS, "nav": NAV, "footer": FOOTER, "body": body})
 
@@ -4826,14 +4869,14 @@ async def inbox(request: Request, token: str = "") -> HTMLResponse:
                 'if(!confirm("Delete all uploads for this token from the server? '
                 'This cannot be undone."))return;'
                 'fetch("/inbox/delete",{method:"POST",headers:{"X-Upload-Token":'
-                + json.dumps(token) + '}}).then(function(){location.reload();});'
+                + js_json(token) + '}}).then(function(){location.reload();});'
                 '});'
                 'document.querySelectorAll("button[data-job]").forEach('
                 'function(b){b.addEventListener("click",function(){'
                 'if(!confirm("Delete this upload from the server? '
                 'This cannot be undone."))return;'
                 'fetch("/inbox/delete-one",{method:"POST",headers:{'
-                '"X-Upload-Token":' + json.dumps(token)
+                '"X-Upload-Token":' + js_json(token)
                 + ',"X-Job-Id":b.getAttribute("data-job")}})'
                 '.then(function(){location.reload();});'
                 '});});</script>')
@@ -5050,7 +5093,7 @@ async def cmtrace(job_id: str) -> Response:
     return HTMLResponse(CMTRACE_PAGE % {
         "css": PAGE_CSS, "logo": _LOGO, "job": job_id, "timeline": timeline,
         "tree": render_log_tree(logs), "first": quote(logs[0]),
-        "firstjson": json.dumps(logs[0]), "jobjson": json.dumps(job_id),
+        "firstjson": js_json(logs[0]), "jobjson": js_json(job_id),
         "history": history_record_js(job_id, tool, job_state,
                                      upload_names(status, job_id)),
     })
@@ -5071,8 +5114,8 @@ async def cmtrace_view(job_id: str, file: str) -> Response:
     if file not in list_input_logs(job_id):
         return HTMLResponse("Unknown log file.", status_code=404)
 
-    text = read_text_tolerant(job_dir(job_id) / "input" / file)
-    records, truncated = parse_cmtrace(text)
+    records, truncated = await asyncio.to_thread(
+        read_and_parse_cmtrace, job_dir(job_id) / "input" / file)
     return HTMLResponse(
         render_cmtrace_view(file, records, truncated),
         headers={"Content-Security-Policy": "sandbox allow-scripts"},
@@ -5101,8 +5144,8 @@ def render_diag_page(job_id: str, status: dict) -> HTMLResponse:
         "summary": summary,
         "tree": render_file_tree(files, skipped),
         "firstsrc": firstsrc,
-        "jobjson": json.dumps(job_id), "firstjson": json.dumps(first),
-        "analysisjson": json.dumps(analysis.get("state", "none")),
+        "jobjson": js_json(job_id), "firstjson": js_json(first),
+        "analysisjson": js_json(analysis.get("state", "none")),
         # Device drop-off jobs belong in the token inbox, not in the viewer's
         # personal "Recent uploads" history.
         "history": ("" if status.get("source") == "api"
@@ -5128,9 +5171,18 @@ async def job_status(job_id: str) -> JSONResponse:
 @app.post("/result/{job_id}/delete")
 async def delete_result(job_id: str) -> JSONResponse:
     """Delete one job from disk (used by the 'Delete all' in the history list).
-    Knowing the unguessable job id is the authorization, as it is for viewing."""
+    Knowing the unguessable job id is the authorization, as it is for viewing.
+
+    Device drop-off jobs are exempt: they belong to a token-scoped inbox and
+    must be removed via /inbox/delete[-one] with the matching token, so this
+    untokened route can't silently bypass that ownership check."""
     if not job_id.isalnum():
         return JSONResponse({"error": "invalid job id"}, status_code=400)
+    status = read_status(job_id)
+    if status and status.get("source") == "api":
+        return JSONResponse(
+            {"error": "use the token inbox to delete drop-off uploads"},
+            status_code=403)
     return JSONResponse({"deleted": delete_job(job_id)})
 
 
@@ -5249,7 +5301,6 @@ async def diag_file_view(job_id: str, file: str) -> Response:
 
     # .log gets the CMTrace layout; other text files fall back to the plain
     # line-numbered layout inside the same renderer.
-    text = read_text_tolerant(path)
-    records, truncated = parse_cmtrace(text)
+    records, truncated = await asyncio.to_thread(read_and_parse_cmtrace, path)
     return HTMLResponse(render_cmtrace_view(file, records, truncated),
                         headers=_SANDBOX_HEADERS)
