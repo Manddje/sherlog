@@ -3740,7 +3740,9 @@ ERROR_CODES: dict[str, str] = {
                   "or a wrong-architecture (x86/x64/ARM64) binary.",
     "0x80070490": "Element not found — a required registry key, setting or "
                   "component is missing.",
-    "0x800705B4": "The operation timed out.",
+    "0x800705B4": "The operation timed out. In Intune enrollment this often "
+                  "shows as the device hanging at 'preparing your device for "
+                  "mobile management'.",
     "0x80070641": "The Windows Installer service could not be accessed "
                   "(MSI 1601). Check that the msiserver service can run.",
     "0x80070642": "The user cancelled the installation (MSI 1602).",
@@ -3822,7 +3824,10 @@ ERROR_CODES: dict[str, str] = {
                   "Delivery Optimization requires — often a proxy that "
                   "strips range support.",
     # HTTP status wrapped as HRESULT (0x80190xxx, last hex digits = status)
-    "0x80190190": "HTTP 400 Bad Request — the service rejected the request.",
+    "0x80190190": "HTTP 400 Bad Request — the service rejected the request. A "
+                  "common Intune cause is an expired MDM device CA certificate "
+                  "that blocks device sync ('synchronization couldn't be "
+                  "started').",
     "0x80190191": "HTTP 401 Unauthorized — authentication failed or the "
                   "token expired.",
     "0x80190193": "HTTP 403 Forbidden — the device or user may not access "
@@ -3836,6 +3841,23 @@ ERROR_CODES: dict[str, str] = {
     # .NET
     "0x80131500": "A .NET exception occurred in the agent or installer; see "
                   "the surrounding log lines for the stack trace.",
+    # MDM / device enrollment (0x8018xxxx, 0x8103xxxx, RPC) — seen in the
+    # enrollment event log and dsregcmd output inside a diagnostics package
+    "0x80180014": "MDM enrollment could not be completed ('We couldn't finish "
+                  "MDM enrollment'). A previous Intune/Autopilot device object "
+                  "or enrollment state was not removed before re-enrolling, so "
+                  "the new enrollment collides with the stale record. Remove the "
+                  "old device/enrollment object, then re-enroll.",
+    "0x81036501": "MDM information is not found for this Entra (Azure AD) "
+                  "device. The device has a conflicting or stale Autopilot "
+                  "profile (e.g. an older Partner Center profile) that points "
+                  "enrollment at the wrong MDM authority. Remove the conflicting "
+                  "profile so only the correct Intune Autopilot profile applies.",
+    "0x800706D9": "There are no more endpoints available from the RPC endpoint "
+                  "mapper (EPT_S_NOT_REGISTERED). During MDM (re-)enrollment "
+                  "this points to leftover enrollment registry keys, scheduled "
+                  "tasks or certificates from an incomplete cleanup; fully "
+                  "remove the old enrollment artifacts before re-enrolling.",
     # Bare MSI exit codes (matched as "exit code N" / "error code N")
     "1601": "MSI: the Windows Installer service could not be accessed. "
             "Check that the msiserver service can run.",

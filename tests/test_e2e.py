@@ -471,6 +471,10 @@ def test_find_error_codes():
     assert "1603" in found
     assert len(found) == 2  # signed decimal maps to the same hex code
 
+    # MDM/enrollment codes are detected too (lowercase input normalises up).
+    mdm = app_module.find_error_codes("We couldn't finish MDM enrollment 0x80180014")
+    assert "MDM enrollment" in mdm.get("0x80180014", "")
+
 
 def test_render_summary_panel_escapes():
     import app as app_module
@@ -533,7 +537,7 @@ def test_error_codes_shape_and_coverage():
     assert len(app_module.ERROR_CODES) >= 95
     # One representative per added group.
     for code in ("0x87D00324", "0x87D5507B", "0x80D02002", "0x8007007E",
-                 "0x80073CFF", "0x80072F05", "1619"):
+                 "0x80073CFF", "0x80072F05", "0x80180014", "1619"):
         assert code in app_module.ERROR_CODES, code
 
 
