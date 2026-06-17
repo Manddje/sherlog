@@ -2048,3 +2048,57 @@ def test_delete_refuses_api_drop_off_jobs(upload_client):
         headers={"X-Upload-Token": _TOK, "X-Job-Id": job_id})
     assert d.json()["deleted"] is True
     assert app_module.read_status(job_id) is None
+
+
+_CMTRACE_LINE = (b'<![LOG[hi]LOG]!><time="1" date="2" component="C" '
+                 b'type="1" thread="3">')
+
+
+def test_local_job_cap_returns_429(tmp_path, monkeypatch):
+    """MAX_LOCAL_JOBS bounds the interactive web-upload path: once the cap is
+    reached new uploads get 429 (the drop-off API has its own separate cap), so
+    a public deployment can't be filled with anonymous uploads."""
+    monkeypatch.setenv("JOBS_DIR", str(tmp_path / "jobs"))
+    monkeypatch.setenv("APP_USER", "")
+    monkeypatch.setenv("APP_PASSWORD", "")
+    monkeypatch.setenv("MAX_LOCAL_JOBS", "1")
+    import importlib
+    import app as app_module
+    importlib.reload(app_module)
+    from fastapi.testclient import TestClient
+    with TestClient(app_module.app) as c:
+        first = c.post("/cmtrace-view",
+                       files={"files": ("a.log", _CMTRACE_LINE, "text/plain")},
+                       follow_redirects=False)
+        assert first.status_code == 303          # one job allowed
+        second = c.post("/cmtrace-view",
+                        files={"files": ("b.log", _CMTRACE_LINE, "text/plain")},
+                        follow_redirects=False)
+        assert second.status_code == 429         # cap reached
+        # The diagnostics upload route is gated by the same cap.
+        third = c.post("/diagnostics-analyze",
+                       files={"files": ("d.zip", _diag_zip(), "application/zip")},
+                       follow_redirects=False)
+        assert third.status_code == 429
+    importlib.reload(app_module)  # restore defaults for later tests
+
+
+def test_untrusted_html_csp_blocks_exfiltration(client):
+    """A .html inside a package (and the raw report) runs sandboxed AND with
+    default-src 'none', so a malicious script in attacker-influenced content
+    can't beacon the data out; the opaque origin already blocks app access."""
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr("System/report.html", "<h1>hi</h1>")
+        zf.writestr("Identity/dsregcmd-status.txt", "AzureAdJoined : YES\n")
+    r = client.post("/diagnostics-analyze",
+                    files={"files": ("d.zip", buf.getvalue(), "application/zip")},
+                    follow_redirects=False)
+    assert r.status_code == 303
+    job_id = r.headers["location"].rstrip("/").rsplit("/", 1)[-1]
+    view = client.get(f"/result/{job_id}/files/view",
+                      params={"file": "System/report.html"})
+    assert view.status_code == 200
+    csp = view.headers.get("content-security-policy", "")
+    assert "sandbox" in csp and "default-src 'none'" in csp
+    assert "allow-same-origin" not in csp        # opaque origin: no app access

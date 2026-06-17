@@ -103,6 +103,7 @@ Alle configuratie loopt via environment variables met veilige defaults:
 | `SCRIPT_TIMEOUT_SECONDS` | `300`   | Timeout voor het analyse-subprocess. Bij overschrijding wordt de job als `failed` gemarkeerd. |
 | `JOB_CONCURRENCY`        | `2`     | Maximum aantal analyses dat tegelijk draait. Extra jobs wachten in de wachtrij.               |
 | `CMTRACE_MAX_LINES`      | `50000` | Maximum aantal regels dat de CMTrace-logviewer per bestand rendert.                            |
+| `MAX_LOCAL_JOBS`         | `200`   | Globale rem op het aantal interactieve (web-form) jobs op schijf; daarboven `429`. Begrenst de ongeauthenticeerde uploadroutes zodat de schijf niet volloopt (drop-off heeft zijn eigen cap). |
 | `EVTX_MAX_EVENTS`        | `2000`  | Maximum aantal events dat de eventviewer per `.evtx`-bestand parst en rendert.                 |
 | `LONG_SCRIPT_THRESHOLD_SECONDS` | `180` | PowerShell-scripts die langer draaien dan dit worden in de timeline als waarschuwing gemarkeerd. |
 | `APP_USER`               | *(leeg)*| Optionele gebruikersnaam voor basic auth.                                                     |
@@ -138,6 +139,13 @@ site door te nemen. Zet hiervoor `ENABLE_UPLOAD_API=1`.
 uploaden én alle bijbehorende packages bekijken op `/inbox?token=<token>`.
 Sherlog bewaart alleen de **sha256-hash** van het token op elke job — nooit het
 token zelf — en houdt geen token-register bij.
+
+> **Let op — token in de URL.** Omdat het token in de query string staat
+> (`/inbox?token=<token>`), kan het in access-logs van de reverse-proxy/uvicorn
+> en in browsergeschiedenis terechtkomen. De `Referrer-Policy: no-referrer`-header
+> voorkomt lekken via de `Referer`, maar laat de proxy **geen query strings
+> loggen**, behandel het token als een secret en genereer een nieuw token als je
+> vermoedt dat het is uitgelekt (oude uploads verlopen vanzelf na de retentie).
 
 **Uitrollen (aanbevolen: Remediation on-demand):**
 
@@ -242,13 +250,21 @@ Beveiligingen die al in de code zitten (geen config nodig):
   dus niet te vertrouwen. De app serveert het in een `sandbox`-iframe
   (`/result/<id>/report`) met een `Content-Security-Policy: sandbox`-header,
   zodat kwaadaardige scripts in een geüploade log géén toegang krijgen tot de
-  app-origin. De app-pagina's sturen restrictieve security-headers (`CSP`,
-  `X-Content-Type-Options`, `Referrer-Policy`, `X-Frame-Options`).
+  app-origin. Diezelfde sandbox-respons (en elke `.html` uit een diagnostics-
+  pakket) krijgt bovendien `default-src 'none'`, zodat een kwaadaardig script de
+  inhoud ook niet naar buiten kan exfiltreren. De app-pagina's sturen
+  restrictieve security-headers (`CSP`, `X-Content-Type-Options`,
+  `Referrer-Policy`, `X-Frame-Options`).
 - **Concurrency-limiet.** `JOB_CONCURRENCY` (default 2) begrenst hoeveel
   analyses tegelijk draaien, zodat veel gelijktijdige uploads de container niet
   uitputten. Stem af op de toegewezen CPU/RAM.
 - **Upload-validatie.** Alleen `.log`/`.zip`, harde groottelimiet (streaming),
   zip-slip- en zip-bom-bescherming.
+- **Disk-limiet.** `MAX_LOCAL_JOBS` (default 200) begrenst hoeveel interactieve
+  upload-jobs er tegelijk op schijf staan; daarboven krijgen nieuwe uploads
+  `429` tot oude jobs verlopen. De drop-off API heeft zijn eigen caps
+  (`UPLOAD_API_MAX_JOBS`, `UPLOAD_API_MAX_JOBS_PER_TOKEN`). Samen met korte
+  retentie voorkomt dit dat anonieme uploads de schijf vullen.
 
 ## Beperkingen
 

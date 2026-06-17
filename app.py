@@ -16,6 +16,8 @@ Configuration (env, with safe defaults):
   APP_USER / APP_PASSWORD default empty (auth disabled, logs a warning)
   JOBS_DIR                default /data/jobs
   CMTRACE_MAX_LINES       default 50000 (cap rendered rows in the log viewer)
+  MAX_LOCAL_JOBS          default 200 (cap interactive web-upload jobs on disk;
+                          over it new uploads get 429 — drop-off has its own cap)
   LONG_SCRIPT_THRESHOLD_SECONDS  default 180 (flag long-running PowerShell
                           scripts in the timeline; consumed by run-analysis.sh)
   EVTX_MAX_EVENTS         default 2000 (cap events parsed per .evtx view)
@@ -129,6 +131,14 @@ UPLOAD_TOKEN_MIN_LEN = max(8, int(os.environ.get("UPLOAD_TOKEN_MIN_LEN", "24")))
 UPLOAD_API_MAX_JOBS = max(1, int(os.environ.get("UPLOAD_API_MAX_JOBS", "2000")))
 UPLOAD_API_MAX_JOBS_PER_TOKEN = max(
     1, int(os.environ.get("UPLOAD_API_MAX_JOBS_PER_TOKEN", "200")))
+
+# Global rem op het aantal interactieve (web-form) jobs op schijf. De drop-off
+# API heeft zijn eigen cap (UPLOAD_API_MAX_JOBS); deze begrenst de
+# (op de publieke deploy ongeauthenticeerde) web-uploadroutes, zodat anonieme
+# uploads de schijf niet kunnen vullen — elke job bewaart tot MAX_UPLOAD_MB en
+# kan veel meer uitpakken. Boven de cap krijgen nieuwe uploads `429` tot oude
+# jobs verlopen (JOB_RETENTION_HOURS).
+MAX_LOCAL_JOBS = max(1, int(os.environ.get("MAX_LOCAL_JOBS", "200")))
 
 # Diagnostics-package extension policy. Text-ish files get the line viewer,
 # .log the CMTrace viewer, .html a sandboxed iframe, .evtx the event viewer.
@@ -4458,13 +4468,17 @@ async def stage_upload(request: Request):
     """Validate + stage an upload into a fresh job dir.
 
     Returns (job_id, input_dir, output_dir, upload_names) on success, or an
-    HTMLResponse error to return to the client. Shared by /analyze (timeline)
-    and /cmtrace-view. `upload_names` are the original (client-side) file
-    names, kept for the browser-side history list.
+    HTMLResponse error to return to the client. Used by /cmtrace-view.
+    `upload_names` are the original (client-side) file names, kept for the
+    browser-side history list.
     """
     err = _content_length_error(request)
     if err is not None:
         return err
+    if _count_local_jobs() >= MAX_LOCAL_JOBS:
+        return HTMLResponse(
+            "The server has too many recent analyses. Please try again later.",
+            status_code=429)
 
     form = await request.form()
     files = [v for v in form.getlist("files") if isinstance(v, UploadFile) and v.filename]
@@ -4519,6 +4533,10 @@ async def diagnostics_analyze(request: Request) -> Response:
     err = _content_length_error(request)
     if err is not None:
         return err
+    if _count_local_jobs() >= MAX_LOCAL_JOBS:
+        return HTMLResponse(
+            "The server has too many recent analyses. Please try again later.",
+            status_code=429)
 
     form = await request.form()
     files = [v for v in form.getlist("files")
@@ -4556,25 +4574,32 @@ async def diagnostics_analyze(request: Request) -> Response:
     return RedirectResponse(url=f"/result/{job_id}", status_code=303)
 
 
-def _count_api_jobs() -> int:
-    """How many drop-off (source=api) jobs currently exist on disk."""
-    n = 0
-    for child in iter_job_dirs():
-        st = read_status(child.name)
-        if st and st.get("source") == "api":
-            n += 1
-    return n
+def _api_job_counts(token: str) -> tuple[int, int]:
+    """One pass over the job dirs: (total drop-off jobs, jobs for this token).
 
-
-def _count_api_jobs_for_token(token: str) -> int:
-    """How many drop-off jobs already belong to this token's inbox."""
+    Both caps are checked per upload, so counting them in a single scan avoids
+    reading every job.json twice on the drop-off path.
+    """
     want = token_hash(token)
+    total = 0
+    mine = 0
+    for child in iter_job_dirs():
+        st = read_status(child.name)
+        if not st or st.get("source") != "api":
+            continue
+        total += 1
+        if secrets.compare_digest(str(st.get("upload_token_hash", "")), want):
+            mine += 1
+    return total, mine
+
+
+def _count_local_jobs() -> int:
+    """Interactive (non-drop-off) jobs currently on disk. Drop-off jobs have
+    their own cap (UPLOAD_API_MAX_JOBS); this bounds the web-upload path."""
     n = 0
     for child in iter_job_dirs():
         st = read_status(child.name)
-        if (st and st.get("source") == "api"
-                and secrets.compare_digest(
-                    str(st.get("upload_token_hash", "")), want)):
+        if st and st.get("source") != "api":
             n += 1
     return n
 
@@ -4598,10 +4623,11 @@ async def api_diagnostics(request: Request) -> Response:
     err = _content_length_error(request)
     if err is not None:
         return JSONResponse({"error": "upload too large"}, status_code=413)
-    if _count_api_jobs() >= UPLOAD_API_MAX_JOBS:
+    total_api, mine = _api_job_counts(token)
+    if total_api >= UPLOAD_API_MAX_JOBS:
         return JSONResponse({"error": "server inbox full, try later"},
                             status_code=429)
-    if _count_api_jobs_for_token(token) >= UPLOAD_API_MAX_JOBS_PER_TOKEN:
+    if mine >= UPLOAD_API_MAX_JOBS_PER_TOKEN:
         return JSONResponse({"error": "this inbox is full, try later"},
                             status_code=429)
 
@@ -5003,7 +5029,7 @@ async def report_raw(job_id: str) -> Response:
 
     return HTMLResponse(
         strip_branding(report.read_text(encoding="utf-8", errors="replace")),
-        headers={"Content-Security-Policy": "sandbox allow-scripts allow-popups"},
+        headers=_UNTRUSTED_HTML_HEADERS,
     )
 
 
@@ -5210,6 +5236,22 @@ async def diag_timeline(job_id: str) -> Response:
 
 _SANDBOX_HEADERS = {"Content-Security-Policy": "sandbox allow-scripts"}
 
+# Fully untrusted HTML (the upstream report and any .html shipped inside a
+# diagnostics package). The sandbox already puts it in an opaque origin (no
+# allow-same-origin), so it can't reach the app's cookies/DOM. `default-src
+# 'none'` additionally blocks outbound network access, so a malicious script
+# embedded in attacker-influenced content can't beacon data out; inline
+# script/style stay allowed because the upstream report ships them, and data:
+# images/fonts cover inline assets. (Our own escaped viewers keep the lighter
+# _SANDBOX_HEADERS: we control their markup and escape the content.)
+_UNTRUSTED_HTML_HEADERS = {
+    "Content-Security-Policy": (
+        "sandbox allow-scripts allow-popups; default-src 'none'; "
+        "script-src 'unsafe-inline'; style-src 'unsafe-inline'; "
+        "img-src data:; font-src data:"
+    )
+}
+
 
 def _safe_filename(name: str, default: str) -> str:
     """A download filename without path/odd chars."""
@@ -5280,7 +5322,8 @@ async def diag_file_view(job_id: str, file: str) -> Response:
     ext = Path(file).suffix.lower()
 
     if ext in (".html", ".htm"):
-        return HTMLResponse(read_text_tolerant(path), headers=_SANDBOX_HEADERS)
+        return HTMLResponse(read_text_tolerant(path),
+                            headers=_UNTRUSTED_HTML_HEADERS)
 
     if ext == ".evtx":
         if Evtx is None:
