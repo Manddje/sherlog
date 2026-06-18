@@ -136,16 +136,17 @@ site door te nemen. Zet hiervoor `ENABLE_UPLOAD_API=1`.
 
 **Self-service tokens.** Het token is de namespace: genereer er één op
 `/inbox` (knop *Generate token*) en bewaar het. Wie het token kent kan ermee
-uploaden én alle bijbehorende packages bekijken op `/inbox?token=<token>`.
-Sherlog bewaart alleen de **sha256-hash** van het token op elke job — nooit het
-token zelf — en houdt geen token-register bij.
+uploaden én alle bijbehorende packages bekijken: voer het in op `/inbox` (het
+wordt in de **request-body** verstuurd, niet in de URL). Sherlog bewaart alleen
+de **sha256-hash** van het token op elke job — nooit het token zelf — en houdt
+geen token-register bij.
 
-> **Let op — token in de URL.** Omdat het token in de query string staat
-> (`/inbox?token=<token>`), kan het in access-logs van de reverse-proxy/uvicorn
-> en in browsergeschiedenis terechtkomen. De `Referrer-Policy: no-referrer`-header
-> voorkomt lekken via de `Referer`, maar laat de proxy **geen query strings
-> loggen**, behandel het token als een secret en genereer een nieuw token als je
-> vermoedt dat het is uitgelekt (oude uploads verlopen vanzelf na de retentie).
+> **Token = secret.** Het token reist nooit in de URL-query — niet bij upload
+> (`X-Upload-Token`-header) en niet bij het openen van de inbox (POST-body), dus
+> het komt niet in access-logs, browsergeschiedenis of de `Referer` terecht.
+> Behandel het toch als een wachtwoord: deel het niet en genereer een nieuw token
+> als je vermoedt dat het is uitgelekt (oude uploads verlopen vanzelf na de
+> retentie).
 
 **Uitrollen (aanbevolen: Remediation on-demand):**
 
@@ -160,7 +161,7 @@ token zelf — en houdt geen token-register bij.
 4. Wijs toe aan een device-groep (de detection draait op schema), of selecteer
    een device → **Run remediation** (on-demand). Draait als SYSTEM, verzamelt
    het slimme `-Remote`-profiel en POST't de zip.
-5. Open `<sherlog>/inbox?token=<token>` en klik de device-upload open.
+5. Open `<sherlog>/inbox`, voer je token in en klik de device-upload open.
 
 > Het detection-script staat ook kant-en-klaar (met je token al ingevuld) op
 > de `/inbox`-pagina nadat je een token genereert.

@@ -122,9 +122,10 @@ CSP_NAMES_TTL_HOURS = max(1, int(os.environ.get("CSP_NAMES_TTL_HOURS", "720")))
 
 # Unattended device drop-off API (off by default). When ENABLE_UPLOAD_API is on,
 # an Intune-deployed collector can POST a diagnostics zip to /api/diagnostics with
-# a self-chosen secret in the X-Upload-Token header; the admin reviews uploads at
-# /inbox?token=<same secret>. The token IS the namespace: only its sha256 hash is
-# stored (on each job), never the token itself, and there is no token registry.
+# a self-chosen secret in the X-Upload-Token header; the admin reviews uploads on
+# /inbox by entering the same secret (sent in the request body, never the URL).
+# The token IS the namespace: only its sha256 hash is stored (on each job), never
+# the token itself, and there is no token registry.
 ENABLE_UPLOAD_API = os.environ.get("ENABLE_UPLOAD_API", "").lower() in (
     "1", "true", "yes", "on")
 UPLOAD_TOKEN_MIN_LEN = max(8, int(os.environ.get("UPLOAD_TOKEN_MIN_LEN", "24")))
@@ -2313,6 +2314,7 @@ PAGE_CSS = """
   .linkbtn{ background:none; border:0; color:var(--accent); cursor:pointer;
     font:inherit; padding:0; }
   .linkbtn:hover{ text-decoration:underline; }
+  .inlineform{ display:inline; }
   .eyebrow{ font-size:.8rem; font-weight:700; letter-spacing:.08em;
     text-transform:uppercase; color:var(--muted); margin:0 0 .9rem; }
   .tools{ margin-top:2.5rem; }
@@ -3225,7 +3227,7 @@ def js_json(value) -> str:
     return (json.dumps(value)
             .replace("<", "\\u003c").replace(">", "\\u003e")
             .replace("&", "\\u0026")
-            .replace(" ", "\\u2028").replace(" ", "\\u2029"))
+            .replace("\u2028", "\\u2028").replace("\u2029", "\\u2029"))
 
 
 # The upstream script appends an author/branding banner (<footer> with author
@@ -4272,7 +4274,7 @@ REMEDIATION_TEMPLATE = r"""<#
     remediations, assign it to a group, or run it on-demand ("Run remediation").
     It downloads Collect-IntuneDiagnostics.ps1 from your Sherlog server, runs it
     with the slim -Remote profile and uploads the zip with your token. Review the
-    uploads at <SherlogBase>/inbox?token=<token>.
+    uploads on <SherlogBase>/inbox (enter your token in the form).
 
     Runs as SYSTEM. Output is kept short to fit the 2048-char output cap.
 
@@ -4767,7 +4769,7 @@ _INBOX_FORM = """
       <p class="muted">Each inbox holds up to %(cap)d upload(s) at a time. Once
          full, new uploads are refused until older ones are removed
          (<em>Delete all</em>) or expire after the retention window.</p>
-      <form method="get" action="/inbox" class="tokrow">
+      <form method="post" action="/inbox" class="tokrow">
         <input name="token" id="tok" type="text" placeholder="upload token"
                autocomplete="off" minlength="%(min)d" required>
         <button class="btn" type="submit">Open inbox</button>
@@ -4779,8 +4781,9 @@ _INBOX_FORM = """
         <h2>Your token</h2>
         <p><span class="tokval" id="tokshow"></span></p>
         <p class="muted">Store it safely &mdash; it is shown once and is both your
-           upload secret <em>and</em> your inbox key
-           (<code>/inbox?token=&lt;token&gt;</code>).</p>
+           upload secret <em>and</em> your inbox key. Open the inbox by entering
+           it in the form above; it is sent in the request body, never in the URL,
+           so it can't leak into logs or browser history.</p>
 
         <h2>Detection script (token filled in)</h2>
         <div class="tokrow">
@@ -4812,7 +4815,10 @@ _INBOX_FORM = """
               <em>or</em> run it on-demand: pick a device &rarr;
               <strong>Run remediation</strong>.</li>
           <li>After a few minutes the device upload appears in
-              <a id="inboxlink" href="/inbox">this inbox</a> &mdash; refresh it.</li>
+              <form method="post" action="/inbox" class="inlineform">
+                <input type="hidden" name="token" id="inboxtok">
+                <button class="linkbtn" type="submit">this inbox</button>
+              </form> &mdash; refresh it.</li>
         </ol>
       </section>
 
@@ -4834,7 +4840,7 @@ _INBOX_FORM = """
           if (anon) s = s.replace('-Remote -OutputPath', '-Remote -Anonymize -OutputPath');
           document.getElementById('script').textContent = s;
           document.getElementById('tokshow').textContent = token;
-          document.getElementById('inboxlink').href = '/inbox?token=' + encodeURIComponent(token);
+          document.getElementById('inboxtok').value = token;
           document.getElementById('result').hidden = !s;
           return s;
         }
@@ -4875,13 +4881,21 @@ _INBOX_FORM = """
       </script>"""
 
 
-@app.get("/inbox", response_class=HTMLResponse)
-async def inbox(request: Request, token: str = "") -> HTMLResponse:
+@app.api_route("/inbox", methods=["GET", "POST"], response_class=HTMLResponse)
+async def inbox(request: Request) -> HTMLResponse:
     """Token-scoped list of device drop-off uploads. The token is the namespace;
-    no token shows a form plus a client-side token generator."""
+    no token shows a form plus a client-side token generator.
+
+    The token is read from the X-Upload-Token header or a POST form body, never
+    from a URL query parameter — a query string leaks into web-server access
+    logs, browser history and the Referer header, and the token is the inbox's
+    only access secret."""
     if not ENABLE_UPLOAD_API:
         return HTMLResponse("Inbox is not enabled on this server.", status_code=404)
-    token = token or request.headers.get("X-Upload-Token", "")
+    token = request.headers.get("X-Upload-Token", "")
+    if not token and request.method == "POST":
+        form = await request.form()
+        token = str(form.get("token") or "").strip()
     if not token:
         body = _INBOX_FORM % {"min": UPLOAD_TOKEN_MIN_LEN,
                               "cap": UPLOAD_API_MAX_JOBS_PER_TOKEN,
@@ -4937,12 +4951,12 @@ async def inbox(request: Request, token: str = "") -> HTMLResponse:
 
 
 @app.post("/inbox/delete")
-async def inbox_delete(request: Request, token: str = "") -> JSONResponse:
-    """Delete every drop-off package for a token (the inbox 'Delete all')."""
+async def inbox_delete(request: Request) -> JSONResponse:
+    """Delete every drop-off package for a token (the inbox 'Delete all').
+    Token comes from the X-Upload-Token header only — never a URL query param."""
     if not ENABLE_UPLOAD_API:
         return JSONResponse({"error": "inbox disabled"}, status_code=404)
-    if not token:
-        token = request.headers.get("X-Upload-Token", "")
+    token = request.headers.get("X-Upload-Token", "")
     if not token or len(token) < UPLOAD_TOKEN_MIN_LEN:
         return JSONResponse({"error": "missing or too-short token"}, status_code=401)
     want = token_hash(token)
@@ -4957,16 +4971,14 @@ async def inbox_delete(request: Request, token: str = "") -> JSONResponse:
 
 
 @app.post("/inbox/delete-one")
-async def inbox_delete_one(request: Request, token: str = "",
-                           job: str = "") -> JSONResponse:
+async def inbox_delete_one(request: Request) -> JSONResponse:
     """Delete a single drop-off package, but only when it belongs to this token.
-    The token hash on the job must match, so an inbox can only delete its own."""
+    The token hash on the job must match, so an inbox can only delete its own.
+    Token + job id come from headers only — never a URL query param."""
     if not ENABLE_UPLOAD_API:
         return JSONResponse({"error": "inbox disabled"}, status_code=404)
-    if not token:
-        token = request.headers.get("X-Upload-Token", "")
-    if not job:
-        job = request.headers.get("X-Job-Id", "")
+    token = request.headers.get("X-Upload-Token", "")
+    job = request.headers.get("X-Job-Id", "")
     if not token or len(token) < UPLOAD_TOKEN_MIN_LEN:
         return JSONResponse({"error": "missing or too-short token"}, status_code=401)
     if not job.isalnum():

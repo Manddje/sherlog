@@ -165,11 +165,11 @@ def test_inbox_delete_all(upload_client):
         "/api/diagnostics", content=pkg,
         headers={"X-Upload-Token": _TOK, "Content-Type": "application/zip"},
     ).json()["job_id"]
-    assert "id=\"delall\"" in upload_client.get("/inbox", params={"token": _TOK}).text
+    assert "id=\"delall\"" in upload_client.get("/inbox", headers={"X-Upload-Token": _TOK}).text
     d = upload_client.post("/inbox/delete", headers={"X-Upload-Token": _TOK})
     assert d.status_code == 200 and d.json()["deleted"] == 1
     assert app_module.read_status(job_id) is None      # gone from disk
-    assert "PC01" not in upload_client.get("/inbox", params={"token": _TOK}).text
+    assert "PC01" not in upload_client.get("/inbox", headers={"X-Upload-Token": _TOK}).text
     # A too-short token is rejected.
     assert upload_client.post("/inbox/delete",
                               headers={"X-Upload-Token": "short"}).status_code == 401
@@ -1546,7 +1546,7 @@ def test_api_disabled_by_default(client):
                     headers={"X-Upload-Token": "a" * 30,
                              "Content-Type": "application/zip"})
     assert r.status_code == 404
-    assert client.get("/inbox", params={"token": "a" * 30}).status_code == 404
+    assert client.get("/inbox", headers={"X-Upload-Token": "a" * 30}).status_code == 404
     assert "/inbox" not in client.get("/").text   # nav link hidden
 
 
@@ -1567,13 +1567,36 @@ def test_api_upload_and_inbox(upload_client):
     # The raw token is never persisted, only its hash.
     assert _TOK not in app_module.status_path(job_id).read_text(encoding="utf-8")
 
-    inbox = upload_client.get("/inbox", params={"token": _TOK})
+    inbox = upload_client.get("/inbox", headers={"X-Upload-Token": _TOK})
     assert inbox.status_code == 200
     assert "PC01" in inbox.text
     assert f"/result/{job_id}" in inbox.text
     # A different token sees nothing.
-    other = upload_client.get("/inbox", params={"token": "z" * 36})
+    other = upload_client.get("/inbox", headers={"X-Upload-Token": "z" * 36})
     assert "PC01" not in other.text
+
+
+def test_inbox_token_never_read_from_url_query(upload_client):
+    """The inbox token must travel in a header or POST body, never the URL: a
+    query string leaks into access logs, browser history and Referer, and the
+    token is the inbox's only access secret. /inbox ignores ?token=."""
+    r = upload_client.post("/api/diagnostics", content=_diag_zip(),
+                           headers={"X-Upload-Token": _TOK, "X-Device-Name": "PC01",
+                                    "Content-Type": "application/zip"})
+    job_id = r.json()["job_id"]
+
+    # Query-param token is ignored: the empty form is shown, not the listing.
+    q = upload_client.get("/inbox", params={"token": _TOK})
+    assert q.status_code == 200
+    assert "PC01" not in q.text and f"/result/{job_id}" not in q.text
+    assert "Generate token" in q.text                  # fell through to the form
+    # The token-entry form POSTs (keeps the token in the body, out of the URL).
+    assert 'method="post" action="/inbox"' in q.text
+
+    # POST body token (how the browser form submits) reveals the listing.
+    p = upload_client.post("/inbox", data={"token": _TOK})
+    assert p.status_code == 200
+    assert "PC01" in p.text and f"/result/{job_id}" in p.text
 
 
 def test_api_delete_one(upload_client):
@@ -1586,7 +1609,7 @@ def test_api_delete_one(upload_client):
     j2 = upload_client.post("/api/diagnostics", content=_diag_zip(),
                             headers={**h, "X-Upload-Token": _TOK}).json()["job_id"]
     # Per-row delete buttons are present in the listing.
-    listing = upload_client.get("/inbox", params={"token": _TOK}).text
+    listing = upload_client.get("/inbox", headers={"X-Upload-Token": _TOK}).text
     assert f'data-job="{j1}"' in listing and f'data-job="{j2}"' in listing
 
     # A different token may not delete this job (404, untouched).

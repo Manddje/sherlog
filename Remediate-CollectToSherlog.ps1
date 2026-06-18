@@ -9,7 +9,7 @@
     remediations, assign it to a group, or run it on-demand ("Run remediation").
     It downloads Collect-IntuneDiagnostics.ps1 from your Sherlog server, runs it
     with the slim -Remote profile and uploads the zip with your token. Review the
-    uploads at <SherlogBase>/inbox?token=<token>.
+    uploads on <SherlogBase>/inbox (enter your token in the form).
 
     Runs as SYSTEM. Output is kept short to fit the 2048-char output cap.
 
