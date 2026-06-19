@@ -224,6 +224,40 @@ def read_status(job_id: str) -> Optional[dict]:
         return None
 
 
+# --- Cumulative upload counter ----------------------------------------------
+# An all-time tally of uploads/analyses for the homepage. It lives at the
+# JOBS_DIR root as a plain file, so the retention sweep — which only removes
+# job *directories* (iter_job_dirs yields dirs only) — never deletes it and the
+# count keeps growing past the 24h job expiry. It is also invisible to
+# _count_local_jobs / fail_interrupted_jobs for the same reason. Cosmetic:
+# every read/write is best-effort (missing/corrupt → 0, write error swallowed)
+# and must never break an upload. One uvicorn worker + a synchronous
+# read-modify-write with no await in between keeps it atomic on the event loop.
+def counter_path() -> Path:
+    return JOBS_DIR / "upload-count.json"
+
+
+def read_upload_count() -> int:
+    try:
+        data = json.loads(counter_path().read_text(encoding="utf-8"))
+        return max(0, int(data.get("uploads", 0)))
+    except (ValueError, OSError, TypeError):
+        return 0
+
+
+def bump_upload_count() -> None:
+    """Increment the cumulative upload tally by one. Never raises."""
+    try:
+        p = counter_path()
+        p.parent.mkdir(parents=True, exist_ok=True)
+        tmp = p.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps({"uploads": read_upload_count() + 1}),
+                       encoding="utf-8")
+        os.replace(tmp, p)
+    except OSError:
+        log.warning("upload counter bump failed", exc_info=True)
+
+
 def find_report(output_dir: Path) -> Optional[Path]:
     reports = sorted(output_dir.glob("*.html"), key=lambda f: f.stat().st_mtime, reverse=True)
     return reports[0] if reports else None
@@ -2306,6 +2340,8 @@ PAGE_CSS = """
   .badges{ display:flex; flex-wrap:wrap; gap:.5rem; margin:1.2rem 0 0; }
   .badges span{ font-size:.78rem; font-weight:600; color:var(--muted);
     border:1px solid var(--border); border-radius:999px; padding:.2rem .65rem; }
+  .home-copy .count{ font-size:.9rem; font-weight:600; color:var(--accent);
+    margin:.9rem 0 0; }
   .home-upload .drop{ padding:2.25rem 1.25rem; line-height:1.6; }
   .home-upload .row{ margin-top:1rem; }
   .home-upload .or{ text-align:center; color:var(--muted); font-size:.9rem;
@@ -2593,6 +2629,7 @@ LANDING_PAGE = """<!doctype html>
           the device or Intune.</p>
         <p class="badges"><span>No account</span><span>Browser-only</span>
           <span>Deleted after %(retention)dh</span></p>
+        %(uploadstat)s
       </div>
       <div class="home-upload">
         <form id="form" action="/diagnostics-analyze" method="post" enctype="multipart/form-data">
@@ -4211,6 +4248,10 @@ async def index() -> HTMLResponse:
             <p>Device drop-off: Intune-deployed collectors upload diagnostics
               straight to your token-scoped inbox.</p></span>
         </a>""" % _ICONS["inbox"]) if ENABLE_UPLOAD_API else ""
+    n = read_upload_count()
+    uploadstat = (f'<p class="count">{n:,} '
+                  f'{"upload" if n == 1 else "uploads"} analysed so far</p>'
+                  if n > 0 else "")
     return HTMLResponse(LANDING_PAGE % {
         "css": PAGE_CSS, "nav": NAV, "footer": FOOTER, "recent": HISTORY_SECTION,
         "retention": JOB_RETENTION_HOURS, "max": MAX_UPLOAD_MB,
@@ -4218,6 +4259,7 @@ async def index() -> HTMLResponse:
         "ic_cmtrace": _ICONS["cmtrace"],
         "ic_diag": _ICONS["diag"],
         "dropoff_tile": dropoff_tile,
+        "uploadstat": uploadstat,
     })
 
 
@@ -4542,6 +4584,7 @@ async def cmtrace_view_upload(request: Request) -> Response:
 
     # No subprocess; mark the job as logs-only so the cmtrace routes serve it.
     write_status(job_id, state="logs", uploads=names[:5])
+    bump_upload_count()
     return RedirectResponse(url=f"/result/{job_id}/cmtrace", status_code=303)
 
 
@@ -4592,6 +4635,7 @@ async def diagnostics_analyze(request: Request) -> Response:
                  uploads=[Path(files[0].filename or "").name],
                  skipped=skipped[:_MAX_SKIPPED_LISTED],
                  analysis={"state": "queued" if ime_dir else "none"})
+    bump_upload_count()
     if ime_dir is not None:
         spawn_job(run_job(job_id, ime_dir, output_dir,
                             _diag_state_writer(job_id)))
@@ -4693,6 +4737,7 @@ async def api_diagnostics(request: Request) -> Response:
                  uploads=[f"{device}.zip"],
                  skipped=skipped[:_MAX_SKIPPED_LISTED],
                  analysis={"state": "queued" if ime_dir else "none"})
+    bump_upload_count()
     if ime_dir is not None:
         spawn_job(run_job(job_id, ime_dir, output_dir,
                             _diag_state_writer(job_id)))

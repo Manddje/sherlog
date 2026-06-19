@@ -45,14 +45,19 @@ HTML-rendering → routes.
 **State = bestandssysteem** (geen DB/Redis): `<JOBS_DIR>/<uuid>/` met
 `input/` (geüpload), `output/` (rapport, `summary.json`, `dashboard.json`) en
 `job.json` (status). `JOBS_DIR` default `/data/jobs`. Retentie via
-achtergrondtaak (`JOB_RETENTION_HOURS`, default 24).
+achtergrondtaak (`JOB_RETENTION_HOURS`, default 24). Eén niet-job-bestand staat
+in de root: `<JOBS_DIR>/upload-count.json` — de cumulatieve upload-teller
+(`bump_upload_count`/`read_upload_count`); het is een bestand, niet een dir,
+dus `iter_job_dirs` en de retentie-sweep raken het nooit aan en de teller
+overleeft job-expiry.
 
 **Homepage** (`GET /`): tegels naar de twee upload-tools (CMTrace,
-Diagnostics) plus — alleen met `ENABLE_UPLOAD_API` — een Inbox-tegel, en een
-client-side *recent*-lijst (browser-`localStorage`, geen serverstate). Géén
-demo-knop. `static/` (StaticFiles-mount op `/static`) serveert de
-auteursfoto in de footer. `static/` en `testdata/` worden in de Docker-image
-gekopieerd (Dockerfile); `testdata/` voedt de testsuite.
+Diagnostics) plus — alleen met `ENABLE_UPLOAD_API` — een Inbox-tegel, een
+client-side *recent*-lijst (browser-`localStorage`, geen serverstate) en een
+all-time upload-teller in de hero (verborgen bij 0; opgehoogd in elk van de drie
+upload-handlers). Géén demo-knop. `static/` (StaticFiles-mount op `/static`)
+serveert de auteursfoto in de footer. `static/` en `testdata/` worden in de
+Docker-image gekopieerd (Dockerfile); `testdata/` voedt de testsuite.
 
 **Tools & jobkinds** (zelfde job-layout op schijf, ander `job.json`). De
 timeline-analyse is géén losse tool/route meer — ze is de analyse-substap van

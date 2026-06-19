@@ -291,6 +291,34 @@ def test_cmtrace_viewer(client):
     ).status_code == 404
 
 
+def test_homepage_cumulative_upload_counter(client):
+    """The homepage shows an all-time upload tally that increments per upload
+    and persists past the 24h job retention (it lives at the JOBS_DIR root, not
+    inside a job dir, so the cleanup sweep never removes it)."""
+    import shutil
+
+    import app as app_module
+    # Hidden until the first upload.
+    assert "analysed so far" not in client.get("/").text
+    assert app_module.read_upload_count() == 0
+
+    for _ in range(2):
+        r = client.post(
+            "/cmtrace-view",
+            files={"files": ("logs.zip", _zip_of_testdata(), "application/zip")},
+            follow_redirects=False)
+        assert r.status_code == 303
+
+    assert app_module.read_upload_count() == 2
+    assert "2 uploads analysed so far" in client.get("/").text
+
+    # Wiping every job dir (what retention cleanup does) leaves the tally intact.
+    for child in app_module.iter_job_dirs():
+        shutil.rmtree(child)
+    assert app_module.read_upload_count() == 2
+    assert "2 uploads analysed so far" in client.get("/").text
+
+
 def test_parse_cmtrace_against_testdata():
     import app as app_module
     text = (TESTDATA / "IntuneManagementExtension.log").read_text(encoding="utf-8")
