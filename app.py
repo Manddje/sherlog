@@ -919,8 +919,31 @@ def parse_win32apps(reg: dict) -> List[dict]:
     return apps
 
 
+def _ci_get(vals: dict, name: str) -> str:
+    """Case-insensitive value lookup in a parsed-reg key; '' when absent/empty."""
+    for k, v in vals.items():
+        if k.lower() == name.lower() and v not in (None, ""):
+            return str(v)
+    return ""
+
+
+def cert_ref_thumbprint(ref: str) -> str:
+    """Thumbprint out of an `SslClientCertReference` value (`MY;User;<thumb>`):
+    the last ';'-segment, upper-cased with whitespace removed. '' when the
+    reference is missing or malformed."""
+    if not ref:
+        return ""
+    return re.sub(r"\s+", "", str(ref).rsplit(";", 1)[-1]).upper()
+
+
 def parse_enrollments(reg: dict) -> List[dict]:
-    """MDM enrollment entries (the GUID subkeys directly under Enrollments)."""
+    """MDM enrollment entries (the GUID subkeys directly under Enrollments).
+
+    Also resolves each enrollment's MDM client-certificate reference: modern
+    Windows writes `SslClientCertReference` on the enrollment key itself, older
+    builds on a `…\\<GUID>\\DMClient\\MS DM Server` subkey — take the first hit
+    in the key or any subkey. Total: a missing reference yields ''.
+    """
     out = []
     rx = re.compile(rf"\\Enrollments\\({_GUID_TAIL})$")
     for key, vals in reg.items():
@@ -932,12 +955,22 @@ def parse_enrollments(reg: dict) -> List[dict]:
         provider = vals.get("ProviderID", "")
         if not (upn or provider or disc):
             continue
+        ref = _ci_get(vals, "SslClientCertReference")
+        if not ref:
+            prefix = key + "\\"
+            for k, v in reg.items():
+                if k.startswith(prefix):
+                    ref = _ci_get(v, "SslClientCertReference")
+                    if ref:
+                        break
         out.append({
             "id": m.group(1).strip("{}"),
             "upn": str(upn), "provider": str(provider),
             "state": str(vals.get("EnrollmentState", "")),
             "discovery": disc,
             "is_intune": "manage.microsoft.com" in disc,
+            "ssl_cert_ref": ref,
+            "cert_thumbprint": cert_ref_thumbprint(ref),
         })
     return out
 
@@ -1567,6 +1600,76 @@ def build_dashboard(input_dir: Path) -> dict:
             "detail": (f'{intune["upn"] or "device"} · state {intune["state"]}'
                        if intune else f"{len(enrolls)} enrollment(s), none Intune"),
             **link("enrollments"),
+        })
+
+        # Enrollment-certificate binding (read-only port of the Intune Sync
+        # Debug Tool's Get-EnrollmentRowHealth): the MDM client cert the
+        # enrollment's SslClientCertReference points at must exist in the
+        # machine store and be valid. A missing/expired cert is why a device
+        # looks enrolled while management is dead. Cross-reference the reference
+        # thumbprint with the machine-cert overview parsed above.
+        cert_map = {re.sub(r"\s+", "", c["thumbprint"]).upper(): c
+                    for c in (certs or []) if c["thumbprint"]}
+
+        def _enroll_cert_state(e: dict):
+            """(thumbprint, state) where state is present/expired/missing/
+            unknown/none for one enrollment against the machine cert store."""
+            t = e["cert_thumbprint"]
+            if not t:
+                return "", "none"
+            if not cert_map:
+                return t, "unknown"
+            c = cert_map.get(t)
+            if not c:
+                return t, "missing"
+            return t, "expired" if c["expired"] else "present"
+
+        if intune:
+            thumb, state = _enroll_cert_state(intune)
+            if state == "none":
+                cstatus, cdetail = "bad", "client-certificate reference missing"
+            elif state == "unknown":
+                cstatus, cdetail = ("warn", "cert reference present; machine-cert "
+                                    "overview missing to confirm")
+            elif state == "missing":
+                cstatus, cdetail = ("bad", f"MDM client certificate {thumb[:12]}... "
+                                    "not found in the machine store")
+            elif state == "expired":
+                cstatus, cdetail = ("bad", "MDM client certificate expired "
+                                    f'({cert_map[thumb]["not_after"] or "date unknown"})')
+            else:
+                cstatus, cdetail = ("ok", "client certificate present and valid "
+                                    f"({thumb[:12]}...)")
+            checks.append({
+                "label": "Enrollment certificate", "status": cstatus,
+                "detail": cdetail, **link("enrollments", r"SslClientCertReference"),
+            })
+
+        _CERT_STATE_TEXT = {"present": "present", "expired": "expired",
+                            "missing": "missing", "unknown": "unknown",
+                            "none": "no reference"}
+        sections.append({
+            "title": f"MDM enrollments ({len(enrolls)})",
+            "src": src_of("enrollments"),
+            "columns": ["UPN", "Provider", "State", "Intune", "Client cert"],
+            "widths": [30, 22, 10, 8, 30],
+            "rows": [[e["upn"] or "—", e["provider"] or "—", e["state"] or "—",
+                      "yes" if e["is_intune"] else "no",
+                      _CERT_STATE_TEXT[_enroll_cert_state(e)[1]]]
+                     for e in enrolls[:100]],
+        })
+
+    # Intune Sync Debug Tool (call4cloud) drops a Repair.log when run on a
+    # device. If the operator included it in the upload, surface it — the .log
+    # is already viewable in the file browser (CMTrace layout). Detect + link
+    # only; total (no card when absent).
+    repair_log = next(iter(input_dir.rglob("Repair.log")), None)
+    if repair_log is not None:
+        checks.append({
+            "label": "Intune Sync Debug Tool",
+            "status": "ok",
+            "detail": "repair log present — click to view",
+            "src": repair_log.relative_to(input_dir).as_posix(),
         })
 
     # PolicyManager / RSOP: how many settings landed and from how many
@@ -3897,6 +4000,33 @@ ERROR_CODES: dict[str, str] = {
                   "this points to leftover enrollment registry keys, scheduled "
                   "tasks or certificates from an incomplete cleanup; fully "
                   "remove the old enrollment artifacts before re-enrolling.",
+    "0x80180001": "MDM enrollment failed (MENROLL_E_DEVICE). A generic device-"
+                  "enrollment error; check the DeviceManagement-Enterprise-"
+                  "Diagnostics-Provider event log for the more specific code "
+                  "that accompanies it (licensing, MDM authority, or a stale "
+                  "enrollment).",
+    "0x8018002A": "Auto MDM enrollment failed (0x8018002A). Commonly a "
+                  "Conditional Access policy requiring MFA blocks the device "
+                  "enrolling as a service — exclude the 'Microsoft Intune "
+                  "Enrollment' cloud app from that policy, or clear the stale "
+                  "enrollment, then retry.",
+    "0x80180026": "MDM enrollment is disabled on this device. A policy (e.g. the "
+                  "'Disable MDM Enrollment' GPO, common on hybrid-joined "
+                  "devices) is blocking enrollment; allow MDM enrollment and "
+                  "retry.",
+    "0x80180031": "MDM is not configured. Mobile Device Management is not set up "
+                  "for the tenant/user (no MDM authority or the user lacks an "
+                  "Intune license), so auto-enrollment has nothing to enroll "
+                  "against.",
+    "0x80192EE7": "The enrollment endpoint name could not be resolved "
+                  "(ERROR_INTERNET_NAME_NOT_RESOLVED). DNS is unavailable or the "
+                  "device has no internet access at enrollment time; verify name "
+                  "resolution and connectivity to the Intune endpoints, then "
+                  "retry.",
+    "0x80090016": "Keyset does not exist. The MDM client certificate's private "
+                  "key is missing or the key container is corrupt, so the device "
+                  "can no longer authenticate its MDM session — the enrollment "
+                  "certificate needs to be repaired or the device re-enrolled.",
     # Bare MSI exit codes (matched as "exit code N" / "error code N")
     "1601": "MSI: the Windows Installer service could not be accessed. "
             "Check that the msiserver service can run.",

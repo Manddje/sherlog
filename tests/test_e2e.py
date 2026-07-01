@@ -1372,6 +1372,93 @@ def test_build_dashboard_adds_registry_cards(tmp_path):
     assert any("Win32 app deployment status" in t for t in titles)
 
 
+def test_parse_enrollments_extracts_cert_ref():
+    import app as app_module
+    base = ("[HKLM\\SOFTWARE\\Microsoft\\Enrollments\\{ee111111-1111-1111-1111-111111111111}]\r\n"
+            "\"UPN\"=\"u@c.com\"\r\n"
+            "\"DiscoveryServiceFullURL\"=\"https://x.manage.microsoft.com/y\"\r\n")
+    # Reference on the enrollment key itself (modern Windows).
+    e = app_module.parse_enrollments(app_module.parse_reg(
+        base + "\"SslClientCertReference\"=\"MY;User;abc123DEF\"\r\n"))
+    assert e[0]["cert_thumbprint"] == "ABC123DEF"
+    # Reference on the DMClient\MS DM Server subkey (older builds).
+    sub = (base +
+           "[HKLM\\SOFTWARE\\Microsoft\\Enrollments\\{ee111111-1111-1111-1111-111111111111}"
+           "\\DMClient\\MS DM Server]\r\n"
+           "\"SslClientCertReference\"=\"MY;System;99 88 77\"\r\n")
+    e2 = app_module.parse_enrollments(app_module.parse_reg(sub))
+    assert e2[0]["cert_thumbprint"] == "998877"
+    # No reference -> empty, never raises.
+    e3 = app_module.parse_enrollments(app_module.parse_reg(base))
+    assert e3[0]["cert_thumbprint"] == ""
+
+
+def _stage_enroll_pkg(base_dir, ssl_ref, certs_text):
+    inp = base_dir / "pkg"
+    reg = ("[HKLM\\SOFTWARE\\Microsoft\\Enrollments\\{ee111111-1111-1111-1111-111111111111}]\r\n"
+           "\"UPN\"=\"u@c.com\"\r\n\"EnrollmentState\"=dword:00000001\r\n"
+           "\"DiscoveryServiceFullURL\"=\"https://x.manage.microsoft.com/y\"\r\n")
+    if ssl_ref:
+        reg += f"\"SslClientCertReference\"=\"{ssl_ref}\"\r\n"
+    _write_utf16(inp / "Registry" / "Enrollments.reg", reg)
+    if certs_text:
+        (inp / "Identity").mkdir(parents=True, exist_ok=True)
+        (inp / "Identity" / "certs-machine-overview.txt").write_text(
+            certs_text, encoding="utf-8")
+    return inp
+
+
+def _enroll_cert_check(dash):
+    return {c["label"]: c for c in dash["checks"]}.get("Enrollment certificate")
+
+
+def test_build_dashboard_enrollment_certificate(tmp_path):
+    import app as app_module
+    CERT = "Subject : CN=device\nThumbprint : ABC123\nNotAfter : 1-1-2030\nExpired : False\n"
+    CERT_EXP = "Subject : CN=device\nThumbprint : ABC123\nNotAfter : 1-1-2020\nExpired : True\n"
+
+    ok = _enroll_cert_check(app_module.build_dashboard(
+        _stage_enroll_pkg(tmp_path / "ok", "MY;User;abc123", CERT)))
+    assert ok["status"] == "ok" and "valid" in ok["detail"]
+
+    miss = _enroll_cert_check(app_module.build_dashboard(
+        _stage_enroll_pkg(tmp_path / "miss", "MY;User;def456", CERT)))
+    assert miss["status"] == "bad" and "not found" in miss["detail"]
+
+    exp = _enroll_cert_check(app_module.build_dashboard(
+        _stage_enroll_pkg(tmp_path / "exp", "MY;User;abc123", CERT_EXP)))
+    assert exp["status"] == "bad" and "expired" in exp["detail"].lower()
+
+    noref = _enroll_cert_check(app_module.build_dashboard(
+        _stage_enroll_pkg(tmp_path / "noref", "", CERT)))
+    assert noref["status"] == "bad" and "reference missing" in noref["detail"]
+
+    # The per-enrollment detail section is always emitted when enrollments exist.
+    dash = app_module.build_dashboard(_stage_enroll_pkg(tmp_path / "sec", "MY;User;abc123", CERT))
+    assert any(s["title"].startswith("MDM enrollments") for s in dash["sections"])
+
+
+def test_build_dashboard_detects_repair_log(tmp_path):
+    import app as app_module
+    pkg = tmp_path / "pkg"
+    (pkg / "IntuneSyncDebugTool").mkdir(parents=True)
+    (pkg / "IntuneSyncDebugTool" / "Repair.log").write_text(
+        "2026-07-01 repair started\n", encoding="utf-8")
+    by = {c["label"]: c for c in app_module.build_dashboard(pkg)["checks"]}
+    assert "Intune Sync Debug Tool" in by
+    assert by["Intune Sync Debug Tool"]["src"] == "IntuneSyncDebugTool/Repair.log"
+    # Absent -> no card.
+    assert "Intune Sync Debug Tool" not in {
+        c["label"] for c in app_module.build_dashboard(tmp_path / "empty")["checks"]}
+
+
+def test_error_codes_enrollment_additions():
+    import app as app_module
+    for code in ("0x80090016", "0x80192EE7", "0x8018002A",
+                 "0x80180026", "0x80180031", "0x80180001"):
+        assert code in app_module.ERROR_CODES and app_module.ERROR_CODES[code]
+
+
 def test_errorcodes_page(client):
     r = client.get("/errorcodes")
     assert r.status_code == 200

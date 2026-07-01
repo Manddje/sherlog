@@ -77,7 +77,16 @@ een diagnostics-job:
    Dashboard-checks worden geparst uit o.a. `dsregcmd-status.txt`,
    `Apps-IME/service-status.txt`, `Network/endpoint-connectivity.txt` en het
    machinecert-overzicht; parsers zijn totaal: ontbrekend bestand → status
-   `unknown`, nooit een error. File browser per extensie: `.log` →
+   `unknown`, nooit een error. Eén check ("Enrollment certificate") is een
+   read-only port van de `Get-EnrollmentRowHealth`-logica uit de Intune Sync
+   Debug Tool (call4cloud): `parse_enrollments` haalt de
+   `SslClientCertReference`-thumbprint per enrollment op (van de enrollment-key
+   of de `DMClient\MS DM Server`-subkey) en `build_dashboard` kruist die met het
+   machinecert-overzicht → healthy/missing/expired. **Geen** repair-acties: de
+   tool zelf (live WPF-repair-GUI, admin/registry-schrijvend) hoort niet in
+   Sherlog thuis; alleen de diagnose-logica + haar output. Draaide iemand die
+   tool op een device, dan wordt een meegeüploade `Repair.log` als losse check
+   ("Intune Sync Debug Tool") getoond (verder gewoon `.log` in de viewer). File browser per extensie: `.log` →
    CMTrace-viewer; `.txt/.reg/.xml/...` → tekstviewer met UTF-16-tolerante
    decodering (PowerShell 5.1 Out-File en `reg export` schrijven UTF-16LE);
    `.html` → sandboxed iframe; `.evtx` → eventviewer (python-evtx, cap
