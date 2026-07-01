@@ -1537,7 +1537,8 @@ def build_dashboard(input_dir: Path) -> dict:
             status = "ok"
             detail = "MDM session healthy"
         checks.append({"label": "MDM sync health", "status": status,
-                       "detail": detail, **link("omadm")})
+                       "detail": detail,
+                       **link("omadm", r"LastSessionResult", r"ServerLastAccessTime")})
 
     apps = parse_installed_apps(read("apps"))
     if apps:
@@ -1640,9 +1641,17 @@ def build_dashboard(input_dir: Path) -> dict:
             else:
                 cstatus, cdetail = ("ok", "client certificate present and valid "
                                     f"({thumb[:12]}...)")
+            # Deep-link to the cert reference row when it exists; when it's
+            # missing, fall back to the enrollment's own UPN / discovery URL so
+            # the viewer still lands on the relevant enrollment block instead of
+            # the top of the file.
+            cert_patterns = [r"SslClientCertReference"]
+            if intune.get("upn"):
+                cert_patterns.append(re.escape(intune["upn"]))
+            cert_patterns.append(r"DiscoveryServiceFullURL")
             checks.append({
                 "label": "Enrollment certificate", "status": cstatus,
-                "detail": cdetail, **link("enrollments", r"SslClientCertReference"),
+                "detail": cdetail, **link("enrollments", *cert_patterns),
             })
 
         _CERT_STATE_TEXT = {"present": "present", "expired": "expired",

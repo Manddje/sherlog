@@ -1438,6 +1438,50 @@ def test_build_dashboard_enrollment_certificate(tmp_path):
     assert any(s["title"].startswith("MDM enrollments") for s in dash["sections"])
 
 
+def test_dashboard_deeplinks_have_evidence_line(tmp_path):
+    """The Enrollment certificate + MDM sync health cards must deep-link to a
+    highlighted evidence row (carry an int `line`), not just open the .reg at
+    the top."""
+    import app as app_module
+    inp = tmp_path / "pkg"
+    # Intune enrollment WITHOUT SslClientCertReference ('reference missing').
+    _write_utf16(inp / "Registry" / "Enrollments.reg",
+        "[HKLM\\SOFTWARE\\Microsoft\\Enrollments\\{ee111111-1111-1111-1111-111111111111}]\r\n"
+        "\"UPN\"=\"j.dee@org.nl\"\r\n\"ProviderID\"=\"MS DM Server\"\r\n"
+        "\"EnrollmentState\"=dword:00000001\r\n"
+        "\"DiscoveryServiceFullURL\"=\"https://enrollment.manage.microsoft.com/x\"\r\n")
+    # Failing MDM session (a non-zero LastSessionResult).
+    _write_utf16(inp / "Registry" / "OMADM-Accounts.reg",
+        "[HKLM\\SOFTWARE\\Microsoft\\Provisioning\\OMADM\\Accounts\\{12345678-1234-1234-1234-123456789012}]\r\n"
+        "\"LastSessionResult\"=dword:82AC000B\r\n"
+        "\"ServerLastAccessTime\"=\"2026-06-14T10:00:00Z\"\r\n")
+    (inp / "Identity").mkdir(parents=True, exist_ok=True)
+    (inp / "Identity" / "certs-machine-overview.txt").write_text(
+        "Subject : CN=device\nThumbprint : ABC123\nNotAfter : 1-1-2030\nExpired : False\n",
+        encoding="utf-8")
+
+    by = {c["label"]: c for c in app_module.build_dashboard(inp)["checks"]}
+
+    sync = by["MDM sync health"]
+    assert sync["src"] == "Registry/OMADM-Accounts.reg"
+    assert isinstance(sync["line"], int)          # was: no line -> opened at top
+
+    # Reference missing -> still lands on the enrollment (its UPN row).
+    ec = by["Enrollment certificate"]
+    assert ec["status"] == "bad" and ec["src"] == "Registry/Enrollments.reg"
+    assert isinstance(ec["line"], int)
+
+    # Reference present -> line points at the SslClientCertReference row.
+    _write_utf16(inp / "Registry" / "Enrollments.reg",
+        "[HKLM\\SOFTWARE\\Microsoft\\Enrollments\\{ee111111-1111-1111-1111-111111111111}]\r\n"
+        "\"UPN\"=\"j.dee@org.nl\"\r\n"
+        "\"DiscoveryServiceFullURL\"=\"https://enrollment.manage.microsoft.com/x\"\r\n"
+        "\"SslClientCertReference\"=\"MY;User;ABC123\"\r\n")
+    ec2 = {c["label"]: c
+           for c in app_module.build_dashboard(inp)["checks"]}["Enrollment certificate"]
+    assert isinstance(ec2["line"], int)
+
+
 def test_build_dashboard_detects_repair_log(tmp_path):
     import app as app_module
     pkg = tmp_path / "pkg"
