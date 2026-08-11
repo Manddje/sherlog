@@ -64,7 +64,9 @@ timeline-analyse is géén losse tool/route meer — ze is de analyse-substap va
 een diagnostics-job:
 
 1. **CMTrace** (`/cmtrace` → `POST /cmtrace-view`) — alleen raw logviewer,
-   geen analyse; job krijgt `state="logs"`.
+   geen analyse; job krijgt `state="logs"`. Op de viewerpagina kan de
+   timeline-analyse alsnog on-demand gestart worden
+   (`POST /result/{id}/analyze` → job wordt een gewone timeline-job).
 2. **Diagnostics package** (`/diagnostics` → `POST /diagnostics-analyze`) — zip
    van `Collect-IntuneDiagnostics.ps1`: uitpakken, dashboard bouwen, én de
    **timeline-analyse** op de IME-logs erin draaien. Job `kind="diag"`,
@@ -100,6 +102,30 @@ een diagnostics-job:
    `X-Upload-Token`-header; alleen `sha256(token)` belandt op schijf. De inbox
    leest het token uit de header of POST-body, **nooit uit de URL-query**
    (lekt anders in access-logs/history/Referer).
+
+**Dashboard-extra's:** `render_dashboard_panel` sorteert kaarten op ernst en
+toont een verdict-banner; rode/amber kaarten krijgen een "wat nu"-hint uit de
+`_ADVICE`-map (label → tekst, aangehecht in `build_dashboard`). Naast de
+basischecks: Autopilot-profiel + ESP-app-tracking (registry-hives), en een
+content-delivery-correlatiekaart (delivery/netwerk-foutcodes + proxy of
+onbereikbare endpoints). Win32-app-GUID's worden verrijkt met displaynamen via
+Graph (`refresh_app_names`, cache `APP_NAMES_CACHE`, zelfde `GRAPH_*`-creds als
+de CSP-namen). Exports: `GET /result/{id}/dashboard.json` en `/summary.json`;
+de "Copy findings"-knop bouwt client-side markdown uit `js_json(dash)`.
+Pakket-brede zoek: `GET /result/{id}/search?q=` (`search_package`, begrensd
+40/bestand + 300 totaal, regelnummers = viewer-nummering). Result-pagina's
+tonen een expiry-hint (`created`-stamp in job.json + `JOB_RETENTION_HOURS`).
+De inbox groepeert per device en dieft de nieuwste upload t.o.v. z'n voorganger
+(`inbox_device_diff` op dashboard.json-statussen).
+
+**Routes-conventies:** `_job_guard(job_id, ...)` is de gedeelde preamble
+(isalnum + read_status); kale fouten renderen via `notice_response`
+(NOTICE_PAGE met chrome) behálve binnen sandboxed viewer-iframes (blijven
+plain text). Gedeelde CSS staat op `/assets/app.css` (cacheable; CSP heeft
+daarvoor `style-src 'self'`), maar de sandboxed viewers houden hun CSS inline —
+zonder allow-same-origin sturen ze geen credentials mee en zou de link onder
+basic auth 401'en. Het dark-mode bootstrap-script staat één keer in `_THEME_JS`
+en wordt via string-concatenatie in elke template gezet.
 
 **Achtergrondjobs:** start via `spawn_job()` — houdt een sterke referentie
 vast (asyncio houdt alleen weak refs; anders kan een job mid-run GC'd worden

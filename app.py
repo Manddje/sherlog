@@ -26,6 +26,7 @@ Configuration (env, with safe defaults):
                           with friendly Intune setting names from the (global)
                           Microsoft Graph settings catalog. Off by default.
   CSP_NAMES_CACHE         default <JOBS_DIR>/../csp-names.json (catalog cache)
+  APP_NAMES_CACHE         default <JOBS_DIR>/../app-names.json (Win32 app names)
   CSP_NAMES_TTL_HOURS     default 720 (re-fetch the catalog after this age)
   ENABLE_UPLOAD_API       default off; enables /api/diagnostics + /inbox so an
                           Intune-deployed collector can drop off packages
@@ -1355,6 +1356,90 @@ def csp_display_name(area: str, setting: str, oma_uri: str) -> str:
     return names.get(sid, "")
 
 
+# --- Optional Win32 app display-name enrichment (same GRAPH_* creds) ---------
+# The Win32 table otherwise shows bare app GUIDs the admin must paste into the
+# portal. Same pattern as the CSP names: fetched once, cached on disk with a
+# TTL, empty map (unchanged behaviour) on any failure.
+APP_NAMES_CACHE = Path(os.environ.get(
+    "APP_NAMES_CACHE", str(JOBS_DIR.parent / "app-names.json")))
+_GRAPH_APPS_URL = ("https://graph.microsoft.com/v1.0/deviceAppManagement/"
+                   "mobileApps?$select=id,displayName&$top=999")
+_APP_NAMES: Optional[dict] = None
+
+
+def _graph_fetch_apps(token: str) -> List[dict]:
+    """Page through the tenant's mobileApps; [] on any failure."""
+    items: List[dict] = []
+    url: Optional[str] = _GRAPH_APPS_URL
+    headers = {"Authorization": f"Bearer {token}"}
+    pages = 0
+    while url and pages < 100:
+        pages += 1
+        try:
+            with urllib.request.urlopen(
+                    urllib.request.Request(url, headers=headers), timeout=60) as r:
+                payload = json.loads(r.read())
+        except (urllib.error.URLError, ValueError, OSError) as e:
+            log.warning("Graph apps fetch failed: %s", e)
+            break
+        items.extend(payload.get("value", []))
+        url = payload.get("@odata.nextLink")
+    return items
+
+
+def load_app_names() -> dict:
+    global _APP_NAMES
+    if _APP_NAMES is not None:
+        return _APP_NAMES
+    try:
+        if APP_NAMES_CACHE.is_file():
+            _APP_NAMES = json.loads(APP_NAMES_CACHE.read_text(encoding="utf-8")
+                                    ).get("map", {})
+            return _APP_NAMES
+    except (ValueError, OSError) as e:
+        log.warning("Could not read app names cache: %s", e)
+    _APP_NAMES = {}
+    return _APP_NAMES
+
+
+def refresh_app_names(force: bool = False) -> dict:
+    """Fetch + cache app id -> displayName. Total: never raises."""
+    global _APP_NAMES
+    if not GRAPH_ENABLED:
+        return load_app_names()
+    try:
+        fresh = (APP_NAMES_CACHE.is_file()
+                 and (time.time() - APP_NAMES_CACHE.stat().st_mtime)
+                 < CSP_NAMES_TTL_HOURS * 3600)
+    except OSError:
+        fresh = False
+    if fresh and not force:
+        return load_app_names()
+    token = _graph_token()
+    if not token:
+        return load_app_names()
+    mapping = {str(it.get("id", "")).lower(): (it.get("displayName") or "").strip()
+               for it in _graph_fetch_apps(token)
+               if it.get("id") and (it.get("displayName") or "").strip()}
+    if not mapping:
+        return load_app_names()
+    try:
+        APP_NAMES_CACHE.parent.mkdir(parents=True, exist_ok=True)
+        APP_NAMES_CACHE.write_text(
+            json.dumps({"generated": time.time(), "map": mapping}),
+            encoding="utf-8")
+    except OSError as e:
+        log.warning("Could not write app names cache: %s", e)
+    _APP_NAMES = mapping
+    log.info("Loaded %d Intune app display names from Graph", len(mapping))
+    return mapping
+
+
+def app_display_name(app_id: str) -> str:
+    """Friendly Intune app name for a Win32 app GUID, or '' when unknown."""
+    return load_app_names().get(app_id.strip().strip("{}").lower(), "")
+
+
 # The collector exists in an English and a Dutch variant; accept both names.
 _DASH_SOURCES = {
     "summary": ("_SUMMARY.txt", "_SAMENVATTING.txt"),
@@ -1621,12 +1706,17 @@ def build_dashboard(input_dir: Path) -> dict:
                        else f"{len(w32)} tracked, all healthy"),
             **link("win32apps"),
         })
+        def _app_cell(a: dict) -> str:
+            name = app_display_name(a["app_id"])
+            return f'{name} ({a["app_id"]})' if name else a["app_id"]
+
         sections.append({
             "title": f"Win32 app deployment status ({len(w32)})",
             "src": src_of("win32apps"),
-            "columns": ["App ID", "Compliance", "Enforcement", "Error"],
+            "columns": ["App", "Compliance", "Enforcement", "Error"],
             "widths": [30, 16, 18, 36],
-            "rows": [[a["app_id"], a["compliance"], a["enforcement"],
+            "searchable": True,
+            "rows": [[_app_cell(a), a["compliance"], a["enforcement"],
                       (f'{a["error_code"]} — {a["error_text"]}' if a["error_text"]
                        else a["error_code"])]
                      for a in w32[:200]],
@@ -2339,7 +2429,7 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         resp.headers.setdefault(
             "Content-Security-Policy",
             "default-src 'none'; script-src 'unsafe-inline'; "
-            "style-src 'unsafe-inline'; img-src 'self' data:; "
+            "style-src 'self' 'unsafe-inline'; img-src 'self' data:; "
             "connect-src 'self'; frame-src 'self'; form-action 'self'; "
             "base-uri 'none'; frame-ancestors 'self'",
         )
@@ -2456,6 +2546,7 @@ async def lifespan(app: FastAPI):
     # creds are set); never blocks startup or fails it.
     if GRAPH_ENABLED:
         asyncio.create_task(asyncio.to_thread(refresh_csp_names))
+        asyncio.create_task(asyncio.to_thread(refresh_app_names))
     try:
         yield
     finally:
@@ -2855,7 +2946,7 @@ LANDING_PAGE = """<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
 """ + _THEME_JS + """
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Sherlog &mdash; IME log analyzer</title><style>%(css)s</style></head>
+<title>Sherlog &mdash; IME log analyzer</title><link rel="stylesheet" href="/assets/app.css"><style></style></head>
 <body>
   %(nav)s
   <main class="wrap">
@@ -3000,7 +3091,7 @@ UPLOAD_PAGE = """<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
 """ + _THEME_JS + """
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Sherlog &mdash; %(title)s</title><style>%(css)s</style></head>
+<title>Sherlog &mdash; %(title)s</title><link rel="stylesheet" href="/assets/app.css"><style></style></head>
 <body>
   %(nav)s
   <section class="hero">
@@ -3109,7 +3200,7 @@ BUSY_PAGE = """<!doctype html>
 """ + _THEME_JS + """
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta http-equiv="refresh" content="3">
-<title>Analyzing…</title><style>%(css)s</style></head>
+<title>Analyzing…</title><link rel="stylesheet" href="/assets/app.css"><style></style></head>
 <body>
   %(nav)s
   <section class="hero">
@@ -3127,7 +3218,7 @@ REPORT_PAGE = """<!doctype html>
 """ + _THEME_JS + """
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Sherlog &mdash; timeline report</title>
-<style>%(css)s
+<link rel="stylesheet" href="/assets/app.css"><style>
   .topbar{display:flex;align-items:center;justify-content:space-between;
     padding:.6rem 1.25rem;border-bottom:1px solid var(--border);background:var(--bg)}
   .report-wrap{max-width:1100px;margin:0 auto;padding:1.25rem;display:flex;
@@ -3205,7 +3296,7 @@ CMTRACE_PAGE = """<!doctype html>
 """ + _THEME_JS + """
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Sherlog &mdash; raw logs (CMTrace)</title>
-<style>%(css)s
+<link rel="stylesheet" href="/assets/app.css"><style>
   html,body{height:100%%}
   .topbar{display:flex;align-items:center;justify-content:space-between;
     padding:.6rem 1.25rem;border-bottom:1px solid var(--border);background:var(--bg)}
@@ -3273,7 +3364,7 @@ DIAG_PAGE = """<!doctype html>
 """ + _THEME_JS + """
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Sherlog &mdash; diagnostics package</title>
-<style>%(css)s
+<link rel="stylesheet" href="/assets/app.css"><style>
   .topbar{display:flex;align-items:center;justify-content:space-between;
     padding:.6rem 1.25rem;border-bottom:1px solid var(--border);background:var(--bg)}
   .panels{padding:.9rem 1.25rem;display:flex;
@@ -3571,7 +3662,7 @@ ERROR_PAGE = """<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
 """ + _THEME_JS + """
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Analysis failed</title><style>%(css)s</style></head>
+<title>Analysis failed</title><link rel="stylesheet" href="/assets/app.css"><style></style></head>
 <body>
   %(nav)s
   <section class="hero">
@@ -4823,7 +4914,7 @@ ERRORCODES_PAGE = """<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
 """ + _THEME_JS + """
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Sherlog &mdash; Intune error codes</title><style>%(css)s
+<title>Sherlog &mdash; Intune error codes</title><link rel="stylesheet" href="/assets/app.css"><style>
   .ec-tools{display:flex;gap:.6rem;align-items:center;margin:0 0 1rem}
   .ec-tools input{flex:1;padding:.55rem .8rem;border:1px solid var(--border);
     border-radius:8px;background:var(--bg);color:var(--fg);font-size:.95rem}
@@ -4925,6 +5016,15 @@ def _jobs_dir_writable() -> bool:
         return False
 
 
+@app.get("/assets/app.css")
+async def app_css() -> Response:
+    """Shared page CSS as a cacheable asset instead of ~11 KB inline per page.
+    (Sandboxed viewer iframes keep their CSS inline: no same-origin, and a
+    Basic-auth deployment would block their credential-less subresources.)"""
+    return Response(PAGE_CSS, media_type="text/css",
+                    headers={"Cache-Control": "public, max-age=3600"})
+
+
 @app.get("/health")
 async def health() -> JSONResponse:
     pwsh = shutil.which("pwsh")
@@ -4938,7 +5038,7 @@ NOTICE_PAGE = """<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
 """ + _THEME_JS + """
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Sherlog &mdash; %(title)s</title><style>%(css)s</style></head>
+<title>Sherlog &mdash; %(title)s</title><link rel="stylesheet" href="/assets/app.css"><style></style></head>
 <body>
   %(nav)s
   <main class="wrap">
@@ -5241,7 +5341,7 @@ INBOX_PAGE = """<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
 """ + _THEME_JS + """
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Sherlog &mdash; Inbox</title><style>%(css)s
+<title>Sherlog &mdash; Inbox</title><link rel="stylesheet" href="/assets/app.css"><style>
   table.inbox{border-collapse:collapse;width:100%%;margin-top:1rem}
   table.inbox th,table.inbox td{text-align:left;padding:.5rem .6rem;
     border-bottom:1px solid var(--border);vertical-align:top}

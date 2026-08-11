@@ -12,6 +12,8 @@ FROM mcr.microsoft.com/powershell:lts-ubuntu-22.04
 # python3 + pip to run the web layer, unzip as a safety net for the engine,
 # cabextract to expand .cab files (Defender/MDM) in diagnostics packages.
 # Clean the apt cache in the same layer to keep the image small.
+# NOTE: the distro python3 on ubuntu-22.04 is Python 3.10 — app.py relies on
+# 3.10+ syntax being available at runtime; revisit when bumping the base image.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         python3 \

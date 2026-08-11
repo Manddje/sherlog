@@ -693,11 +693,15 @@ def test_landing_and_nav_show_diagnostics(client):
 
 
 def test_dark_mode_toggle_on_every_page(client):
+    css = client.get("/assets/app.css")
+    assert css.status_code == 200
+    assert "html.dark{" in css.text                     # shared dark palette
+    assert "max-age" in css.headers.get("cache-control", "")
     for path in ("/", "/cmtrace", "/diagnostics"):
         page = client.get(path)
         assert "localStorage.getItem('sherlog.theme')" in page.text  # head init
         assert 'onclick="sherlogTheme()"' in page.text               # nav toggle
-        assert "html.dark{" in page.text                             # dark palette
+        assert 'href="/assets/app.css"' in page.text    # cacheable palette link
 
 
 def test_about_dialog_on_every_page(client):
@@ -2525,3 +2529,82 @@ def test_inbox_groups_by_device_and_shows_diff(upload_client):
     assert "PC-01" in page.text and "(2 upload(s))" in page.text
     assert "worse than previous" in page.text
     assert "Entra joined" in page.text
+
+
+# --- Basic auth, retention sweep, analysis timeout ---------------------------
+
+@pytest.fixture()
+def auth_client(tmp_path, monkeypatch):
+    """App with basic auth enabled (and the drop-off API, to test its bypass)."""
+    monkeypatch.setenv("JOBS_DIR", str(tmp_path / "jobs"))
+    monkeypatch.setenv("APP_USER", "admin")
+    monkeypatch.setenv("APP_PASSWORD", "s3cret")
+    monkeypatch.setenv("ENABLE_UPLOAD_API", "1")
+    import importlib
+    import app as app_module
+    importlib.reload(app_module)
+    from fastapi.testclient import TestClient
+    with TestClient(app_module.app) as c:
+        yield c
+    importlib.reload(app_module)  # restore defaults for later tests
+
+
+def test_basic_auth_challenge_and_login(auth_client):
+    r = auth_client.get("/")
+    assert r.status_code == 401
+    assert r.headers.get("www-authenticate", "").lower().startswith("basic")
+    assert auth_client.get("/", auth=("admin", "s3cret")).status_code == 200
+    assert auth_client.get("/", auth=("admin", "wrong")).status_code == 401
+    assert auth_client.get("/", auth=("other", "s3cret")).status_code == 401
+
+
+def test_basic_auth_bypasses_health_and_drop_off(auth_client):
+    # /health must stay reachable for the container healthcheck…
+    assert auth_client.get("/health").status_code in (200, 503)
+    # …and the collector can't answer a Basic challenge, so the API uses its
+    # own token check instead.
+    r = auth_client.post("/api/diagnostics", content=_diag_zip(),
+                         headers={"X-Upload-Token": _TOK})
+    assert r.status_code == 200
+
+
+def test_cleanup_removes_expired_jobs_keeps_counter(client):
+    import app as app_module
+    app_module.bump_upload_count()
+    jid = "oldjob0001"
+    d = app_module.job_dir(jid)
+    (d / "input").mkdir(parents=True)
+    app_module.write_status(jid, state="logs")
+    old = time.time() - (app_module.JOB_RETENTION_HOURS + 1) * 3600
+    os.utime(d, (old, old))
+
+    fresh = "freshjob01"
+    d2 = app_module.job_dir(fresh)
+    (d2 / "input").mkdir(parents=True)
+    app_module.write_status(fresh, state="logs")
+
+    removed = app_module.cleanup_old_jobs()
+    assert removed == 1
+    assert not d.exists() and d2.exists()
+    assert app_module.read_upload_count() == 1  # counter file survives sweeps
+
+
+def test_run_job_timeout_marks_failed(client, monkeypatch, tmp_path):
+    import asyncio as aio
+    import app as app_module
+    slow = tmp_path / "slow.sh"
+    slow.write_text("#!/bin/sh\nsleep 30\n")
+    slow.chmod(0o755)
+    monkeypatch.setattr(app_module, "RUN_SCRIPT", slow)
+    monkeypatch.setattr(app_module, "SCRIPT_TIMEOUT_SECONDS", 1)
+    jid = "timeoutjob"
+    base = app_module.job_dir(jid)
+    (base / "input").mkdir(parents=True)
+    (base / "output").mkdir(parents=True)
+    app_module.write_status(jid, state="queued")
+
+    aio.run(app_module.run_job(jid, base / "input", base / "output"))
+
+    st = app_module.read_status(jid)
+    assert st["state"] == "failed"
+    assert "timed out" in st["stderr"]

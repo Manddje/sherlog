@@ -33,17 +33,38 @@ geüploade `.log`-bestanden in een gekleurde tabel (warnings geel, errors rood) 
 tekst- en componentfilter — een web-equivalent van het Windows-only CMTrace.exe.
 Bereikbaar als eigen tool via de uploadpagina `/cmtrace` (geen analyse nodig) én
 via "Raw logs (CMTrace)" op de rapportpagina. De (untrusted) loginhoud wordt in
-een sandboxed iframe geserveerd.
+een sandboxed iframe geserveerd. Losse logs alsnog analyseren kan met de knop
+**Run timeline analysis** op de viewerpagina. `/errorcodes` biedt daarnaast een
+doorzoekbare referentie van ~110 Intune/IME/MSI-foutcodes met uitleg — dezelfde
+tabel die de viewers en het dashboard gebruiken voor hun verklaringen.
+Resultaatpagina's tonen een "expires in ~Nh"-hint (retentie) en de hele app
+heeft een dark mode; de homepage toont een cumulatieve uploadteller.
 
 De **Diagnostics Package**-tool neemt de zip die
 `Collect-IntuneDiagnostics.ps1` op een device produceert (`IntuneDiag-*.zip`)
 en biedt drie dingen in één resultaatpagina:
 
-1. **Diagnose-dashboard** — health checks uit het pakket: Entra join- en
+1. **Diagnose-dashboard** — ruim twintig health checks uit het pakket, met
+   bovenaan een **verdict-banner** ("N problems and M warnings found") en de
+   kaarten gesorteerd op ernst (rood eerst). Checks o.a.: Entra join- en
    PRT-status (`dsregcmd`), MDM-enrollment-URL, IME-servicestatus,
-   bereikbaarheid van de Intune/Entra-endpoints en verlopen
-   machinecertificaten. Ontbreekt een bronbestand, dan toont de check
-   "unknown" (grijs) in plaats van een fout.
+   bereikbaarheid van de Intune/Entra-endpoints, verlopen
+   machinecertificaten, **MDM sync health** (herkent het "zombie
+   device"-patroon: check-ins lopen door terwijl het MDM-certificaat verlopen
+   is), **Win32-app-deploymentstatus** per app (foutcode + uitleg;
+   app-namen via Graph als `GRAPH_*` gezet is), enrollment +
+   **enrollment-certificaatbinding** (read-only port van de Intune Sync Debug
+   Tool-logica), Policies/RSOP met Microsoft Learn-links per setting,
+   scripts/remediations, het **push/remediation-kanaal** (WNS-events),
+   geaggregeerde eventlog-fouten, herkende foutcodes in álle logs,
+   WinHTTP-proxy, firewall-profielen, **Autopilot-profiel en
+   ESP-app-tracking**, en een **content-delivery-correlatie** (downloadfouten
+   + proxy/endpoints). Elke rode/amber kaart draagt een korte
+   "wat nu"-hint, en elke kaart **deep-linkt naar de bewijsregel** in het
+   bronbestand. Ontbreekt een bronbestand, dan toont de check "unknown"
+   (grijs) in plaats van een fout. Via **Copy findings** kopieer je het
+   dashboard als markdown; `/result/<id>/dashboard.json` en
+   `/result/<id>/summary.json` leveren dezelfde data machine-leesbaar.
 2. **Automatische timeline-analyse** — op de IME-logs in het pakket
    (`Apps-IME\Logs`) draait de timeline-analyse (alleen hier beschikbaar); het
    rapport en het samenvattingspaneel verschijnen zodra de analyse klaar is.
@@ -54,7 +75,9 @@ en biedt drie dingen in één resultaatpagina:
    `EVTX_MAX_EVENTS`). `.cab`-archieven (o.a. Defender `MpSupportFiles.cab`)
    worden met `cabextract` uitgepakt en de inhoud is per type te bekijken;
    binaire `.etl`-bestanden worden niet uitgepakt maar wel (grijs) in de
-   bestandsboom getoond.
+   bestandsboom getoond. Boven de bestandsboom zit een **pakket-brede
+   zoekfunctie**: één zoekopdracht doorzoekt alle tekstbestanden en elk
+   resultaat springt naar de exacte regel in de viewer.
 
 **Recente uploads** worden alleen in je eigen browser bewaard (localStorage) —
 niet op de server, geen cookies of login. De lijst staat op de homepage en de
@@ -112,6 +135,7 @@ Alle configuratie loopt via environment variables met veilige defaults:
 | `GRAPH_CLIENT_ID`        | *(leeg)*| App-registratie client-id (scope `DeviceManagementConfiguration.Read.All`, app-permission). |
 | `GRAPH_CLIENT_SECRET`    | *(leeg)*| Client secret van bovenstaande app-registratie.                                               |
 | `CSP_NAMES_CACHE`        | `<JOBS_DIR>/../csp-names.json` | Cachebestand voor de (tenant-onafhankelijke) catalog. Mag ook vooraf gegenereerd worden. |
+| `APP_NAMES_CACHE`        | `<JOBS_DIR>/../app-names.json` | Cachebestand voor Win32-app-displaynamen (Graph `mobileApps`, zelfde `GRAPH_*`-creds en TTL). |
 | `CSP_NAMES_TTL_HOURS`    | `720`   | Maximale leeftijd van de cache voordat de catalog opnieuw wordt opgehaald.                     |
 | `ENABLE_UPLOAD_API`      | *(uit)* | Zet de device drop-off API (`/api/diagnostics`) + `/inbox` aan. Default uit. Drop-off packages gebruiken dezelfde `JOBS_DIR` en `JOB_RETENTION_HOURS` als alle andere logs. |
 | `UPLOAD_TOKEN_MIN_LEN`   | `24`    | Minimale lengte van een (zelfgekozen) upload-token.                                            |
@@ -271,8 +295,10 @@ Beveiligingen die al in de code zitten (geen config nodig):
 
 - **Geen LogViewerUI.** De `-ShowLogViewerUI`-modus van het script gebruikt
   `Out-GridView` (Windows-only) en wordt nooit aangeroepen.
-- **Geen `-Online` / Graph in v1.** De online-modus vereist Graph API-credentials
-  en is bewust uitgeschakeld in deze versie.
+- **Geen `-Online` bij het upstream-script.** De online-modus vereist
+  Graph-credentials in de analyse-run en blijft uit. Wel optioneel:
+  met `GRAPH_*`-env-vars verrijkt Sherlog zelf settingnamen (RSOP) en
+  Win32-app-namen via een gecachte Graph-fetch (app-only, read-only).
 - **Uploadgrootte.** Maximaal `MAX_UPLOAD_MB` (default 100 MB) per analyse; zips
   worden bovendien tegen zip-bombs en path-traversal (zip-slip) beschermd.
 - **Retentie.** Jobmappen worden na `JOB_RETENTION_HOURS` (default 24 uur)
@@ -284,9 +310,9 @@ Beveiligingen die al in de code zitten (geen config nodig):
 
 ## Roadmap
 
-- **Job-queue** voor gecontroleerde gelijktijdigheid in plaats van ongelimiteerd
-  parallelle subprocessen.
-- **Rapporthistorie** — een overzicht van eerdere analyses in plaats van losse
-  job-URL's.
-- **`-Online`-ondersteuning** via een Entra app registration (Graph API), zodat
-  app- en toewijzingsnamen verrijkt worden in het rapport.
+- **Persistente job-queue** — de semafoor begrenst gelijktijdigheid al, maar
+  wachtende jobs overleven een herstart nog niet (ze worden bij start als
+  failed gemarkeerd).
+- **Vergelijken over tijd** — de inbox toont al welke checks verslechterden
+  t.o.v. de vorige upload van hetzelfde device; een volledige diff-weergave
+  tussen twee willekeurige uploads staat nog open.
