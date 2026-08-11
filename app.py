@@ -1551,6 +1551,19 @@ def build_dashboard(input_dir: Path) -> dict:
     def src_of(key: str) -> Optional[str]:
         return (link(key) or {}).get("src")
 
+    # Installed-apps inventory as a searchable table (the card above only
+    # showed the count while the parsed rows went unused).
+    if apps:
+        app_cols = [k for k in apps[0].keys()][:4]
+        sections.append({
+            "key": "instapps",
+            "title": f"Installed apps ({len(apps)})",
+            "src": src_of("apps"),
+            "columns": app_cols,
+            "searchable": True,
+            "rows": [[a.get(c, "") for c in app_cols] for a in apps],
+        })
+
     # Win32 apps (Sherlog's core domain): per-app state + deployment error code.
     w32 = parse_win32apps(reg("win32apps"))
     if w32:
@@ -3045,6 +3058,7 @@ REPORT_PAGE = """<!doctype html>
   <div class="topbar">
     <a class="brand" href="/">%(logo)s Sherlog</a>
     <span>
+      %(expiry)s
       <a class="btn btn-ghost" href="/result/%(job)s">&larr; Device health</a>
       <a class="btn btn-ghost" href="/result/%(job)s/cmtrace">Raw logs (CMTrace)</a>
       <a class="btn btn-ghost" href="/diagnostics">New analysis</a>
@@ -3228,9 +3242,12 @@ DIAG_PAGE = """<!doctype html>
   <div class="topbar">
     <a class="brand" href="/">%(logo)s Sherlog</a>
     <span>
+      %(expiry)s
+      <a class="btn btn-ghost" id="copyfindings" href="#">Copy findings</a>
       <a class="btn btn-ghost" id="dlfile" href="#">Download file</a>
       <a class="btn btn-ghost" href="/result/%(job)s/download">Download package</a>
       <a class="btn btn-ghost" href="/result/%(job)s/cmtrace">Raw logs (CMTrace)</a>
+      %(inboxlink)s
       <a class="btn btn-ghost" href="/diagnostics">New upload</a>
     </span>
   </div>
@@ -3251,6 +3268,25 @@ DIAG_PAGE = """<!doctype html>
   const view = document.getElementById('view');
   const files = [...side.querySelectorAll('.file')];
   const dlfile = document.getElementById('dlfile');
+  const dash = %(dashjson)s;
+  // "Copy findings": dashboard as paste-ready markdown for a ticket/chat.
+  const cf = document.getElementById('copyfindings');
+  if (cf) cf.addEventListener('click', e => {
+    e.preventDefault();
+    const d = dash || {}, dev = d.device || {};
+    const mark = {ok: '[ok]', bad: '[FAIL]', warn: '[warn]', unknown: '[?]'};
+    const lines = ['# Sherlog findings' + (dev.name ? ' - ' + dev.name : '')];
+    if (dev.tenant) lines.push('Tenant: ' + dev.tenant);
+    if (dev.collected) lines.push('Collected: ' + dev.collected);
+    lines.push('');
+    (d.checks || []).forEach(c =>
+      lines.push('- ' + (mark[c.status] || '[?]') + ' ' + c.label +
+                 (c.detail ? ': ' + c.detail : '')));
+    navigator.clipboard.writeText(lines.join('\\n')).then(() => {
+      const t = cf.textContent; cf.textContent = 'Copied!';
+      setTimeout(() => { cf.textContent = t; }, 1500);
+    });
+  });
   function setDownload(name) {
     if (!dlfile) return;
     if (name) { dlfile.href = '/result/' + job + '/files/download?file=' +
@@ -4795,7 +4831,7 @@ async def cmtrace_view_upload(request: Request) -> Response:
     job_id, _input_dir, _output_dir, names = staged
 
     # No subprocess; mark the job as logs-only so the cmtrace routes serve it.
-    write_status(job_id, state="logs", uploads=names[:5])
+    write_status(job_id, state="logs", uploads=names[:5], created=time.time())
     bump_upload_count()
     return RedirectResponse(url=f"/result/{job_id}/cmtrace", status_code=303)
 
@@ -4845,7 +4881,7 @@ async def diagnostics_analyze(request: Request) -> Response:
                                                encoding="utf-8")
 
     ime_dir = find_ime_log_dir(input_dir)
-    write_status(job_id, kind="diag", state="ready",
+    write_status(job_id, kind="diag", state="ready", created=time.time(),
                  uploads=[Path(files[0].filename or "").name],
                  skipped=skipped[:_MAX_SKIPPED_LISTED],
                  analysis={"state": "queued" if ime_dir else "none"})
@@ -4947,7 +4983,7 @@ async def api_diagnostics(request: Request) -> Response:
                                                encoding="utf-8")
 
     ime_dir = find_ime_log_dir(input_dir)
-    write_status(job_id, kind="diag", state="ready",
+    write_status(job_id, kind="diag", state="ready", created=time.time(),
                  source="api", upload_token_hash=token_hash(token), device=device,
                  uploads=[f"{device}.zip"],
                  skipped=skipped[:_MAX_SKIPPED_LISTED],
@@ -5138,6 +5174,18 @@ _INBOX_FORM = """
           a.download = 'Remediate-CollectToSherlog.ps1';
           a.click();
         });
+        // Tab-scoped convenience: remember the token so the 'Inbox' link on a
+        // drop-off result page lands here pre-filled (sessionStorage only —
+        // never the URL, never persisted to disk beyond this tab).
+        try {
+          var savedTok = sessionStorage.getItem('sherlog.inboxToken');
+          var tokEl = document.getElementById('tok');
+          if (savedTok && !tokEl.value) tokEl.value = savedTok;
+          tokEl.form.addEventListener('submit', function () {
+            try { sessionStorage.setItem('sherlog.inboxToken', tokEl.value.trim()); }
+            catch (e) {}
+          });
+        } catch (e) {}
       </script>"""
 
 
@@ -5255,6 +5303,22 @@ def _clip(s: str, limit: int = 4000) -> str:
     return s if len(s) <= limit else s[:limit] + "\n… (truncated)"
 
 
+def expiry_note(status: Optional[dict]) -> str:
+    """Small 'expires in ~Nh' hint for result pages; results vanish after
+    JOB_RETENTION_HOURS but nothing told the user. Empty for old jobs
+    without a created stamp."""
+    created = (status or {}).get("created")
+    if not isinstance(created, (int, float)):
+        return ""
+    remaining = created + JOB_RETENTION_HOURS * 3600 - time.time()
+    if remaining <= 0:
+        return ""
+    hours = max(1, int((remaining + 3599) // 3600))
+    return ('<span style="color:var(--muted);font-size:.85rem;'
+            'margin-right:.6rem" title="Results are deleted automatically">'
+            f'expires in ~{hours}h</span>')
+
+
 def _job_guard(job_id: str, *, json_resp: bool = False,
                missing: str = "Unknown job.") -> tuple[Optional[dict], Optional[Response]]:
     """Shared /result route preamble: reject anything that isn't a clean job id
@@ -5297,6 +5361,7 @@ async def result(job_id: str) -> Response:
         summary_html = render_summary_panel(read_summary(job_id))
         return HTMLResponse(REPORT_PAGE % {
             "css": PAGE_CSS, "logo": _LOGO, "job": job_id,
+            "expiry": expiry_note(status),
             "summary": summary_html,
             "empty": _REPORT_EMPTY_NOTE if not summary_html else "",
             "reportopen": "" if summary_html else " open",
@@ -5479,9 +5544,15 @@ def render_diag_page(job_id: str, status: dict) -> HTMLResponse:
                if analysis.get("state") == "done" else "")
     hist_state = ("busy" if analysis.get("state") in ("queued", "running")
                   else "done")
+    dash = read_dashboard(job_id)
+    inboxlink = ('<a class="btn btn-ghost" href="/inbox">Inbox</a>'
+                 if status.get("source") == "api" else "")
     return HTMLResponse(DIAG_PAGE % {
         "css": PAGE_CSS, "logo": _LOGO, "job": job_id,
-        "dashboard": render_dashboard_panel(read_dashboard(job_id)),
+        "dashboard": render_dashboard_panel(dash),
+        "dashjson": js_json(dash or {}),
+        "expiry": expiry_note(status),
+        "inboxlink": inboxlink,
         "analysis": render_analysis_card(job_id, analysis),
         "summary": summary,
         "tree": render_file_tree(files, skipped),
@@ -5494,6 +5565,32 @@ def render_diag_page(job_id: str, status: dict) -> HTMLResponse:
                     else history_record_js(job_id, "diag", hist_state,
                                            upload_names(status, job_id))),
     })
+
+
+@app.get("/result/{job_id}/dashboard.json")
+async def dashboard_json(job_id: str) -> Response:
+    """Machine-readable export of the health-check model (already on disk)."""
+    status, err = _job_guard(job_id, json_resp=True)
+    if err is not None:
+        return err
+    dash = read_dashboard(job_id) if status.get("kind") == "diag" else None
+    if dash is None:
+        return JSONResponse({"error": "no dashboard for this job"},
+                            status_code=404)
+    return JSONResponse(dash)
+
+
+@app.get("/result/{job_id}/summary.json")
+async def summary_json(job_id: str) -> Response:
+    """Machine-readable export of the timeline summary (already on disk)."""
+    _status, err = _job_guard(job_id, json_resp=True)
+    if err is not None:
+        return err
+    summary = read_summary(job_id)
+    if summary is None:
+        return JSONResponse({"error": "no summary for this job"},
+                            status_code=404)
+    return JSONResponse(summary)
 
 
 @app.post("/result/{job_id}/analyze")
@@ -5554,6 +5651,7 @@ async def diag_timeline(job_id: str) -> Response:
     summary_html = render_summary_panel(read_summary(job_id))
     return HTMLResponse(REPORT_PAGE % {
         "css": PAGE_CSS, "logo": _LOGO, "job": job_id,
+        "expiry": expiry_note(status),
         "summary": summary_html,
         "empty": _REPORT_EMPTY_NOTE if not summary_html else "",
         "reportopen": "" if summary_html else " open",

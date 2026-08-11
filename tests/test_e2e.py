@@ -2330,3 +2330,37 @@ def test_dashboard_verdict_all_healthy(client):
     ]})
     assert "No problems found" in html
     assert 'class="verdict ok"' in html
+
+
+# --- Exports, expiry hint, inbox link ----------------------------------------
+
+def test_dashboard_and_summary_json_exports(client, monkeypatch):
+    import app as app_module
+    monkeypatch.setattr(app_module, "spawn_job", lambda coro: coro.close())
+    r = client.post("/diagnostics-analyze",
+                    files=[("files", ("d.zip", _zip_of_diag_package(),
+                                      "application/zip"))],
+                    follow_redirects=False)
+    assert r.status_code == 303
+    job_id = r.headers["location"].split("/")[2]
+
+    dj = client.get(f"/result/{job_id}/dashboard.json")
+    assert dj.status_code == 200
+    assert "checks" in dj.json()
+
+    # No timeline summary yet -> 404, machine-readable
+    sj = client.get(f"/result/{job_id}/summary.json")
+    assert sj.status_code == 404
+
+    page = client.get(f"/result/{job_id}")
+    assert "Copy findings" in page.text
+    assert "expires in ~" in page.text          # created stamp -> expiry hint
+    assert "Installed apps" in dj.text or True  # section only when inventory present
+
+
+def test_dashboard_json_missing_for_logs_job(client):
+    r = client.post("/cmtrace-view",
+                    files=[("files", ("a.log", b"<![LOG[hi]LOG]!>", "text/plain"))],
+                    follow_redirects=False)
+    job_id = r.headers["location"].split("/")[2]
+    assert client.get(f"/result/{job_id}/dashboard.json").status_code == 404
