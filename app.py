@@ -47,6 +47,7 @@ import os
 import re
 import secrets
 import shutil
+import signal
 import subprocess
 import time
 import urllib.error
@@ -318,7 +319,10 @@ def read_text_tolerant(path: Path, max_bytes: int = MAX_UPLOAD_BYTES) -> str:
     BOM, fall back to a NUL-byte heuristic for BOM-less UTF-16, then UTF-8
     with replacement so decoding never raises.
     """
-    data = path.read_bytes()[:max_bytes]
+    # Cap while reading: read_bytes()[:max_bytes] would materialise the whole
+    # file (a package can hold multi-GB members) before truncating.
+    with path.open("rb") as fh:
+        data = fh.read(max_bytes)
     if data.startswith(b"\xff\xfe") or data.startswith(b"\xfe\xff"):
         return data.decode("utf-16", errors="replace")  # BOM picks endianness
     if data.startswith(b"\xef\xbb\xbf"):
@@ -1896,13 +1900,19 @@ async def _run_job_locked(job_id: str, input_dir: Path, output_dir: Path,
             str(RUN_SCRIPT), str(input_dir), str(output_dir),
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            # Own process group so a timeout can kill the whole tree: the
+            # wrapper is bash and killing only it would orphan the pwsh child.
+            start_new_session=True,
         )
         try:
             out_b, err_b = await asyncio.wait_for(
                 proc.communicate(), timeout=SCRIPT_TIMEOUT_SECONDS
             )
         except asyncio.TimeoutError:
-            proc.kill()
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)
+            except (ProcessLookupError, PermissionError):
+                proc.kill()
             await proc.wait()
             set_state(
                 state="failed", exitcode=None,
@@ -1950,6 +1960,9 @@ async def save_uploads(files: List[UploadFile], input_dir: Path) -> int:
     log_count = 0
     tmp_dir = input_dir.parent / "tmp"
     tmp_dir.mkdir(parents=True, exist_ok=True)
+    # One zip-bomb budget for the whole upload: without sharing, N zips would
+    # each get a fresh MAX_UNCOMPRESSED_BYTES allowance.
+    budget = [0]
 
     for up in files:
         name = up.filename or ""
@@ -1969,7 +1982,9 @@ async def save_uploads(files: List[UploadFile], input_dir: Path) -> int:
                 fh.write(chunk)
 
         if ext == ".zip":
-            log_count += extract_zip_logs(dest, input_dir)
+            # Extraction can stream gigabytes; keep it off the event loop.
+            log_count += await asyncio.to_thread(
+                extract_zip_logs, dest, input_dir, budget)
         else:  # .log
             target = input_dir / Path(name).name
             shutil.move(str(dest), str(target))
@@ -2016,8 +2031,9 @@ async def _extract_diag_zip(dest_zip: Path, input_dir: Path) -> tuple[int, list]
     keep_exts = DIAG_KEEP_EXTS | ({".cab"} if CABEXTRACT else set())
     budget = [0]
     try:
-        count, skipped = extract_zip_members(dest_zip, input_dir, keep_exts,
-                                             budget=budget)
+        # Extraction can stream gigabytes; keep it off the event loop.
+        count, skipped = await asyncio.to_thread(
+            extract_zip_members, dest_zip, input_dir, keep_exts, 0, budget)
     except zipfile.BadZipFile:
         raise UploadError(400, "The uploaded file is not a valid zip archive.")
     if CABEXTRACT:
@@ -2189,10 +2205,13 @@ def expand_cab_files(root: Path, keep_exts: set,
     return kept, cabs, skipped
 
 
-def extract_zip_logs(zip_path: Path, input_dir: Path) -> int:
-    """Safely extract only .log members from a zip (zip-slip protected)."""
+def extract_zip_logs(zip_path: Path, input_dir: Path,
+                     budget: Optional[list] = None) -> int:
+    """Safely extract only .log members from a zip (zip-slip protected).
+    `budget` is the shared zip-bomb byte counter across all zips in one upload."""
     count, _skipped = extract_zip_members(zip_path, input_dir,
-                                          keep_exts={".log"}, depth=1)
+                                          keep_exts={".log"}, depth=1,
+                                          budget=budget)
     return count
 
 
@@ -4643,12 +4662,27 @@ async def collect_script_download() -> Response:
     )
 
 
+def _jobs_dir_writable() -> bool:
+    """The whole app is a filesystem state machine: a full or read-only volume
+    must flip the health check, or the container reports healthy while every
+    upload 500s."""
+    try:
+        JOBS_DIR.mkdir(parents=True, exist_ok=True)
+        probe = JOBS_DIR / ".health-probe"
+        probe.write_text("ok", encoding="utf-8")
+        probe.unlink()
+        return True
+    except OSError:
+        return False
+
+
 @app.get("/health")
 async def health() -> JSONResponse:
     pwsh = shutil.which("pwsh")
-    if pwsh:
-        return JSONResponse({"status": "ok", "pwsh": pwsh})
-    return JSONResponse({"status": "degraded", "pwsh": None}, status_code=503)
+    jobs_ok = await asyncio.to_thread(_jobs_dir_writable)
+    body = {"status": "ok" if (pwsh and jobs_ok) else "degraded",
+            "pwsh": pwsh, "jobs_dir": "writable" if jobs_ok else "unwritable"}
+    return JSONResponse(body, status_code=200 if (pwsh and jobs_ok) else 503)
 
 
 def _content_length_error(request: Request) -> Optional[HTMLResponse]:
@@ -4680,7 +4714,8 @@ async def stage_upload(request: Request):
     err = _content_length_error(request)
     if err is not None:
         return err
-    if _count_local_jobs() >= MAX_LOCAL_JOBS:
+    if await asyncio.to_thread(_count_local_jobs) >= MAX_LOCAL_JOBS:
+        log.info("upload rejected: local job cap reached (%d)", MAX_LOCAL_JOBS)
         return HTMLResponse(
             "The server has too many recent analyses. Please try again later.",
             status_code=429)
@@ -4701,6 +4736,7 @@ async def stage_upload(request: Request):
         staged = await save_uploads(files, input_dir)
     except UploadError as e:
         shutil.rmtree(base, ignore_errors=True)
+        log.warning("upload rejected (%d): %s", e.status_code, e.message)
         return HTMLResponse(html_escape(e.message), status_code=e.status_code)
     finally:
         shutil.rmtree(base / "tmp", ignore_errors=True)
@@ -4739,7 +4775,8 @@ async def diagnostics_analyze(request: Request) -> Response:
     err = _content_length_error(request)
     if err is not None:
         return err
-    if _count_local_jobs() >= MAX_LOCAL_JOBS:
+    if await asyncio.to_thread(_count_local_jobs) >= MAX_LOCAL_JOBS:
+        log.info("upload rejected: local job cap reached (%d)", MAX_LOCAL_JOBS)
         return HTMLResponse(
             "The server has too many recent analyses. Please try again later.",
             status_code=429)
@@ -4761,6 +4798,7 @@ async def diagnostics_analyze(request: Request) -> Response:
         _count, skipped = await save_diag_upload(files, input_dir)
     except UploadError as e:
         shutil.rmtree(base, ignore_errors=True)
+        log.warning("diag upload rejected (%d): %s", e.status_code, e.message)
         return HTMLResponse(html_escape(e.message), status_code=e.status_code)
     finally:
         shutil.rmtree(base / "tmp", ignore_errors=True)
@@ -4830,7 +4868,7 @@ async def api_diagnostics(request: Request) -> Response:
     err = _content_length_error(request)
     if err is not None:
         return JSONResponse({"error": "upload too large"}, status_code=413)
-    total_api, mine = _api_job_counts(token)
+    total_api, mine = await asyncio.to_thread(_api_job_counts, token)
     if total_api >= UPLOAD_API_MAX_JOBS:
         return JSONResponse({"error": "server inbox full, try later"},
                             status_code=429)
@@ -4862,6 +4900,7 @@ async def api_diagnostics(request: Request) -> Response:
         _count, skipped = await _extract_diag_zip(dest, input_dir)
     except UploadError as e:
         shutil.rmtree(base, ignore_errors=True)
+        log.warning("api upload rejected (%d): %s", e.status_code, e.message)
         return JSONResponse({"error": e.message}, status_code=e.status_code)
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
@@ -5087,7 +5126,7 @@ async def inbox(request: Request) -> HTMLResponse:
         return HTMLResponse(INBOX_PAGE % {
             "css": PAGE_CSS, "nav": NAV, "footer": FOOTER, "body": body})
 
-    rows = list_inbox_jobs(token)
+    rows = await asyncio.to_thread(list_inbox_jobs, token)
     if rows:
         trs = "".join(
             f'<tr><td>{html_escape(r["device"])}</td>'
@@ -5245,10 +5284,11 @@ async def report_raw(job_id: str) -> Response:
     if not report.is_file():
         return HTMLResponse("Report missing.", status_code=500)
 
-    return HTMLResponse(
-        strip_branding(report.read_text(encoding="utf-8", errors="replace")),
-        headers=_UNTRUSTED_HTML_HEADERS,
-    )
+    def _read() -> str:  # reports can be tens of MB; keep the loop responsive
+        return strip_branding(report.read_text(encoding="utf-8", errors="replace"))
+
+    return HTMLResponse(await asyncio.to_thread(_read),
+                        headers=_UNTRUSTED_HTML_HEADERS)
 
 
 def _attr(s: str) -> str:  # safe inside a double-quoted HTML attribute
@@ -5507,10 +5547,17 @@ async def diag_package_download(job_id: str) -> Response:
     dest = job_dir(job_id) / "output" / "package.zip"
 
     def build() -> None:
-        with zipfile.ZipFile(dest, "w", zipfile.ZIP_DEFLATED) as zf:
+        # Input is immutable after upload, so an existing zip is reusable;
+        # build to a tmp name + atomic replace so a concurrent request never
+        # sees a partial file.
+        if dest.is_file():
+            return
+        tmp = dest.with_suffix(".zip.tmp")
+        with zipfile.ZipFile(tmp, "w", zipfile.ZIP_DEFLATED) as zf:
             for p in sorted(input_dir.rglob("*")):
                 if p.is_file():
                     zf.write(p, p.relative_to(input_dir).as_posix())
+        os.replace(tmp, dest)
 
     await asyncio.to_thread(build)
     name = _safe_filename(f"{status.get('device') or 'IntuneDiag'}-{job_id[:8]}",
@@ -5540,7 +5587,7 @@ async def diag_file_view(job_id: str, file: str) -> Response:
     ext = Path(file).suffix.lower()
 
     if ext in (".html", ".htm"):
-        return HTMLResponse(read_text_tolerant(path),
+        return HTMLResponse(await asyncio.to_thread(read_text_tolerant, path),
                             headers=_UNTRUSTED_HTML_HEADERS)
 
     if ext == ".evtx":
