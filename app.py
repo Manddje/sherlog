@@ -3347,6 +3347,17 @@ DIAG_PAGE = """<!doctype html>
   .side .file.active{background:var(--accent);color:#fff}
   .side .file.disabled{opacity:.45;cursor:default}
   .side .file.disabled:hover{background:none;color:var(--muted)}
+  .pkgsearch{position:sticky;top:0;background:var(--surface);padding:.35rem 0 .5rem;z-index:2}
+  .pkgsearch input{width:100%%;box-sizing:border-box;padding:.4rem .6rem;
+    border:1px solid var(--border);border-radius:8px;background:var(--bg);
+    color:var(--fg);font:inherit;font-size:.85rem}
+  #pkgresults{margin-top:.4rem;max-height:14rem;overflow:auto;
+    border:1px solid var(--border);border-radius:8px;padding:.3rem}
+  .pkgcount{color:var(--muted);font-size:.75rem;padding:.15rem .3rem}
+  .pkghit{padding:.3rem .35rem;border-radius:6px;cursor:pointer}
+  .pkghit:hover{background:var(--bg)}
+  .pkgloc{font-weight:600;font-size:.75rem}
+  .pkgtext{color:var(--muted);font-size:.75rem;word-break:break-word}
   .browser iframe{border:0;flex:1;height:100%%;display:block}
 </style></head><body>
   <div class="topbar">
@@ -3368,7 +3379,13 @@ DIAG_PAGE = """<!doctype html>
     %(summary)s
   </div>
   <div class="browser">
-    <nav class="side" id="side">%(tree)s</nav>
+    <nav class="side" id="side">
+      <div class="pkgsearch">
+        <input id="pkgq" type="search" autocomplete="off"
+               placeholder="Search all files&hellip; (Enter)">
+        <div id="pkgresults" hidden></div>
+      </div>
+      %(tree)s</nav>
     <iframe id="view" src="%(firstsrc)s"></iframe>
   </div>
 <script>
@@ -3379,6 +3396,44 @@ DIAG_PAGE = """<!doctype html>
   const files = [...side.querySelectorAll('.file')];
   const dlfile = document.getElementById('dlfile');
   const dash = %(dashjson)s;
+  // Package-wide search: one request, results deep-link into the viewer.
+  const pkgq = document.getElementById('pkgq');
+  const pkgr = document.getElementById('pkgresults');
+  if (pkgq) pkgq.addEventListener('keydown', e => {
+    if (e.key !== 'Enter') return;
+    const q = pkgq.value.trim();
+    pkgr.hidden = false;
+    if (q.length < 3) { pkgr.textContent = 'Type at least 3 characters.'; return; }
+    pkgr.textContent = 'Searching…';
+    fetch('/result/' + job + '/search?q=' + encodeURIComponent(q))
+      .then(r => r.json())
+      .then(d => {
+        pkgr.innerHTML = '';
+        const hits = d.hits || [];
+        if (!hits.length) { pkgr.textContent = 'No matches.'; return; }
+        const head = document.createElement('div');
+        head.className = 'pkgcount';
+        head.textContent = hits.length + (d.truncated ? '+' : '') + ' match(es)';
+        pkgr.appendChild(head);
+        hits.forEach(h => {
+          const el = document.createElement('div');
+          el.className = 'pkghit';
+          const loc = document.createElement('div');
+          loc.className = 'pkgloc';
+          loc.textContent = h.file.split('/').pop() + ':' + h.line;
+          const tx = document.createElement('div');
+          tx.className = 'pkgtext';
+          tx.textContent = h.text;
+          el.append(loc, tx);
+          el.addEventListener('click', () => {
+            const f = files.find(x => x.dataset.file === h.file);
+            if (f) select(f, h.line);
+          });
+          pkgr.appendChild(el);
+        });
+      })
+      .catch(() => { pkgr.textContent = 'Search failed.'; });
+  });
   // "Copy findings": dashboard as paste-ready markdown for a ticket/chat.
   const cf = document.getElementById('copyfindings');
   if (cf) cf.addEventListener('click', e => {
@@ -5679,6 +5734,61 @@ def render_diag_page(job_id: str, status: dict) -> HTMLResponse:
                     else history_record_js(job_id, "diag", hist_state,
                                            upload_names(status, job_id))),
     })
+
+
+_SEARCH_MAX_HITS = 300
+_SEARCH_MAX_PER_FILE = 40
+
+
+def search_package(job_id: str, query: str, files: List[str]) -> List[dict]:
+    """Case-insensitive substring search across the text-ish package files.
+
+    Line numbers match the file viewer's numbering (same parser), so every
+    hit deep-links to its evidence row. Bounded per file and in total so a
+    hostile/huge package cannot stall the request thread."""
+    q = query.lower()
+    base = job_dir(job_id) / "input"
+    searchable = {".log"} | DIAG_TEXT_EXTS
+    hits: List[dict] = []
+    for rel in files:
+        if Path(rel).suffix.lower() not in searchable:
+            continue
+        try:
+            text = read_text_tolerant(base / rel)
+        except OSError:
+            continue
+        records, _ = parse_cmtrace(text)
+        per_file = 0
+        for i, rec in enumerate(records, 1):
+            if q in rec["msg"].lower():
+                snippet = rec["msg"].strip()
+                if len(snippet) > 220:
+                    snippet = snippet[:220] + "…"
+                hits.append({"file": rel, "line": i, "text": snippet})
+                per_file += 1
+                if per_file >= _SEARCH_MAX_PER_FILE:
+                    break
+        if len(hits) >= _SEARCH_MAX_HITS:
+            del hits[_SEARCH_MAX_HITS:]
+            break
+    return hits
+
+
+@app.get("/result/{job_id}/search")
+async def package_search(job_id: str, q: str = "") -> JSONResponse:
+    """Search every text file in one request; the sidebar renders the hits."""
+    status, err = _job_guard(job_id, json_resp=True)
+    if err is not None:
+        return err
+    q = q.strip()
+    if len(q) < 3:
+        return JSONResponse({"error": "query too short (min 3 characters)"},
+                            status_code=400)
+    exts = DIAG_KEEP_EXTS if status.get("kind") == "diag" else {".log"}
+    files = list_input_files(job_id, exts=exts)
+    hits = await asyncio.to_thread(search_package, job_id, q, files)
+    return JSONResponse({"query": q, "hits": hits,
+                         "truncated": len(hits) >= _SEARCH_MAX_HITS})
 
 
 @app.get("/result/{job_id}/dashboard.json")

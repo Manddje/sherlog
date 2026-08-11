@@ -2447,3 +2447,34 @@ def test_dashboard_content_delivery_correlation(client, tmp_path):
         "    Direct access (no proxy server).\n"))
     dash2 = app_module.build_dashboard(pkg)
     assert _check(dash2, "Content delivery") is None
+
+
+# --- Package-wide search ------------------------------------------------------
+
+def test_package_search_hits_and_bounds(client, monkeypatch):
+    import app as app_module
+    monkeypatch.setattr(app_module, "spawn_job", lambda coro: coro.close())
+    r = client.post("/diagnostics-analyze",
+                    files=[("files", ("d.zip", _zip_of_diag_package(),
+                                      "application/zip"))],
+                    follow_redirects=False)
+    job_id = r.headers["location"].split("/")[2]
+
+    # Too-short query rejected
+    assert client.get(f"/result/{job_id}/search", params={"q": "ab"}).status_code == 400
+
+    # A term from the staged IME logs must hit, with file + viewer line
+    res = client.get(f"/result/{job_id}/search", params={"q": "Win32App"})
+    assert res.status_code == 200
+    data = res.json()
+    assert data["hits"], "expected hits for Win32App in staged IME logs"
+    hit = data["hits"][0]
+    assert hit["file"] and isinstance(hit["line"], int) and hit["text"]
+
+    # Search box present in the page
+    page = client.get(f"/result/{job_id}")
+    assert 'id="pkgq"' in page.text
+
+
+def test_package_search_unknown_job(client):
+    assert client.get("/result/deadbeef/search", params={"q": "abc"}).status_code == 404
