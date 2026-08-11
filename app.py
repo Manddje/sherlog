@@ -1183,28 +1183,6 @@ def count_event_issues(text: str) -> dict:
     }
 
 
-def parse_eventlog_records(text: str) -> List[dict]:
-    """Parse the Format-List blocks of a *-ErrorsWarnings.txt dump into records
-    {time, id, level, message}. Message may span several lines (kept last by the
-    collector's Select-Object), so it runs to the end of its block."""
-    out: List[dict] = []
-    for block in re.split(r"\n[ \t]*\n", text):
-        if "Message" not in block and "LevelDisplayName" not in block:
-            continue
-
-        def field(name: str) -> str:
-            m = re.search(rf"^\s*{name}\s*:\s*(.*)$", block, re.MULTILINE)
-            return m.group(1).strip() if m else ""
-
-        mm = re.search(r"^\s*Message\s*:\s*(.*)", block, re.MULTILINE | re.DOTALL)
-        message = re.sub(r"\s+", " ", mm.group(1)).strip() if mm else ""
-        rec = {"time": field("TimeCreated"), "id": field("Id"),
-               "level": field("LevelDisplayName"), "message": message}
-        if any(rec.values()):
-            out.append(rec)
-    return out
-
-
 def collect_log_error_codes(input_dir: Path, max_files: int = 200,
                             cap: int = 50) -> List[dict]:
     """Known Intune/Windows error codes found in the package's log files.
@@ -1425,6 +1403,7 @@ def build_dashboard(input_dir: Path) -> dict:
     to the evidence it was parsed from.
     """
     found: dict = {}  # key -> (Optional[Path], text)
+    parsed: dict = {}  # key -> viewer records; link() runs ~18x, parse once
 
     def read(key: str) -> str:
         if key not in found:
@@ -1440,7 +1419,9 @@ def build_dashboard(input_dir: Path) -> dict:
         if path is None:
             return {}
         src = {"src": path.relative_to(input_dir).as_posix()}
-        records, _ = parse_cmtrace(text)
+        if key not in parsed:
+            parsed[key] = parse_cmtrace(text)[0]
+        records = parsed[key]
         for pat in patterns:
             rx = re.compile(pat, re.IGNORECASE)
             for i, rec in enumerate(records, 1):
@@ -2743,9 +2724,15 @@ def history_record_js(job_id: str, tool: str, state: str, files: List[str]) -> s
 })();
 </script>""")
 
+# Dark-mode bootstrap, shared by every page. Applies the saved theme before
+# first paint and keeps sandboxed iframes (no localStorage) in sync via a
+# postMessage handshake. Must contain no literal '%' (pages are %-format
+# templates).
+_THEME_JS = """<script>(function(){var de=document.documentElement;function a(d){de.classList.toggle('dark',d);de.style.colorScheme=d?'dark':'light'}function cur(){return de.classList.contains('dark')}function tell(w){try{w.postMessage({sherlogTheme:cur()?'dark':'light'},'*')}catch(e){}}var t=null;try{t=localStorage.getItem('sherlog.theme')}catch(e){}a(t==='dark'||(t!=='light'&&matchMedia('(prefers-color-scheme: dark)').matches));window.sherlogTheme=function(){a(!cur());try{localStorage.setItem('sherlog.theme',cur()?'dark':'light')}catch(e){}var fs=document.querySelectorAll('iframe');for(var i=0;i<fs.length;i++)tell(fs[i].contentWindow)};try{if(parent&&parent!==window)parent.postMessage({sherlogThemeReq:1},'*')}catch(e){}window.addEventListener('load',function(e){if(e.target&&e.target.tagName==='IFRAME')tell(e.target.contentWindow)},true);window.addEventListener('message',function(e){var d=e.data||{};if(d.sherlogThemeReq&&e.source){tell(e.source);return}var v=d.sherlogTheme;if(v==='dark'||v==='light')a(v==='dark')})})()</script>"""
+
 LANDING_PAGE = """<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
-<script>(function(){var de=document.documentElement;function a(d){de.classList.toggle('dark',d);de.style.colorScheme=d?'dark':'light'}function cur(){return de.classList.contains('dark')}function tell(w){try{w.postMessage({sherlogTheme:cur()?'dark':'light'},'*')}catch(e){}}var t=null;try{t=localStorage.getItem('sherlog.theme')}catch(e){}a(t==='dark'||(t!=='light'&&matchMedia('(prefers-color-scheme: dark)').matches));window.sherlogTheme=function(){a(!cur());try{localStorage.setItem('sherlog.theme',cur()?'dark':'light')}catch(e){}var fs=document.querySelectorAll('iframe');for(var i=0;i<fs.length;i++)tell(fs[i].contentWindow)};try{if(parent&&parent!==window)parent.postMessage({sherlogThemeReq:1},'*')}catch(e){}window.addEventListener('load',function(e){if(e.target&&e.target.tagName==='IFRAME')tell(e.target.contentWindow)},true);window.addEventListener('message',function(e){var d=e.data||{};if(d.sherlogThemeReq&&e.source){tell(e.source);return}var v=d.sherlogTheme;if(v==='dark'||v==='light')a(v==='dark')})})()</script>
+""" + _THEME_JS + """
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Sherlog &mdash; IME log analyzer</title><style>%(css)s</style></head>
 <body>
@@ -2890,7 +2877,7 @@ LANDING_PAGE = """<!doctype html>
 
 UPLOAD_PAGE = """<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
-<script>(function(){var de=document.documentElement;function a(d){de.classList.toggle('dark',d);de.style.colorScheme=d?'dark':'light'}function cur(){return de.classList.contains('dark')}function tell(w){try{w.postMessage({sherlogTheme:cur()?'dark':'light'},'*')}catch(e){}}var t=null;try{t=localStorage.getItem('sherlog.theme')}catch(e){}a(t==='dark'||(t!=='light'&&matchMedia('(prefers-color-scheme: dark)').matches));window.sherlogTheme=function(){a(!cur());try{localStorage.setItem('sherlog.theme',cur()?'dark':'light')}catch(e){}var fs=document.querySelectorAll('iframe');for(var i=0;i<fs.length;i++)tell(fs[i].contentWindow)};try{if(parent&&parent!==window)parent.postMessage({sherlogThemeReq:1},'*')}catch(e){}window.addEventListener('load',function(e){if(e.target&&e.target.tagName==='IFRAME')tell(e.target.contentWindow)},true);window.addEventListener('message',function(e){var d=e.data||{};if(d.sherlogThemeReq&&e.source){tell(e.source);return}var v=d.sherlogTheme;if(v==='dark'||v==='light')a(v==='dark')})})()</script>
+""" + _THEME_JS + """
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Sherlog &mdash; %(title)s</title><style>%(css)s</style></head>
 <body>
@@ -2998,7 +2985,7 @@ UPLOAD_PAGE = """<!doctype html>
 
 BUSY_PAGE = """<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
-<script>(function(){var de=document.documentElement;function a(d){de.classList.toggle('dark',d);de.style.colorScheme=d?'dark':'light'}function cur(){return de.classList.contains('dark')}function tell(w){try{w.postMessage({sherlogTheme:cur()?'dark':'light'},'*')}catch(e){}}var t=null;try{t=localStorage.getItem('sherlog.theme')}catch(e){}a(t==='dark'||(t!=='light'&&matchMedia('(prefers-color-scheme: dark)').matches));window.sherlogTheme=function(){a(!cur());try{localStorage.setItem('sherlog.theme',cur()?'dark':'light')}catch(e){}var fs=document.querySelectorAll('iframe');for(var i=0;i<fs.length;i++)tell(fs[i].contentWindow)};try{if(parent&&parent!==window)parent.postMessage({sherlogThemeReq:1},'*')}catch(e){}window.addEventListener('load',function(e){if(e.target&&e.target.tagName==='IFRAME')tell(e.target.contentWindow)},true);window.addEventListener('message',function(e){var d=e.data||{};if(d.sherlogThemeReq&&e.source){tell(e.source);return}var v=d.sherlogTheme;if(v==='dark'||v==='light')a(v==='dark')})})()</script>
+""" + _THEME_JS + """
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta http-equiv="refresh" content="3">
 <title>Analyzing…</title><style>%(css)s</style></head>
@@ -3016,7 +3003,7 @@ BUSY_PAGE = """<!doctype html>
 
 REPORT_PAGE = """<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
-<script>(function(){var de=document.documentElement;function a(d){de.classList.toggle('dark',d);de.style.colorScheme=d?'dark':'light'}function cur(){return de.classList.contains('dark')}function tell(w){try{w.postMessage({sherlogTheme:cur()?'dark':'light'},'*')}catch(e){}}var t=null;try{t=localStorage.getItem('sherlog.theme')}catch(e){}a(t==='dark'||(t!=='light'&&matchMedia('(prefers-color-scheme: dark)').matches));window.sherlogTheme=function(){a(!cur());try{localStorage.setItem('sherlog.theme',cur()?'dark':'light')}catch(e){}var fs=document.querySelectorAll('iframe');for(var i=0;i<fs.length;i++)tell(fs[i].contentWindow)};try{if(parent&&parent!==window)parent.postMessage({sherlogThemeReq:1},'*')}catch(e){}window.addEventListener('load',function(e){if(e.target&&e.target.tagName==='IFRAME')tell(e.target.contentWindow)},true);window.addEventListener('message',function(e){var d=e.data||{};if(d.sherlogThemeReq&&e.source){tell(e.source);return}var v=d.sherlogTheme;if(v==='dark'||v==='light')a(v==='dark')})})()</script>
+""" + _THEME_JS + """
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Sherlog &mdash; timeline report</title>
 <style>%(css)s
@@ -3093,7 +3080,7 @@ _REPORT_EMPTY_NOTE = ('<p class="note">This report couldn\'t be summarized '
 
 CMTRACE_PAGE = """<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
-<script>(function(){var de=document.documentElement;function a(d){de.classList.toggle('dark',d);de.style.colorScheme=d?'dark':'light'}function cur(){return de.classList.contains('dark')}function tell(w){try{w.postMessage({sherlogTheme:cur()?'dark':'light'},'*')}catch(e){}}var t=null;try{t=localStorage.getItem('sherlog.theme')}catch(e){}a(t==='dark'||(t!=='light'&&matchMedia('(prefers-color-scheme: dark)').matches));window.sherlogTheme=function(){a(!cur());try{localStorage.setItem('sherlog.theme',cur()?'dark':'light')}catch(e){}var fs=document.querySelectorAll('iframe');for(var i=0;i<fs.length;i++)tell(fs[i].contentWindow)};try{if(parent&&parent!==window)parent.postMessage({sherlogThemeReq:1},'*')}catch(e){}window.addEventListener('load',function(e){if(e.target&&e.target.tagName==='IFRAME')tell(e.target.contentWindow)},true);window.addEventListener('message',function(e){var d=e.data||{};if(d.sherlogThemeReq&&e.source){tell(e.source);return}var v=d.sherlogTheme;if(v==='dark'||v==='light')a(v==='dark')})})()</script>
+""" + _THEME_JS + """
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Sherlog &mdash; raw logs (CMTrace)</title>
 <style>%(css)s
@@ -3149,7 +3136,7 @@ CMTRACE_PAGE = """<!doctype html>
 
 DIAG_PAGE = """<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
-<script>(function(){var de=document.documentElement;function a(d){de.classList.toggle('dark',d);de.style.colorScheme=d?'dark':'light'}function cur(){return de.classList.contains('dark')}function tell(w){try{w.postMessage({sherlogTheme:cur()?'dark':'light'},'*')}catch(e){}}var t=null;try{t=localStorage.getItem('sherlog.theme')}catch(e){}a(t==='dark'||(t!=='light'&&matchMedia('(prefers-color-scheme: dark)').matches));window.sherlogTheme=function(){a(!cur());try{localStorage.setItem('sherlog.theme',cur()?'dark':'light')}catch(e){}var fs=document.querySelectorAll('iframe');for(var i=0;i<fs.length;i++)tell(fs[i].contentWindow)};try{if(parent&&parent!==window)parent.postMessage({sherlogThemeReq:1},'*')}catch(e){}window.addEventListener('load',function(e){if(e.target&&e.target.tagName==='IFRAME')tell(e.target.contentWindow)},true);window.addEventListener('message',function(e){var d=e.data||{};if(d.sherlogThemeReq&&e.source){tell(e.source);return}var v=d.sherlogTheme;if(v==='dark'||v==='light')a(v==='dark')})})()</script>
+""" + _THEME_JS + """
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Sherlog &mdash; diagnostics package</title>
 <style>%(css)s
@@ -3350,7 +3337,7 @@ DIAG_PAGE = """<!doctype html>
 
 ERROR_PAGE = """<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
-<script>(function(){var de=document.documentElement;function a(d){de.classList.toggle('dark',d);de.style.colorScheme=d?'dark':'light'}function cur(){return de.classList.contains('dark')}function tell(w){try{w.postMessage({sherlogTheme:cur()?'dark':'light'},'*')}catch(e){}}var t=null;try{t=localStorage.getItem('sherlog.theme')}catch(e){}a(t==='dark'||(t!=='light'&&matchMedia('(prefers-color-scheme: dark)').matches));window.sherlogTheme=function(){a(!cur());try{localStorage.setItem('sherlog.theme',cur()?'dark':'light')}catch(e){}var fs=document.querySelectorAll('iframe');for(var i=0;i<fs.length;i++)tell(fs[i].contentWindow)};try{if(parent&&parent!==window)parent.postMessage({sherlogThemeReq:1},'*')}catch(e){}window.addEventListener('load',function(e){if(e.target&&e.target.tagName==='IFRAME')tell(e.target.contentWindow)},true);window.addEventListener('message',function(e){var d=e.data||{};if(d.sherlogThemeReq&&e.source){tell(e.source);return}var v=d.sherlogTheme;if(v==='dark'||v==='light')a(v==='dark')})})()</script>
+""" + _THEME_JS + """
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Analysis failed</title><style>%(css)s</style></head>
 <body>
@@ -4179,7 +4166,7 @@ def _render_records_page(filename: str, head: str, rows: List[str],
     severity legend, colored rows and the click-for-detail panel with error
     code explanations."""
     return """<!doctype html><html lang="en"><head><meta charset="utf-8">
-<script>(function(){var de=document.documentElement;function a(d){de.classList.toggle('dark',d);de.style.colorScheme=d?'dark':'light'}function cur(){return de.classList.contains('dark')}function tell(w){try{w.postMessage({sherlogTheme:cur()?'dark':'light'},'*')}catch(e){}}var t=null;try{t=localStorage.getItem('sherlog.theme')}catch(e){}a(t==='dark'||(t!=='light'&&matchMedia('(prefers-color-scheme: dark)').matches));window.sherlogTheme=function(){a(!cur());try{localStorage.setItem('sherlog.theme',cur()?'dark':'light')}catch(e){}var fs=document.querySelectorAll('iframe');for(var i=0;i<fs.length;i++)tell(fs[i].contentWindow)};try{if(parent&&parent!==window)parent.postMessage({sherlogThemeReq:1},'*')}catch(e){}window.addEventListener('load',function(e){if(e.target&&e.target.tagName==='IFRAME')tell(e.target.contentWindow)},true);window.addEventListener('message',function(e){var d=e.data||{};if(d.sherlogThemeReq&&e.source){tell(e.source);return}var v=d.sherlogTheme;if(v==='dark'||v==='light')a(v==='dark')})})()</script>
+""" + _THEME_JS + """
 <title>%(file)s</title><style>%(css)s</style></head><body>
   <div class="bar">
     <input id="q" type="search" placeholder="Filter text…" autocomplete="off">
@@ -4572,7 +4559,7 @@ async def diagnostics_upload_page() -> HTMLResponse:
 
 ERRORCODES_PAGE = """<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
-<script>(function(){var de=document.documentElement;function a(d){de.classList.toggle('dark',d);de.style.colorScheme=d?'dark':'light'}function cur(){return de.classList.contains('dark')}function tell(w){try{w.postMessage({sherlogTheme:cur()?'dark':'light'},'*')}catch(e){}}var t=null;try{t=localStorage.getItem('sherlog.theme')}catch(e){}a(t==='dark'||(t!=='light'&&matchMedia('(prefers-color-scheme: dark)').matches));window.sherlogTheme=function(){a(!cur());try{localStorage.setItem('sherlog.theme',cur()?'dark':'light')}catch(e){}var fs=document.querySelectorAll('iframe');for(var i=0;i<fs.length;i++)tell(fs[i].contentWindow)};try{if(parent&&parent!==window)parent.postMessage({sherlogThemeReq:1},'*')}catch(e){}window.addEventListener('load',function(e){if(e.target&&e.target.tagName==='IFRAME')tell(e.target.contentWindow)},true);window.addEventListener('message',function(e){var d=e.data||{};if(d.sherlogThemeReq&&e.source){tell(e.source);return}var v=d.sherlogTheme;if(v==='dark'||v==='light')a(v==='dark')})})()</script>
+""" + _THEME_JS + """
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Sherlog &mdash; Intune error codes</title><style>%(css)s
   .ec-tools{display:flex;gap:.6rem;align-items:center;margin:0 0 1rem}
@@ -4946,7 +4933,7 @@ def list_inbox_jobs(token: str) -> List[dict]:
 
 INBOX_PAGE = """<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
-<script>(function(){var de=document.documentElement;function a(d){de.classList.toggle('dark',d);de.style.colorScheme=d?'dark':'light'}function cur(){return de.classList.contains('dark')}var t=null;try{t=localStorage.getItem('sherlog.theme')}catch(e){}a(t==='dark'||(t!=='light'&&matchMedia('(prefers-color-scheme: dark)').matches));window.sherlogTheme=function(){a(!cur());try{localStorage.setItem('sherlog.theme',cur()?'dark':'light')}catch(e){}}})()</script>
+""" + _THEME_JS + """
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Sherlog &mdash; Inbox</title><style>%(css)s
   table.inbox{border-collapse:collapse;width:100%%;margin-top:1rem}
@@ -5214,15 +5201,28 @@ async def inbox_delete_one(request: Request) -> JSONResponse:
     return JSONResponse({"deleted": bool(delete_job(job))})
 
 
-@app.get("/result/{job_id}", response_class=HTMLResponse)
-async def result(job_id: str) -> Response:
-    # Reject anything that isn't a clean job id (no path traversal).
+def _job_guard(job_id: str, *, json_resp: bool = False,
+               missing: str = "Unknown job.") -> tuple[Optional[dict], Optional[Response]]:
+    """Shared /result route preamble: reject anything that isn't a clean job id
+    (no path traversal) and load job.json. Returns (status, None) on success or
+    (None, error_response) to return as-is."""
     if not job_id.isalnum():
-        return HTMLResponse("Invalid job id.", status_code=400)
-
+        if json_resp:
+            return None, JSONResponse({"error": "invalid job id"}, status_code=400)
+        return None, HTMLResponse("Invalid job id.", status_code=400)
     status = read_status(job_id)
     if status is None:
-        return HTMLResponse("Unknown job.", status_code=404)
+        if json_resp:
+            return None, JSONResponse({"error": "unknown job"}, status_code=404)
+        return None, HTMLResponse(missing, status_code=404)
+    return status, None
+
+
+@app.get("/result/{job_id}", response_class=HTMLResponse)
+async def result(job_id: str) -> Response:
+    status, err = _job_guard(job_id)
+    if err is not None:
+        return err
 
     if status.get("kind") == "diag":
         return render_diag_page(job_id, status)
@@ -5269,12 +5269,9 @@ async def report_raw(job_id: str) -> Response:
     """Serve the raw report. Untrusted (built from log content), so it is only
     ever loaded inside the sandboxed iframe in REPORT_PAGE. A CSP `sandbox`
     directive isolates it from the app origin even if framed elsewhere."""
-    if not job_id.isalnum():
-        return HTMLResponse("Invalid job id.", status_code=400)
-
-    status = read_status(job_id)
-    if status is None:
-        return HTMLResponse("Report not available.", status_code=404)
+    status, err = _job_guard(job_id, missing="Report not available.")
+    if err is not None:
+        return err
     # Diagnostics jobs keep the analysis outcome in a sub-dict.
     rec = status.get("analysis") or {} if status.get("kind") == "diag" else status
     if rec.get("state") != "done":
@@ -5291,8 +5288,7 @@ async def report_raw(job_id: str) -> Response:
                         headers=_UNTRUSTED_HTML_HEADERS)
 
 
-def _attr(s: str) -> str:  # safe inside a double-quoted HTML attribute
-    return html_escape(s).replace('"', "&quot;")
+_attr = attr_escape  # legacy alias, same helper
 
 
 def render_file_tree(paths: List[str], skipped: List[str] = ()) -> str:
@@ -5348,10 +5344,10 @@ def render_log_tree(paths: List[str]) -> str:
 @app.get("/result/{job_id}/cmtrace", response_class=HTMLResponse)
 async def cmtrace(job_id: str) -> Response:
     """App-chrome page: a folder tree of raw logs + a sandboxed viewer iframe."""
-    if not job_id.isalnum():
-        return HTMLResponse("Invalid job id.", status_code=400)
-    status = read_status(job_id)
-    if status is None or status.get("state") not in ("done", "logs", "ready"):
+    status, err = _job_guard(job_id, missing="Logs not available.")
+    if err is not None:
+        return err
+    if status.get("state") not in ("done", "logs", "ready"):
         return HTMLResponse("Logs not available.", status_code=404)
 
     logs = list_input_logs(job_id)
@@ -5387,10 +5383,10 @@ async def cmtrace(job_id: str) -> Response:
 async def cmtrace_view(job_id: str, file: str) -> Response:
     """Sandboxed CMTrace table for one raw log. Untrusted content, so it is
     served with a CSP `sandbox` directive and only framed by the page above."""
-    if not job_id.isalnum():
-        return HTMLResponse("Invalid job id.", status_code=400)
-    status = read_status(job_id)
-    if status is None or status.get("state") not in ("done", "logs", "ready"):
+    status, err = _job_guard(job_id, missing="Logs not available.")
+    if err is not None:
+        return err
+    if status.get("state") not in ("done", "logs", "ready"):
         return HTMLResponse("Logs not available.", status_code=404)
 
     # Membership check: `file` must be exactly one of the staged logs — this
@@ -5402,7 +5398,7 @@ async def cmtrace_view(job_id: str, file: str) -> Response:
         read_and_parse_cmtrace, job_dir(job_id) / "input" / file)
     return HTMLResponse(
         render_cmtrace_view(file, records, truncated),
-        headers={"Content-Security-Policy": "sandbox allow-scripts"},
+        headers=_SANDBOX_HEADERS,
     )
 
 
@@ -5441,11 +5437,9 @@ def render_diag_page(job_id: str, status: dict) -> HTMLResponse:
 @app.get("/result/{job_id}/status")
 async def job_status(job_id: str) -> JSONResponse:
     """Small sanitized status poll for the diagnostics result page."""
-    if not job_id.isalnum():
-        return JSONResponse({"error": "invalid job id"}, status_code=400)
-    status = read_status(job_id)
-    if status is None:
-        return JSONResponse({"error": "unknown job"}, status_code=404)
+    status, err = _job_guard(job_id, json_resp=True)
+    if err is not None:
+        return err
     return JSONResponse({
         "state": status.get("state"),
         "analysis": (status.get("analysis") or {}).get("state"),
@@ -5462,7 +5456,7 @@ async def delete_result(job_id: str) -> JSONResponse:
     untokened route can't silently bypass that ownership check."""
     if not job_id.isalnum():
         return JSONResponse({"error": "invalid job id"}, status_code=400)
-    status = read_status(job_id)
+    status = read_status(job_id)  # a vanished job still reports deleted:false
     if status and status.get("source") == "api":
         return JSONResponse(
             {"error": "use the token inbox to delete drop-off uploads"},
@@ -5473,10 +5467,10 @@ async def delete_result(job_id: str) -> JSONResponse:
 @app.get("/result/{job_id}/timeline", response_class=HTMLResponse)
 async def diag_timeline(job_id: str) -> Response:
     """Full timeline report page for the analysis inside a diagnostics job."""
-    if not job_id.isalnum():
-        return HTMLResponse("Invalid job id.", status_code=400)
-    status = read_status(job_id)
-    if (status is None or status.get("kind") != "diag"
+    status, err = _job_guard(job_id, missing="Timeline report not available.")
+    if err is not None:
+        return err
+    if (status.get("kind") != "diag"
             or (status.get("analysis") or {}).get("state") != "done"):
         return HTMLResponse("Timeline report not available.", status_code=404)
 
@@ -5520,10 +5514,10 @@ def _safe_filename(name: str, default: str) -> str:
 @app.get("/result/{job_id}/files/download")
 async def diag_file_download(job_id: str, file: str) -> Response:
     """Download one package file (the currently open file in the viewer)."""
-    if not job_id.isalnum():
-        return HTMLResponse("Invalid job id.", status_code=400)
-    status = read_status(job_id)
-    if status is None or status.get("kind") != "diag":
+    status, err = _job_guard(job_id, missing="Files not available.")
+    if err is not None:
+        return err
+    if status.get("kind") != "diag":
         return HTMLResponse("Files not available.", status_code=404)
     if file not in list_input_files(job_id, exts=DIAG_KEEP_EXTS):
         return HTMLResponse("Unknown file.", status_code=404)
@@ -5536,10 +5530,10 @@ async def diag_file_download(job_id: str, file: str) -> Response:
 async def diag_package_download(job_id: str) -> Response:
     """Download the whole package as a zip (rebuilt from the extracted files;
     the original upload zip is not retained)."""
-    if not job_id.isalnum():
-        return HTMLResponse("Invalid job id.", status_code=400)
-    status = read_status(job_id)
-    if status is None or status.get("kind") != "diag":
+    status, err = _job_guard(job_id, missing="Package not available.")
+    if err is not None:
+        return err
+    if status.get("kind") != "diag":
         return HTMLResponse("Package not available.", status_code=404)
     input_dir = job_dir(job_id) / "input"
     if not input_dir.is_dir():
@@ -5572,10 +5566,10 @@ async def diag_file_view(job_id: str, file: str) -> Response:
     Untrusted content, so every branch is served with a CSP `sandbox`
     directive and only framed by the diagnostics page.
     """
-    if not job_id.isalnum():
-        return HTMLResponse("Invalid job id.", status_code=400)
-    status = read_status(job_id)
-    if status is None or status.get("kind") != "diag":
+    status, err = _job_guard(job_id, missing="Files not available.")
+    if err is not None:
+        return err
+    if status.get("kind") != "diag":
         return HTMLResponse("Files not available.", status_code=404)
 
     # Membership check, same pattern as the CMTrace viewer: rejects any

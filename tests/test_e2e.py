@@ -43,24 +43,6 @@ def _zip_of_testdata() -> bytes:
     return buf.getvalue()
 
 
-def _wait_for_result(client, location: str, timeout: float = 300.0) -> str:
-    """Poll the result page until the job finishes, then return the report HTML.
-
-    A finished job renders a wrapper page that frames the report in a sandboxed
-    <iframe src=".../report">; the actual report content lives at that subpath.
-    """
-    deadline = time.time() + timeout
-    while time.time() < deadline:
-        r = client.get(location)
-        if "Analyzing" in r.text:  # busy/queued page
-            time.sleep(1.0)
-            continue
-        if "/report" in r.text:  # done -> fetch the framed report
-            return client.get(location.rstrip("/") + "/report").text
-        return r.text  # failed page
-    raise AssertionError("analysis did not finish within timeout")
-
-
 def test_health_no_auth(client):
     r = client.get("/health")
     assert r.status_code == 200
@@ -97,10 +79,10 @@ def test_csp_allows_same_origin_fetch_and_images(client):
     assert "img-src 'self'" in csp
 
 
-def test_static_screenshots_served(client):
-    r = client.get("/static/timeline.png")
+def test_static_assets_served(client):
+    r = client.get("/static/kris.jpeg")
     assert r.status_code == 200
-    assert r.headers["content-type"] == "image/png"
+    assert r.headers["content-type"] == "image/jpeg"
 
 
 def test_standalone_timeline_removed(client):

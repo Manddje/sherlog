@@ -8,7 +8,7 @@
 *_Intune_Logs_Report.html
 
 # NOTE: /testdata/ (anonymised sample logs) intentionally ships in the image
-# since the homepage demo button (POST /demo) runs the analysis on it.
+# so the test suite can run against the built container.
 
 # Tests (not needed at runtime)
 /tests/
