@@ -2364,3 +2364,86 @@ def test_dashboard_json_missing_for_logs_job(client):
                     follow_redirects=False)
     job_id = r.headers["location"].split("/")[2]
     assert client.get(f"/result/{job_id}/dashboard.json").status_code == 404
+
+
+# --- Phase 6: Autopilot/ESP checks, advice hints, content-delivery card ------
+
+_ESP_REG = """Windows Registry Editor Version 5.00
+
+[HKEY_LOCAL_MACHINE\\SOFTWARE\\Microsoft\\Windows\\Autopilot\\EnrollmentStatusTracking\\Device\\Setup\\Apps\\Tracking\\Sidecar\\Win32App_abc]
+"InstallationState"=dword:00000004
+
+[HKEY_LOCAL_MACHINE\\SOFTWARE\\Microsoft\\Windows\\Autopilot\\EnrollmentStatusTracking\\Device\\Setup\\Apps\\Tracking\\Sidecar\\Win32App_def]
+"InstallationState"=dword:00000003
+"""
+
+_AUTOPILOT_REG = """Windows Registry Editor Version 5.00
+
+[HKEY_LOCAL_MACHINE\\SOFTWARE\\Microsoft\\Provisioning\\Diagnostics\\AutoPilot]
+"CloudAssignedTenantDomain"="contoso.onmicrosoft.com"
+"DeploymentProfileName"="AP-Profile"
+"""
+
+
+def _check(dash, label):
+    return next((c for c in dash["checks"] if c["label"] == label), None)
+
+
+def test_dashboard_autopilot_and_esp_checks(client, tmp_path):
+    import app as app_module
+    pkg = tmp_path / "pkg"
+    (pkg / "Registry").mkdir(parents=True)
+    (pkg / "Registry" / "Autopilot.reg").write_bytes(_u16(_AUTOPILOT_REG))
+    (pkg / "Registry" / "EnrollmentStatusTracking.reg").write_bytes(_u16(_ESP_REG))
+    dash = app_module.build_dashboard(pkg)
+
+    ap = _check(dash, "Autopilot profile")
+    assert ap is not None and ap["status"] == "ok"
+    assert "AP-Profile" in ap["detail"] and "contoso" in ap["detail"]
+
+    esp = _check(dash, "ESP app tracking")
+    assert esp is not None and esp["status"] == "bad"
+    assert "Win32App_abc" in esp["detail"]
+    assert esp.get("advice")  # failing card carries a what-now hint
+
+
+def test_dashboard_advice_on_failing_check(client, tmp_path):
+    import app as app_module
+    pkg = tmp_path / "pkg"
+    (pkg / "Apps-IME").mkdir(parents=True)
+    (pkg / "Apps-IME" / "service-status.txt").write_bytes(
+        _u16("Status   Name               DisplayName\n"
+             "------   ----               -----------\n"
+             "Stopped  IntuneManagemen... Microsoft Intune Management Extension\n"))
+    dash = app_module.build_dashboard(pkg)
+    svc = _check(dash, "IME service")
+    assert svc is not None and svc["status"] == "bad"
+    assert "Microsoft Intune Management Extension" in svc["advice"]
+    # ok-checks carry no advice
+    ok_checks = [c for c in dash["checks"] if c["status"] == "ok"]
+    assert all("advice" not in c for c in ok_checks)
+
+
+def test_dashboard_content_delivery_correlation(client, tmp_path):
+    import app as app_module
+    pkg = tmp_path / "pkg"
+    (pkg / "Network").mkdir(parents=True)
+    (pkg / "Apps-IME" / "Logs").mkdir(parents=True)
+    (pkg / "Network" / "winhttp-proxy.txt").write_bytes(_u16(
+        "Current WinHTTP proxy settings:\n\n"
+        "    Proxy Server(s) :  proxy.corp.local:8080\n"
+        "    Bypass List     :  (none)\n"))
+    (pkg / "Apps-IME" / "Logs" / "AppWorkload.log").write_text(
+        "<![LOG[Download failed with 0x80D02002]LOG]!>"
+        '<time="08:45:50.100" date="9-13-2023" component="AppWorkload" '
+        'context="" type="3" thread="4" file="">\n', encoding="utf-8")
+    dash = app_module.build_dashboard(pkg)
+    cd = _check(dash, "Content delivery")
+    assert cd is not None and cd["status"] == "warn"
+    assert "0x80D02002" in cd["detail"] and "proxy" in cd["detail"]
+    # without a proxy/endpoint cause the card must not appear
+    (pkg / "Network" / "winhttp-proxy.txt").write_bytes(_u16(
+        "Current WinHTTP proxy settings:\n\n"
+        "    Direct access (no proxy server).\n"))
+    dash2 = app_module.build_dashboard(pkg)
+    assert _check(dash2, "Content delivery") is None

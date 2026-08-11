@@ -1372,6 +1372,52 @@ _DASH_SOURCES = {
     "policymanager_providers": ("Registry/PolicyManager-Providers.reg",),
     "proxy": ("Network/winhttp-proxy.txt",),
     "firewall": ("Network/firewall-profiles.txt",),
+    # Autopilot / ESP hives (collected all along, previously unused).
+    "autopilot": ("Registry/Autopilot.reg",),
+    "autopilot_settings": ("Registry/Autopilot-EstablishedCorr.reg",),
+    "esp_tracking": ("Registry/EnrollmentStatusTracking.reg",),
+}
+
+
+# One-line "what now" per check label, shown on bad/warn cards. Facts alone
+# don't help a sysadmin at 5pm; the 0x87D1041C hint proved the pattern.
+_ADVICE = {
+    "Entra joined": "Re-join Entra ID (dsregcmd /status on the device); "
+                    "nothing below works until the join is healthy.",
+    "Entra PRT": "Have the user lock/unlock or sign in again with line of "
+                 "sight to login.microsoftonline.com to refresh the PRT.",
+    "MDM enrollment": "Re-enroll via Settings > Accounts > Access work or "
+                      "school, and check Entra auto-enrollment (MDM scope).",
+    "IME service": "Start the 'Microsoft Intune Management Extension' "
+                   "service; if it is missing, sync the device or reinstall "
+                   "the agent MSI.",
+    "Intune/Entra endpoints": "Allow the unreachable endpoints through "
+                              "firewall/proxy; TLS inspection also breaks "
+                              "Intune traffic.",
+    "Machine certificates": "Renew or clean up the expired certificates; an "
+                            "expired MDM certificate silently kills sync.",
+    "MDM sync health": "If the MDM certificate is expired the device must "
+                       "re-enroll; otherwise look up the session error code.",
+    "Win32 apps": "Open the Win32 app table below; each failed app lists its "
+                  "deployment error code and explanation.",
+    "Enrollment certificate": "Re-enroll the device: its enrollment points at "
+                              "a client certificate that is missing or "
+                              "expired.",
+    "Push / remediation channel": "Check WNS connectivity (*.notify.windows."
+                                  "com); without it, on-demand sync and "
+                                  "remediations wait for the schedule.",
+    "MDM event log": "Open the DeviceManagement-Admin event log for the "
+                     "failing operations.",
+    "Known error codes": "Open the error-code table below; every code links "
+                         "to the log line it came from.",
+    "Firewall": "A disabled profile is only a finding, not necessarily a "
+                "fault — verify it is managed (e.g. by a third-party "
+                "firewall).",
+    "ESP app tracking": "Check the blocking app(s) in the ESP tracking hive "
+                        "and their Win32/LOB install logs.",
+    "Content delivery": "Downloads are failing while traffic is shaped: "
+                        "verify proxy/firewall rules for Delivery "
+                        "Optimization and *.manage.microsoft.com.",
 }
 
 
@@ -1798,13 +1844,13 @@ def build_dashboard(input_dir: Path) -> dict:
         })
 
     # Network: WinHTTP proxy + firewall profile states.
-    if read("proxy"):
-        proxy = parse_winhttp_proxy(read("proxy"))
+    proxy_info = parse_winhttp_proxy(read("proxy")) if read("proxy") else None
+    if proxy_info is not None:
         checks.append({
             "label": "WinHTTP proxy",
             "status": "ok",
-            "detail": ("direct (no proxy)" if proxy["direct"]
-                       else proxy["server"] or "configured"),
+            "detail": ("direct (no proxy)" if proxy_info["direct"]
+                       else proxy_info["server"] or "configured"),
             **link("proxy"),
         })
     fw = parse_firewall_profiles(read("firewall")) if read("firewall") else []
@@ -1816,6 +1862,68 @@ def build_dashboard(input_dir: Path) -> dict:
             "detail": ("off: " + ", ".join(off) if off else "all profiles on"),
             **link("firewall"),
         })
+
+    # Autopilot / ESP: presence-based cards from hives the collector has
+    # always exported. Total: no file -> no card, never an error.
+    ap_vals: dict = {}
+    for vals in list(reg("autopilot").values()) + list(
+            reg("autopilot_settings").values()):
+        ap_vals.update({k: v for k, v in vals.items() if v not in ("", None)})
+    if ap_vals:
+        profile = str(ap_vals.get("DeploymentProfileName", "") or "")
+        tenant = str(ap_vals.get("CloudAssignedTenantDomain", "") or "")
+        detail = (" · ".join(b for b in (profile, tenant) if b)
+                  or f"{len(ap_vals)} Autopilot value(s) recorded")
+        checks.append({"label": "Autopilot profile", "status": "ok",
+                       "detail": detail,
+                       **(link("autopilot") or link("autopilot_settings"))})
+
+    esp = reg("esp_tracking")
+    if esp:
+        # EnrollmentStatusTracking\...\<app key> holds InstallationState:
+        # 1 not started, 2 in progress, 3 completed, 4 error.
+        states = [(key.rsplit("\\", 1)[-1], vals["InstallationState"])
+                  for key, vals in esp.items()
+                  if isinstance(vals.get("InstallationState"), int)]
+        if states:
+            errs = [n for n, s in states if s == 4]
+            busy = [n for n, s in states if s in (1, 2)]
+            checks.append({
+                "label": "ESP app tracking",
+                "status": "bad" if errs else "warn" if busy else "ok",
+                "detail": ("error state: " + ", ".join(errs[:3]) if errs
+                           else f"{len(busy)} of {len(states)} not finished"
+                           if busy
+                           else f"all {len(states)} tracked apps completed"),
+                **link("esp_tracking"),
+            })
+
+    # Cross-source correlation: delivery/network error codes in the logs
+    # combined with shaped traffic (proxy configured or endpoints down)
+    # usually means content delivery is broken — say so in one card.
+    delivery_codes = sorted({
+        e["code"] for e in errcodes
+        if e["code"].upper().startswith(("0X80D0", "0X80072", "0X80190"))})
+    causes = []
+    if proxy_info is not None and not proxy_info["direct"]:
+        causes.append("a WinHTTP proxy is configured")
+    if endpoints and any(not e["reachable"] for e in endpoints):
+        causes.append("Intune endpoints are unreachable")
+    if delivery_codes and causes:
+        checks.append({
+            "label": "Content delivery",
+            "status": "warn",
+            "detail": (f"download/network errors ({', '.join(delivery_codes[:4])}) "
+                       f"while {' and '.join(causes)}"),
+            "section": "errorcodes",
+        })
+
+    # Attach the per-label "what now" hint to every failing card.
+    for c in checks:
+        if c.get("status") in ("bad", "warn") and not c.get("advice"):
+            hint = _ADVICE.get(str(c.get("label", "")))
+            if hint:
+                c["advice"] = hint
 
     device = {
         "name": identity.get("Device", ""),
@@ -3173,6 +3281,8 @@ DIAG_PAGE = """<!doctype html>
   .st.ok{background:#16a34a}.st.bad{background:#dc2626}
   .st.warn{background:#d97706}.st.unknown{background:#9ca3af}
   .check .det{color:var(--muted);font-size:.85rem;margin-top:.2rem;word-break:break-word}
+  .check .adv{color:var(--fg);font-size:.78rem;margin-top:.3rem;
+    padding-top:.3rem;border-top:1px dashed var(--border);font-style:italic}
   .check[data-file],.check[data-section]{cursor:pointer}
   .check[data-file]:hover,.check[data-file]:focus-visible,
   .check[data-section]:hover,.check[data-section]:focus-visible{border-color:var(--accent)}
@@ -3661,11 +3771,15 @@ def render_dashboard_panel(dash: Optional[dict]) -> str:
             # Card opens its matching detail section instead of a file.
             attrs = (f' data-section="{attr_escape(section_key)}"'
                      f' role="link" tabindex="0" title="Show details"')
+        advice = c.get("advice")
+        adv_html = (f'<div class="adv">{html_escape(str(advice))}</div>'
+                    if advice else "")
         cards.append(
             f'<div class="check"{attrs}>'
             f'<span class="lbl"><span class="st {st}"></span>'
             f'{html_escape(str(c.get("label", "")))}</span>'
-            f'<div class="det">{html_escape(str(c.get("detail", "")))}</div></div>'
+            f'<div class="det">{html_escape(str(c.get("detail", "")))}</div>'
+            f'{adv_html}</div>'
         )
     if cards:
         parts.append(f'<div class="dash">{"".join(cards)}</div>')
