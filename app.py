@@ -3146,6 +3146,11 @@ DIAG_PAGE = """<!doctype html>
     flex-direction:column;gap:.8rem}
   .panels>h2{margin:.2rem 0 0;font-size:1.15rem}
   .devline{color:var(--muted);font-size:.9rem;margin:0}
+  .verdict{display:inline-block;padding:.45rem .9rem;border-radius:10px;
+    border:1px solid var(--border);margin:.2rem 0 .6rem;font-weight:600}
+  .verdict.bad{border-color:#dc2626;color:#dc2626}
+  .verdict.warn{border-color:#d97706;color:#d97706}
+  .verdict.ok{border-color:#16a34a;color:#16a34a}
   .dash{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:.7rem}
   .check{border:1px solid var(--border);border-radius:10px;padding:.65rem .9rem;
     background:var(--bg)}
@@ -3580,8 +3585,28 @@ def render_dashboard_panel(dash: Optional[dict]) -> str:
     bits = [b for b in bits if b]
     if bits:
         parts.append(f'<p class="devline">{html_escape(" · ".join(bits))}</p>')
+    checks = dash.get("checks", [])
+    # Overall verdict + severity-first ordering: a red card must not hide
+    # below a wall of green ones. Sort is stable, so code order is kept
+    # within each severity bucket.
+    _sev = {"bad": 0, "warn": 1, "ok": 2, "unknown": 3}
+    checks = sorted(checks, key=lambda c: _sev.get(c.get("status"), 3))
+    n_bad = sum(1 for c in checks if c.get("status") == "bad")
+    n_warn = sum(1 for c in checks if c.get("status") == "warn")
+    if checks:
+        if n_bad or n_warn:
+            bits = []
+            if n_bad:
+                bits.append(f"{n_bad} problem{'s' if n_bad != 1 else ''}")
+            if n_warn:
+                bits.append(f"{n_warn} warning{'s' if n_warn != 1 else ''}")
+            cls = "bad" if n_bad else "warn"
+            parts.append(f'<p class="verdict {cls}">'
+                         f'{html_escape(" and ".join(bits))} found</p>')
+        else:
+            parts.append('<p class="verdict ok">No problems found</p>')
     cards = []
-    for c in dash.get("checks", []):
+    for c in checks:
         st = c.get("status", "unknown")
         if st not in ("ok", "bad", "warn", "unknown"):
             st = "unknown"
@@ -5390,6 +5415,13 @@ async def cmtrace(job_id: str) -> Response:
                     f'&larr; Diagnostics</a>')
     elif status.get("state") == "done":  # finished timeline job has a report
         timeline = f'<a class="btn btn-ghost" href="/result/{job_id}">&larr; Timeline</a>'
+    elif status.get("state") == "logs":
+        # Logs-only upload: offer the timeline analysis on demand, closing the
+        # gap between the CMTrace viewer and the diagnostics flow.
+        timeline = (f'<form method="post" action="/result/{job_id}/analyze" '
+                    f'style="display:inline;margin:0">'
+                    f'<button class="btn" type="submit">Run timeline analysis'
+                    f'</button></form>')
     else:
         timeline = ""
 
@@ -5462,6 +5494,21 @@ def render_diag_page(job_id: str, status: dict) -> HTMLResponse:
                     else history_record_js(job_id, "diag", hist_state,
                                            upload_names(status, job_id))),
     })
+
+
+@app.post("/result/{job_id}/analyze")
+async def analyze_logs_job(job_id: str) -> Response:
+    """Run the timeline analysis on-demand for a logs-only (CMTrace) upload.
+    The job then becomes a regular timeline job (busy page -> report)."""
+    status, err = _job_guard(job_id)
+    if err is not None:
+        return err
+    if status.get("kind") == "diag" or status.get("state") != "logs":
+        return notice_response("Analysis is not available for this job.", 409)
+    base = job_dir(job_id)
+    update_status(job_id, state="queued")
+    spawn_job(run_job(job_id, base / "input", base / "output"))
+    return RedirectResponse(url=f"/result/{job_id}", status_code=303)
 
 
 @app.get("/result/{job_id}/status")

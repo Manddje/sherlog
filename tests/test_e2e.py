@@ -2270,3 +2270,63 @@ def test_untrusted_html_csp_blocks_exfiltration(client):
     csp = view.headers.get("content-security-policy", "")
     assert "sandbox" in csp and "default-src 'none'" in csp
     assert "allow-same-origin" not in csp        # opaque origin: no app access
+
+
+# --- On-demand timeline analysis for logs-only jobs -------------------------
+
+def test_logs_job_offers_and_starts_analysis(client, monkeypatch):
+    import app as app_module
+    spawned = []
+
+    def fake_spawn(coro):
+        spawned.append(coro)
+        coro.close()  # don't actually run pwsh in this test
+
+    monkeypatch.setattr(app_module, "spawn_job", fake_spawn)
+
+    r = client.post("/cmtrace-view",
+                    files=[("files", ("a.log", b"<![LOG[hi]LOG]!>", "text/plain"))],
+                    follow_redirects=False)
+    assert r.status_code == 303
+    job_id = r.headers["location"].split("/")[2]
+
+    page = client.get(f"/result/{job_id}/cmtrace")
+    assert "Run timeline analysis" in page.text
+    assert f"/result/{job_id}/analyze" in page.text
+
+    r = client.post(f"/result/{job_id}/analyze", follow_redirects=False)
+    assert r.status_code == 303
+    assert spawned, "analysis job was not spawned"
+    assert app_module.read_status(job_id)["state"] == "queued"
+
+    # A second click while queued/running is refused.
+    r = client.post(f"/result/{job_id}/analyze", follow_redirects=False)
+    assert r.status_code == 409
+
+
+def test_analyze_rejected_for_unknown_job(client):
+    assert client.post("/result/deadbeef/analyze").status_code == 404
+
+
+# --- Dashboard verdict banner and severity ordering --------------------------
+
+def test_dashboard_verdict_and_severity_sort(client):
+    import app as app_module
+    html = app_module.render_dashboard_panel({"checks": [
+        {"label": "Green thing", "status": "ok", "detail": "fine"},
+        {"label": "Red thing", "status": "bad", "detail": "broken"},
+        {"label": "Amber thing", "status": "warn", "detail": "meh"},
+    ]})
+    assert "1 problem and 1 warning found" in html
+    assert 'class="verdict bad"' in html
+    # bad first, then warn, then ok
+    assert html.index("Red thing") < html.index("Amber thing") < html.index("Green thing")
+
+
+def test_dashboard_verdict_all_healthy(client):
+    import app as app_module
+    html = app_module.render_dashboard_panel({"checks": [
+        {"label": "Green thing", "status": "ok", "detail": "fine"},
+    ]})
+    assert "No problems found" in html
+    assert 'class="verdict ok"' in html
