@@ -4640,7 +4640,7 @@ async def collect_script_download() -> Response:
     try:
         data = COLLECT_SCRIPT.read_bytes()
     except OSError:
-        return HTMLResponse("Script not available.", status_code=404)
+        return notice_response("Script not available.", 404)
     return Response(
         data,
         media_type="text/plain; charset=utf-8",
@@ -4672,6 +4672,32 @@ async def health() -> JSONResponse:
     return JSONResponse(body, status_code=200 if (pwsh and jobs_ok) else 503)
 
 
+NOTICE_PAGE = """<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+""" + _THEME_JS + """
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sherlog &mdash; %(title)s</title><style>%(css)s</style></head>
+<body>
+  %(nav)s
+  <main class="wrap">
+    <h1>%(title)s</h1>
+    <p>%(msg)s</p>
+    <p><a class="btn" href="/">&larr; Back to Sherlog</a></p>
+  </main>
+  %(footer)s
+</body></html>"""
+
+
+def notice_response(message: str, status_code: int,
+                    title: str = "That didn't work") -> HTMLResponse:
+    """Full app-chrome page for plain error/notice messages, so a 404/413/429
+    isn't a bare unstyled string. Viewer-iframe errors stay plain text."""
+    return HTMLResponse(NOTICE_PAGE % {
+        "css": PAGE_CSS, "nav": NAV, "footer": FOOTER,
+        "title": html_escape(title), "msg": html_escape(message),
+    }, status_code=status_code)
+
+
 def _content_length_error(request: Request) -> Optional[HTMLResponse]:
     """Early server-side size guard: reject before parsing/buffering the body.
 
@@ -4682,11 +4708,10 @@ def _content_length_error(request: Request) -> Optional[HTMLResponse]:
     if cl is not None:
         try:
             if int(cl) > MAX_UPLOAD_BYTES:
-                return HTMLResponse(
-                    f"Upload exceeds {MAX_UPLOAD_MB} MB limit.", status_code=413
-                )
+                return notice_response(
+                    f"Upload exceeds {MAX_UPLOAD_MB} MB limit.", 413)
         except ValueError:
-            return HTMLResponse("Invalid Content-Length.", status_code=400)
+            return notice_response("Invalid Content-Length.", 400)
     return None
 
 
@@ -4703,14 +4728,14 @@ async def stage_upload(request: Request):
         return err
     if await asyncio.to_thread(_count_local_jobs) >= MAX_LOCAL_JOBS:
         log.info("upload rejected: local job cap reached (%d)", MAX_LOCAL_JOBS)
-        return HTMLResponse(
+        return notice_response(
             "The server has too many recent analyses. Please try again later.",
-            status_code=429)
+            429, title="Server is busy")
 
     form = await request.form()
     files = [v for v in form.getlist("files") if isinstance(v, UploadFile) and v.filename]
     if not files:
-        return HTMLResponse("No files uploaded.", status_code=400)
+        return notice_response("No files uploaded.", 400)
 
     job_id = uuid.uuid4().hex
     base = job_dir(job_id)
@@ -4724,13 +4749,13 @@ async def stage_upload(request: Request):
     except UploadError as e:
         shutil.rmtree(base, ignore_errors=True)
         log.warning("upload rejected (%d): %s", e.status_code, e.message)
-        return HTMLResponse(html_escape(e.message), status_code=e.status_code)
+        return notice_response(e.message, e.status_code)
     finally:
         shutil.rmtree(base / "tmp", ignore_errors=True)
 
     if staged == 0:
         shutil.rmtree(base, ignore_errors=True)
-        return HTMLResponse("No .log files found in the upload.", status_code=400)
+        return notice_response("No .log files found in the upload.", 400)
 
     names = [Path(f.filename or "").name for f in files if f.filename]
     return job_id, input_dir, output_dir, names
@@ -4764,15 +4789,15 @@ async def diagnostics_analyze(request: Request) -> Response:
         return err
     if await asyncio.to_thread(_count_local_jobs) >= MAX_LOCAL_JOBS:
         log.info("upload rejected: local job cap reached (%d)", MAX_LOCAL_JOBS)
-        return HTMLResponse(
+        return notice_response(
             "The server has too many recent analyses. Please try again later.",
-            status_code=429)
+            429, title="Server is busy")
 
     form = await request.form()
     files = [v for v in form.getlist("files")
              if isinstance(v, UploadFile) and v.filename]
     if not files:
-        return HTMLResponse("No files uploaded.", status_code=400)
+        return notice_response("No files uploaded.", 400)
 
     job_id = uuid.uuid4().hex
     base = job_dir(job_id)
@@ -4786,7 +4811,7 @@ async def diagnostics_analyze(request: Request) -> Response:
     except UploadError as e:
         shutil.rmtree(base, ignore_errors=True)
         log.warning("diag upload rejected (%d): %s", e.status_code, e.message)
-        return HTMLResponse(html_escape(e.message), status_code=e.status_code)
+        return notice_response(e.message, e.status_code)
     finally:
         shutil.rmtree(base / "tmp", ignore_errors=True)
 
@@ -5101,7 +5126,7 @@ async def inbox(request: Request) -> HTMLResponse:
     logs, browser history and the Referer header, and the token is the inbox's
     only access secret."""
     if not ENABLE_UPLOAD_API:
-        return HTMLResponse("Inbox is not enabled on this server.", status_code=404)
+        return notice_response("Inbox is not enabled on this server.", 404)
     token = request.headers.get("X-Upload-Token", "")
     if not token and request.method == "POST":
         form = await request.form()
@@ -5201,6 +5226,10 @@ async def inbox_delete_one(request: Request) -> JSONResponse:
     return JSONResponse({"deleted": bool(delete_job(job))})
 
 
+def _clip(s: str, limit: int = 4000) -> str:
+    return s if len(s) <= limit else s[:limit] + "\n… (truncated)"
+
+
 def _job_guard(job_id: str, *, json_resp: bool = False,
                missing: str = "Unknown job.") -> tuple[Optional[dict], Optional[Response]]:
     """Shared /result route preamble: reject anything that isn't a clean job id
@@ -5209,12 +5238,12 @@ def _job_guard(job_id: str, *, json_resp: bool = False,
     if not job_id.isalnum():
         if json_resp:
             return None, JSONResponse({"error": "invalid job id"}, status_code=400)
-        return None, HTMLResponse("Invalid job id.", status_code=400)
+        return None, notice_response("Invalid job id.", 400)
     status = read_status(job_id)
     if status is None:
         if json_resp:
             return None, JSONResponse({"error": "unknown job"}, status_code=404)
-        return None, HTMLResponse(missing, status_code=404)
+        return None, notice_response(missing, 404)
     return status, None
 
 
@@ -5255,8 +5284,9 @@ async def result(job_id: str) -> Response:
         ERROR_PAGE % {
             "css": PAGE_CSS, "nav": NAV, "footer": FOOTER,
             "exit": html_escape(str(status.get("exitcode"))),
-            "stderr": html_escape(status.get("stderr", "")) or "(empty)",
-            "stdout": html_escape(status.get("stdout", "")) or "(empty)",
+            # Cap the raw subprocess output dumped on this (public) page.
+            "stderr": html_escape(_clip(status.get("stderr", ""))) or "(empty)",
+            "stdout": html_escape(_clip(status.get("stdout", ""))) or "(empty)",
             "history": history_record_js(job_id, "timeline", "failed",
                                          upload_names(status, job_id)),
         },
@@ -5352,7 +5382,7 @@ async def cmtrace(job_id: str) -> Response:
 
     logs = list_input_logs(job_id)
     if not logs:
-        return HTMLResponse("No raw logs found for this job.", status_code=404)
+        return notice_response("No raw logs found for this job.", 404)
 
     # Link back to whichever overview this job has.
     if status.get("kind") == "diag":
@@ -5472,7 +5502,7 @@ async def diag_timeline(job_id: str) -> Response:
         return err
     if (status.get("kind") != "diag"
             or (status.get("analysis") or {}).get("state") != "done"):
-        return HTMLResponse("Timeline report not available.", status_code=404)
+        return notice_response("Timeline report not available.", 404)
 
     summary_html = render_summary_panel(read_summary(job_id))
     return HTMLResponse(REPORT_PAGE % {
@@ -5534,10 +5564,10 @@ async def diag_package_download(job_id: str) -> Response:
     if err is not None:
         return err
     if status.get("kind") != "diag":
-        return HTMLResponse("Package not available.", status_code=404)
+        return notice_response("Package not available.", 404)
     input_dir = job_dir(job_id) / "input"
     if not input_dir.is_dir():
-        return HTMLResponse("No files in this package.", status_code=404)
+        return notice_response("No files in this package.", 404)
     dest = job_dir(job_id) / "output" / "package.zip"
 
     def build() -> None:
