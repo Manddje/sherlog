@@ -2478,3 +2478,50 @@ def test_package_search_hits_and_bounds(client, monkeypatch):
 
 def test_package_search_unknown_job(client):
     assert client.get("/result/deadbeef/search", params={"q": "abc"}).status_code == 404
+
+
+# --- Inbox device grouping + regression diff ---------------------------------
+
+def test_inbox_device_diff_unit(client):
+    import json as _json
+    import app as app_module
+    for jid, st in (("aaa1", "ok"), ("bbb2", "bad")):
+        out = app_module.job_dir(jid) / "output"
+        out.mkdir(parents=True)
+        (out / "dashboard.json").write_text(_json.dumps({"checks": [
+            {"label": "IME service", "status": st},
+            {"label": "Entra joined", "status": "ok"},
+            {"label": "Only-in-one", "status": "bad"} if st == "bad" else
+            {"label": "Entra PRT", "status": "ok"},
+        ]}), encoding="utf-8")
+    worse = app_module.inbox_device_diff("bbb2", "aaa1")
+    assert worse == {"worse": ["IME service"], "better": []}
+    better = app_module.inbox_device_diff("aaa1", "bbb2")
+    assert better["better"] == ["IME service"] and better["worse"] == []
+
+
+def test_inbox_groups_by_device_and_shows_diff(upload_client):
+    import app as app_module
+    for _ in range(2):
+        r = upload_client.post("/api/diagnostics", content=_diag_zip(),
+                               headers={"X-Upload-Token": _TOK,
+                                        "X-Device-Name": "PC-01"})
+        assert r.status_code == 200
+    # Make the newest upload's dashboard worse than the previous one
+    rows = app_module.list_inbox_jobs(_TOK)
+    assert len(rows) == 2
+    import json as _json
+    newest = rows[0]["job_id"]
+    p = app_module.job_dir(newest) / "output" / "dashboard.json"
+    dash = _json.loads(p.read_text(encoding="utf-8"))
+    for c in dash["checks"]:
+        if c["label"] == "Entra joined":
+            c["status"] = "bad"
+    p.write_text(_json.dumps(dash), encoding="utf-8")
+
+    page = upload_client.post("/inbox", data={"token": _TOK})
+    assert page.status_code == 200
+    assert 'class="devhdr"' in page.text
+    assert "PC-01" in page.text and "(2 upload(s))" in page.text
+    assert "worse than previous" in page.text
+    assert "Entra joined" in page.text

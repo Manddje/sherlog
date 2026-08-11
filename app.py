@@ -5164,6 +5164,25 @@ async def api_diagnostics(request: Request) -> Response:
     return JSONResponse({"job_id": job_id, "url": f"/result/{job_id}"})
 
 
+def _dash_status_map(job_id: str) -> dict:
+    dash = read_dashboard(job_id) or {}
+    return {str(c.get("label")): str(c.get("status"))
+            for c in dash.get("checks", []) if c.get("label")}
+
+
+def inbox_device_diff(newer_id: str, older_id: str) -> dict:
+    """Check labels that worsened/improved between two uploads of one device.
+    Only labels present in both dashboards are compared. Total."""
+    rank = {"ok": 0, "unknown": 0, "warn": 1, "bad": 2}
+    old = _dash_status_map(older_id)
+    new = _dash_status_map(newer_id)
+    worse = [lbl for lbl, s in new.items()
+             if lbl in old and rank.get(s, 0) > rank.get(old[lbl], 0)]
+    better = [lbl for lbl, s in new.items()
+              if lbl in old and rank.get(s, 0) < rank.get(old[lbl], 0)]
+    return {"worse": worse, "better": better}
+
+
 def list_inbox_jobs(token: str) -> List[dict]:
     """Drop-off jobs whose stored token hash matches `token`, newest first."""
     want = token_hash(token)
@@ -5195,6 +5214,11 @@ INBOX_PAGE = """<!doctype html>
   table.inbox th,table.inbox td{text-align:left;padding:.5rem .6rem;
     border-bottom:1px solid var(--border);vertical-align:top}
   table.inbox th{color:var(--muted);font-weight:600}
+  table.inbox tr.devhdr td{font-weight:600;background:var(--surface);
+    border-top:2px solid var(--border)}
+  .delta{font-size:.8rem;margin-top:.2rem}
+  .delta.bad{color:#dc2626}
+  .delta.ok{color:#16a34a}
   .tokrow{display:flex;gap:.5rem;flex-wrap:wrap;align-items:center;margin:.5rem 0}
   .tokrow input[type=text]{flex:1;min-width:16rem;padding:.55rem .8rem;
     border:1px solid var(--border);border-radius:8px;background:var(--bg);
@@ -5382,17 +5406,45 @@ async def inbox(request: Request) -> HTMLResponse:
 
     rows = await asyncio.to_thread(list_inbox_jobs, token)
     if rows:
-        trs = "".join(
-            f'<tr><td>{html_escape(r["device"])}</td>'
-            f'<td>{time.strftime("%Y-%m-%d %H:%M", time.localtime(r["mtime"]))}</td>'
-            f'<td>{html_escape(r["state"])}'
-            + (f' · analysis {html_escape(r["analysis"])}'
-               if r["analysis"] not in ("none", "") else "")
-            + f'</td><td><a href="/result/{r["job_id"]}">open</a> '
-            f'<button class="linkbtn danger" type="button" '
-            f'style="margin-left:1rem" '
-            f'data-job="{r["job_id"]}">delete</button></td></tr>'
-            for r in rows)
+        # Group per device (rows are newest-first, so groups are ordered by
+        # each device's latest upload) and diff the newest upload against its
+        # predecessor so a regression is visible from the inbox itself.
+        groups: "dict[str, list]" = {}
+        for r in rows:
+            groups.setdefault(r["device"], []).append(r)
+        diffs = await asyncio.to_thread(
+            lambda: {d: inbox_device_diff(g[0]["job_id"], g[1]["job_id"])
+                     for d, g in groups.items() if len(g) >= 2})
+        parts_rows = []
+        for device, g in groups.items():
+            parts_rows.append(
+                f'<tr class="devhdr"><td colspan="4">{html_escape(device)}'
+                f' <span class="muted">({len(g)} upload(s))</span></td></tr>')
+            for idx, r in enumerate(g):
+                delta = ""
+                if idx == 0 and device in diffs:
+                    d = diffs[device]
+                    if d["worse"]:
+                        delta += ('<div class="delta bad">&#9650; worse than '
+                                  'previous: '
+                                  + html_escape(", ".join(d["worse"][:4]))
+                                  + '</div>')
+                    if d["better"]:
+                        delta += ('<div class="delta ok">&#9660; improved: '
+                                  + html_escape(", ".join(d["better"][:4]))
+                                  + '</div>')
+                parts_rows.append(
+                    f'<tr><td class="muted">&#8627;</td>'
+                    f'<td>{time.strftime("%Y-%m-%d %H:%M", time.localtime(r["mtime"]))}</td>'
+                    f'<td>{html_escape(r["state"])}'
+                    + (f' · analysis {html_escape(r["analysis"])}'
+                       if r["analysis"] not in ("none", "") else "")
+                    + delta
+                    + f'</td><td><a href="/result/{r["job_id"]}">open</a> '
+                    f'<button class="linkbtn danger" type="button" '
+                    f'style="margin-left:1rem" '
+                    f'data-job="{r["job_id"]}">delete</button></td></tr>')
+        trs = "".join(parts_rows)
         cap = UPLOAD_API_MAX_JOBS_PER_TOKEN
         full_note = (' &mdash; inbox full, new uploads are refused until you '
                      'delete some or they expire' if len(rows) >= cap else '')
