@@ -3223,6 +3223,13 @@ CMTRACE_PAGE = """<!doctype html>
   .side .file:hover{background:var(--bg);color:var(--fg)}
   .side .file.active{background:var(--accent);color:#fff}
   iframe{border:0;flex:1;height:100%%;display:block}
+  @media (max-width:700px){
+    .body{flex-direction:column;height:auto}
+    .side{width:auto;max-height:15rem;border-right:0;
+      border-bottom:1px solid var(--border)}
+    iframe{height:70vh;flex:none}
+    .topbar{flex-wrap:wrap;gap:.3rem}
+  }
 </style></head><body>
   <div class="topbar">
     <a class="brand" href="/">%(logo)s Sherlog</a>
@@ -3249,6 +3256,11 @@ CMTRACE_PAGE = """<!doctype html>
   side.addEventListener('click', ev => {
     const f = ev.target.closest('.file');
     if (f && f.dataset.file) select(f);
+  });
+  side.addEventListener('keydown', ev => {
+    if (ev.key !== 'Enter' && ev.key !== ' ') return;
+    const f = ev.target.closest('.file');
+    if (f && f.dataset.file) { ev.preventDefault(); select(f); }
   });
   // Highlight the file the iframe already loaded (server's first/default).
   (files.find(f => f.dataset.file === first) || files[0])?.classList.add('active');
@@ -3359,6 +3371,15 @@ DIAG_PAGE = """<!doctype html>
   .pkgloc{font-weight:600;font-size:.75rem}
   .pkgtext{color:var(--muted);font-size:.75rem;word-break:break-word}
   .browser iframe{border:0;flex:1;height:100%%;display:block}
+  .sr{position:absolute;width:1px;height:1px;margin:-1px;overflow:hidden;
+    clip:rect(0 0 0 0);white-space:nowrap}
+  @media (max-width:700px){
+    .browser{flex-direction:column;height:auto}
+    .side{width:auto;max-height:16rem;border-right:0;
+      border-bottom:1px solid var(--border)}
+    .browser iframe{height:60vh;flex:none}
+    .topbar{flex-wrap:wrap;gap:.3rem}
+  }
 </style></head><body>
   <div class="topbar">
     <a class="brand" href="/">%(logo)s Sherlog</a>
@@ -3476,6 +3497,11 @@ DIAG_PAGE = """<!doctype html>
   side.addEventListener('click', ev => {
     const f = ev.target.closest('.file');
     if (f && f.dataset.file) select(f);
+  });
+  side.addEventListener('keydown', ev => {
+    if (ev.key !== 'Enter' && ev.key !== ' ') return;
+    const f = ev.target.closest('.file');
+    if (f && f.dataset.file) { ev.preventDefault(); select(f); }
   });
   (files.find(f => f.dataset.file === first) || null)?.classList.add('active');
   setDownload(first);
@@ -3831,7 +3857,8 @@ def render_dashboard_panel(dash: Optional[dict]) -> str:
                     if advice else "")
         cards.append(
             f'<div class="check"{attrs}>'
-            f'<span class="lbl"><span class="st {st}"></span>'
+            f'<span class="lbl"><span class="st {st}" aria-hidden="true"></span>'
+            f'<span class="sr">status {st}: </span>'
             f'{html_escape(str(c.get("label", "")))}</span>'
             f'<div class="det">{html_escape(str(c.get("detail", "")))}</div>'
             f'{adv_html}</div>'
@@ -4330,7 +4357,7 @@ def render_cmtrace_view(filename: str, records: List[dict], truncated: bool) -> 
             cls = _row_class(r["type"]) if r["structured"] else _plain_class(r["msg"])
             when = (r["date"] + " " + r["time"]).strip()
             rows.append(
-                f'<tr id="L{i}" class="{cls}" data-c="{html_escape(r["component"])}">'
+                f'<tr id="L{i}" class="{cls}" tabindex="0" data-c="{html_escape(r["component"])}">'
                 f'<td class="msg">{html_escape(r["msg"])}</td>'
                 f'<td class="c">{html_escape(r["component"])}</td>'
                 f'<td class="t">{html_escape(when)}</td>'
@@ -4346,7 +4373,7 @@ def render_cmtrace_view(filename: str, records: List[dict], truncated: bool) -> 
         for i, r in enumerate(records, 1):
             cls = _plain_class(r["msg"])
             rows.append(
-                f'<tr id="L{i}" class="{cls}" data-c="">'
+                f'<tr id="L{i}" class="{cls}" tabindex="0" data-c="">'
                 f'<td class="ln">{i}</td>'
                 f'<td class="msg">{html_escape(r["msg"])}</td></tr>'
             )
@@ -4373,7 +4400,7 @@ def render_evtx_view(filename: str, records: List[dict], truncated: bool) -> str
     for i, r in enumerate(records, 1):
         cls = _evtx_row_class(r["level"])
         rows.append(
-            f'<tr id="L{i}" class="{cls}" data-c="{html_escape(r["provider"])}">'
+            f'<tr id="L{i}" class="{cls}" tabindex="0" data-c="{html_escape(r["provider"])}">'
             f'<td class="msg">{html_escape(r["msg"])}</td>'
             f'<td class="c">{html_escape(r["provider"])}</td>'
             f'<td class="t">{html_escape(r["time"])}</td>'
@@ -4534,6 +4561,11 @@ def _render_records_page(filename: str, head: str, rows: List[str],
   document.getElementById('body').addEventListener('click', ev => {
     const tr = ev.target.closest('tr');
     if (tr) showDetail(tr);
+  });
+  document.getElementById('body').addEventListener('keydown', ev => {
+    if (ev.key !== 'Enter' && ev.key !== ' ') return;
+    const tr = ev.target.closest('tr');
+    if (tr) { ev.preventDefault(); showDetail(tr); }
   });
   document.getElementById('d-close').addEventListener('click', closeDetail);
   document.getElementById('d-copy').addEventListener('click', function(){
@@ -5670,7 +5702,7 @@ def render_file_tree(paths: List[str], skipped: List[str] = ()) -> str:
                 )
             else:
                 out.append(
-                    f'<div class="file" data-file="{_attr(full)}" '
+                    f'<div class="file" role="button" tabindex="0" data-file="{_attr(full)}" '
                     f'title="{_attr(full)}">{html_escape(leaf)}</div>'
                 )
         return "".join(out)
