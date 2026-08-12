@@ -1897,7 +1897,7 @@ def test_collector_has_anonymize_option():
     assert "best-effort" in text.lower()
     # The inbox JS rewrites this exact token in the remediation template.
     import app as app_module
-    assert "-Remote -OutputPath" in app_module.REMEDIATION_TEMPLATE
+    assert "-Remote -OutputPath" in app_module.load_remediation_template()
 
 
 def test_device_scripts_are_ascii_only():
@@ -1906,8 +1906,53 @@ def test_device_scripts_are_ascii_only():
     import app as app_module
     text = (REPO_ROOT / "Collect-IntuneDiagnostics.ps1").read_text(encoding="utf-8")
     assert text.isascii(), "Collect-IntuneDiagnostics.ps1 must be ASCII-only"
-    assert app_module.REMEDIATION_TEMPLATE.isascii(), \
-        "REMEDIATION_TEMPLATE must be ASCII-only"
+    assert app_module.load_remediation_template().isascii(), \
+        "Remediate-CollectToSherlog.ps1 must be ASCII-only"
+
+
+def test_remediation_template_matches_shipped_file():
+    """app.py must never carry a second, driftable copy of the remediation
+    script; the inbox UI has to show exactly what admins would download."""
+    import app as app_module
+    on_disk = (REPO_ROOT / "Remediate-CollectToSherlog.ps1").read_text(encoding="utf-8")
+    assert app_module.load_remediation_template() == on_disk
+
+
+def test_remediation_script_reports_result_line():
+    """Write-Host/Write-Warning don't flow through a pipe, so the collector
+    must also emit a plain Write-Output line the remediation script's
+    Where-Object filter can actually see (was previously always empty)."""
+    text = (REPO_ROOT / "Remediate-CollectToSherlog.ps1").read_text(encoding="utf-8")
+    assert "SHERLOG_(RESULT|ERROR)" in text
+    collector = (REPO_ROOT / "Collect-IntuneDiagnostics.ps1").read_text(encoding="utf-8")
+    assert 'Write-Output "SHERLOG_RESULT=' in collector
+    assert 'Write-Output "SHERLOG_ERROR=' in collector
+
+
+def test_upload_token_redacted_unconditionally():
+    """The upload token must be scrubbed from collected text files (chiefly
+    the transcript, which records the full invocation command line)
+    regardless of -Anonymize - it is the only credential for the inbox."""
+    text = (REPO_ROOT / "Collect-IntuneDiagnostics.ps1").read_text(encoding="utf-8")
+    redact_block = text.split("if ($UploadToken) {", 1)[1].split("if ($Anonymize) {", 1)[0]
+    assert "UPLOAD-TOKEN" in redact_block
+    assert "Invoke-TextRedaction" in redact_block
+
+
+def test_anonymize_skips_well_known_system_principals():
+    """Redacting the literal string 'SYSTEM' corrupts HKEY_LOCAL_MACHINE\\
+    SYSTEM\\... registry paths and breaks the server's SYSTEM-context
+    detection for the Entra PRT check - well-known principals must be
+    excluded from the anonymize map."""
+    text = (REPO_ROOT / "Collect-IntuneDiagnostics.ps1").read_text(encoding="utf-8")
+    assert "wellKnown" in text
+    assert "NT AUTHORITY" in text and r"NT AUTHORITY\\SYSTEM" in text.replace("\\\\", r"\\")
+
+
+def test_collect_script_reachable_without_basic_auth(auth_client):
+    """The Intune remediation wrapper downloads the collector as SYSTEM via
+    Invoke-WebRequest, which cannot answer an interactive Basic challenge."""
+    assert auth_client.get("/collect-script").status_code == 200
 
 
 def test_diag_downloads(client):
@@ -2746,3 +2791,52 @@ def test_what_toggle_does_not_trigger_card_deeplink(client, monkeypatch):
     page = client.get(r.headers["location"]).text
     assert ".check .whatbtn" in page
     assert "ev.stopPropagation();" in page
+
+
+# --- Collector <-> server contract guard -------------------------------------
+
+def test_collector_produces_every_dashboard_source():
+    """Every _DASH_SOURCES path (or at least one localized fallback) must be
+    produced by the collector, and hardcoded rglob lookups must match a
+    literal the collector writes - otherwise a rename in either file breaks
+    a card silently (it just reports 'unknown', never an error)."""
+    import re as _re
+    import app as app_module
+    script = (REPO_ROOT / "Collect-IntuneDiagnostics.ps1").read_text(encoding="utf-8")
+    norm = script.replace("\\", "/")
+
+    def produced(candidate: str) -> bool:
+        if candidate in norm:
+            return True
+        # Registry/<Key>.reg and EventLogs/<Key>-*.txt are built by string
+        # interpolation from a hashtable key, not written as one literal
+        # path; match the key instead.
+        m = _re.match(r"^(Registry)/([^./]+)\.reg$", candidate)
+        if m and _re.search(rf"""['"]{_re.escape(m.group(2))}['"]\s*=""", script):
+            return True
+        return False
+
+    missing = {key: candidates for key, candidates in app_module._DASH_SOURCES.items()
+               if not any(produced(c) for c in candidates)}
+    assert not missing, f"_DASH_SOURCES entries not produced by the collector: {missing}"
+
+    for leaf in ("Apps-IME/Logs", "-ErrorsWarnings.txt", "PushNotification-Platform"):
+        assert leaf in norm, f"hardcoded dashboard lookup {leaf!r} not found in the collector script"
+
+
+def test_dashboard_summary_always_merged():
+    """Device name/collection date must populate even when dsregcmd parses
+    cleanly - the summary merge was previously gated on AzureAdJoined being
+    empty, so every well-formed package left the dashboard header blank."""
+    import app as app_module
+    pkg_dir = REPO_ROOT / "testdata"
+    import tempfile
+    with tempfile.TemporaryDirectory() as tmp:
+        pkg = Path(tmp)
+        _write_utf16(pkg / "Identity" / "dsregcmd-status.txt",
+                     "AzureAdJoined : YES\nAzureAdPrt : YES\n")
+        (pkg / "_SUMMARY.txt").write_text(
+            " Device   : WELLFORMED-PC\n Date     : 2026-08-12\n", encoding="utf-8")
+        dash = app_module.build_dashboard(pkg)
+        assert dash["device"]["name"] == "WELLFORMED-PC"
+        assert dash["device"]["collected"] == "2026-08-12"

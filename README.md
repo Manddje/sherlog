@@ -42,7 +42,17 @@ heeft een dark mode; de homepage toont een cumulatieve uploadteller.
 
 De **Diagnostics Package**-tool neemt de zip die
 `Collect-IntuneDiagnostics.ps1` op een device produceert (`IntuneDiag-*.zip`)
-en biedt drie dingen in één resultaatpagina:
+en biedt drie dingen in één resultaatpagina. Naast de kern-collectie
+verzamelt het script ook: `dsregcmd /status` in **interactieve
+gebruikerscontext** (via een one-shot scheduled task — geeft de Entra
+PRT-check een echt signaal i.p.v. altijd "unknown" onder SYSTEM), GPO-policies
+(`HKLM\SOFTWARE\Policies`), co-management-status, Defender for
+Endpoint-onboarding, Delivery Optimization, schijfruimte, tijdsynchronisatie,
+TPM-status en een TLS-issuer-check (detecteert TLS-inspectie). Het schrijft
+een `_MANIFEST.json` (collectorversie, profiel, per-stap resultaat) en
+redigeert het upload-token altijd uit alle tekstbestanden — ook zonder
+`-Anonymize` — omdat PowerShell's transcript de volledige commandline
+(inclusief token) vastlegt.
 
 1. **Diagnose-dashboard** — ruim twintig health checks uit het pakket, met
    bovenaan een **verdict-banner** ("N problems and M warnings found") en de
@@ -65,7 +75,12 @@ en biedt drie dingen in één resultaatpagina:
    de bewijsregel** in het bronbestand. Ontbreekt een bronbestand, dan toont de check "unknown"
    (grijs) in plaats van een fout. Via **Copy findings** kopieer je het
    dashboard als markdown; `/result/<id>/dashboard.json` en
-   `/result/<id>/summary.json` leveren dezelfde data machine-leesbaar.
+   `/result/<id>/summary.json` leveren dezelfde data machine-leesbaar. Het
+   apparaatlabel (device/tenant/datum) boven de kaarten komt nu altijd uit
+   `_SUMMARY.txt`, ook als `dsregcmd` volledig geparst kon worden. De
+   firewall- en eventlog-checks gebruiken een locale-onafhankelijke
+   JSON-sidecar wanneer die in het pakket zit (nieuwere collector), en vallen
+   anders terug op de Engelstalige tekstexport.
 2. **Automatische timeline-analyse** — op de IME-logs in het pakket
    (`Apps-IME\Logs`) draait de timeline-analyse (alleen hier beschikbaar); het
    rapport en het samenvattingspaneel verschijnen zodra de analyse klaar is.
@@ -190,6 +205,15 @@ geen token-register bij.
 
 > Het detection-script staat ook kant-en-klaar (met je token al ingevuld) op
 > de `/inbox`-pagina nadat je een token genereert.
+
+De detection-output toont nu ook het resultaat (`Sherlog: SHERLOG_RESULT=<url>`
+of `SHERLOG_ERROR=...`) — zichtbaar in het remediation-rapport in Intune. Het
+script slaat het laatste resultaat + tijdstip op in `HKLM\SOFTWARE\Sherlog`
+(`LastRunUtc`/`LastResultUrl`) en slaat een run over als de vorige minder dan
+`$MinHoursBetweenRuns` (default 6u) geleden was, zodat een fleet-brede
+schedule de inbox-caps niet in één klap opsoupeert. Download + zip staan in
+`%ProgramData%\Sherlog` (SYSTEM/Administrators-only), niet meer in het door
+standaardgebruikers beschrijfbare `%TEMP%`.
 
 Direct vanaf de commandline kan ook:
 

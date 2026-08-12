@@ -1176,12 +1176,52 @@ def parse_firewall_profiles(text: str) -> List[dict]:
     return out
 
 
+def parse_firewall_profiles_json(text: str) -> Optional[List[dict]]:
+    """State per firewall profile from the locale-invariant Get-NetFirewallProfile
+    JSON sidecar (`[{"Name": "Domain", "Enabled": 1}, ...]`). None when the
+    text isn't valid JSON in the expected shape, so callers can fall back to
+    the netsh-based `parse_firewall_profiles`."""
+    try:
+        data = json.loads(text)
+    except ValueError:
+        return None
+    if not isinstance(data, list):
+        return None
+    out = []
+    for item in data:
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("Name", "")).strip()
+        if not name:
+            continue
+        enabled = item.get("Enabled")
+        on = bool(enabled) if isinstance(enabled, (bool, int)) else str(enabled).lower() == "true"
+        out.append({"profile": name, "on": on})
+    return out or None
+
+
 def count_event_issues(text: str) -> dict:
     """Tally Error/Warning rows in a *-ErrorsWarnings.txt Format-List dump."""
     return {
         "errors": len(re.findall(r"LevelDisplayName\s*:\s*Error", text, re.I)),
         "warnings": len(re.findall(r"LevelDisplayName\s*:\s*Warning", text, re.I)),
     }
+
+
+def count_event_issues_json(text: str) -> Optional[dict]:
+    """Locale-invariant tally from the *-ErrorsWarnings.json sidecar (numeric
+    Level survives non-English Windows, where LevelDisplayName breaks the
+    text-based count). None when unusable, so callers fall back to the text
+    parser. Level 1 (Critical) counts as an error alongside 2 (Error)."""
+    try:
+        records = json.loads(text)
+    except ValueError:
+        return None
+    if not isinstance(records, list):
+        return None
+    errors = sum(1 for r in records if isinstance(r, dict) and r.get("Level") in (1, 2))
+    warnings = sum(1 for r in records if isinstance(r, dict) and r.get("Level") == 3)
+    return {"errors": errors, "warnings": warnings}
 
 
 def collect_log_error_codes(input_dir: Path, max_files: int = 200,
@@ -1457,6 +1497,10 @@ _DASH_SOURCES = {
     "policymanager_providers": ("Registry/PolicyManager-Providers.reg",),
     "proxy": ("Network/winhttp-proxy.txt",),
     "firewall": ("Network/firewall-profiles.txt",),
+    # Locale-invariant twin: netsh's ON/OFF text is localized (breaks the
+    # firewall card on non-English Windows), Get-NetFirewallProfile's Enabled
+    # is a plain boolean. Preferred over "firewall" when present.
+    "firewall_json": ("Network/firewall-profiles.json",),
     # Autopilot / ESP hives (collected all along, previously unused).
     "autopilot": ("Registry/Autopilot.reg",),
     "autopilot_settings": ("Registry/Autopilot-EstablishedCorr.reg",),
@@ -1636,9 +1680,11 @@ def build_dashboard(input_dir: Path) -> dict:
                     return {**src, "line": i}
         return src
 
-    identity = parse_dsregcmd(read("dsregcmd"))
-    if not identity.get("AzureAdJoined"):
-        identity = {**parse_summary_txt(read("summary")), **identity}
+    # Always layer the collector summary in as a lower-priority source: it is
+    # the only place Device/Date live (used for the dashboard header), and
+    # gating the merge on a missing AzureAdJoined value left those fields
+    # empty on every well-formed package (dsregcmd never carries them).
+    identity = {**parse_summary_txt(read("summary")), **parse_dsregcmd(read("dsregcmd"))}
 
     def id_link(*patterns: str) -> dict:
         """Identity evidence lives in dsregcmd-status.txt or, for packages
@@ -1996,7 +2042,14 @@ def build_dashboard(input_dir: Path) -> dict:
     if ev_files:
         tot_e = tot_w = 0
         for p in ev_files:
-            c = count_event_issues(read_text_tolerant(p))
+            # Prefer the locale-invariant JSON sidecar when the collector
+            # wrote one; falls back to the (English-only) text parser for
+            # older packages.
+            json_p = p.with_suffix(".json")
+            c = (count_event_issues_json(read_text_tolerant(json_p))
+                 if json_p.is_file() else None)
+            if c is None:
+                c = count_event_issues(read_text_tolerant(p))
             tot_e += c["errors"]
             tot_w += c["warnings"]
         dm = next((p for p in ev_files if "DeviceManagement-Admin" in p.name),
@@ -2053,14 +2106,25 @@ def build_dashboard(input_dir: Path) -> dict:
                        else proxy_info["server"] or "configured"),
             **link("proxy"),
         })
-    fw = parse_firewall_profiles(read("firewall")) if read("firewall") else []
+    # Prefer the locale-invariant JSON sidecar (netsh's ON/OFF text is
+    # localized and breaks this card on non-English Windows); fall back to
+    # the text export for older packages.
+    fw_key, fw = None, None
+    if read("firewall_json"):
+        fw = parse_firewall_profiles_json(read("firewall_json"))
+        if fw is not None:
+            fw_key = "firewall_json"
+    if fw is None and read("firewall"):
+        fw = parse_firewall_profiles(read("firewall"))
+        fw_key = "firewall"
+    fw = fw or []
     if fw:
         off = [f["profile"] for f in fw if not f["on"]]
         checks.append({
             "label": "Firewall",
             "status": "warn" if off else "ok",
             "detail": ("off: " + ", ".join(off) if off else "all profiles on"),
-            **link("firewall"),
+            **(link(fw_key) if fw_key else {}),
         })
 
     # Autopilot / ESP: presence-based cards from hives the collector has
@@ -2550,8 +2614,11 @@ class BasicAuthMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
         # /health and the token-authenticated drop-off API carry their own
         # auth (or none), so they bypass basic auth — a device collector can't
-        # do the interactive basic-auth challenge.
-        if (request.url.path in ("/health", "/api/diagnostics")
+        # do the interactive basic-auth challenge. /collect-script must be
+        # reachable too: the Intune remediation wrapper downloads it as
+        # SYSTEM with Invoke-WebRequest, which also can't answer a Basic
+        # challenge, and the script itself is meant to be publicly served.
+        if (request.url.path in ("/health", "/api/diagnostics", "/collect-script")
                 or not AUTH_ENABLED):
             return await call_next(request)
 
@@ -4939,61 +5006,20 @@ async def cmtrace_upload_page() -> HTMLResponse:
 # and downloaded from the upload page.
 COLLECT_SCRIPT = APP_DIR / "Collect-IntuneDiagnostics.ps1"
 
-# Canonical remediation script, also shipped as Remediate-CollectToSherlog.ps1.
-# Kept inline so
-# the inbox can always show it, even if the file isn't in the running image.
-REMEDIATION_TEMPLATE = r"""<#
-.SYNOPSIS
-    Intune Remediation DETECTION script: collect a slim Intune diagnostics
-    package and upload it to a Sherlog drop-off inbox.
+# The remediation script shown/copied in the inbox UI. Read from the shipped
+# file (single source of truth - see Remediate-CollectToSherlog.ps1) instead
+# of an inline copy, so the two can never drift out of sync; a minimal
+# fallback keeps the inbox usable if the file is somehow missing from the image.
+REMEDIATE_SCRIPT = APP_DIR / "Remediate-CollectToSherlog.ps1"
 
-.DESCRIPTION
-    Intune Remediations require a detection script; paste this in the DETECTION
-    slot (no remediation script needed). Create it under Devices > Scripts and
-    remediations, assign it to a group, or run it on-demand ("Run remediation").
-    It downloads Collect-IntuneDiagnostics.ps1 from your Sherlog server, runs it
-    with the slim -Remote profile and uploads the zip with your token. Review the
-    uploads on <SherlogBase>/inbox (enter your token in the form).
 
-    Runs as SYSTEM. Output is kept short to fit the 2048-char output cap.
-
-.NOTES
-    Edit the two settings below. Generate the token on the Sherlog /inbox page.
-    Run in 64-bit PowerShell. Paste as the Detection script (it always runs).
-#>
-
-# ---- settings -------------------------------------------------------------
-$SherlogBase = 'https://sherlog.nl'          # your Sherlog base URL
-$UploadToken = '<PASTE-YOUR-TOKEN-HERE>'     # from <SherlogBase>/inbox
-# ---------------------------------------------------------------------------
-
-try {
-    [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-} catch {}
-
-$collector = Join-Path $env:TEMP 'Collect-IntuneDiagnostics.ps1'
-try {
-    Invoke-WebRequest -Uri "$SherlogBase/collect-script" -OutFile $collector -UseBasicParsing
-} catch {
-    Write-Output "Sherlog: collector download failed: $($_.Exception.Message)"
-    exit 1
-}
-
-try {
-    & $collector -Remote -OutputPath $env:TEMP `
-        -UploadUrl "$SherlogBase/api/diagnostics" -UploadToken $UploadToken |
-        Where-Object { $_ -match 'Review at:|Upload failed' } |
-        Select-Object -Last 1 |
-        ForEach-Object { Write-Output "Sherlog: $_" }
-} catch {
-    Write-Output "Sherlog: collection failed: $($_.Exception.Message)"
-    exit 1
-} finally {
-    Remove-Item $collector -Force -ErrorAction SilentlyContinue
-}
-
-exit 0
-"""
+def load_remediation_template() -> str:
+    try:
+        return REMEDIATE_SCRIPT.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return ("# Remediate-CollectToSherlog.ps1 was not found in this image.\n"
+                "# Download it from the project repository and paste it into\n"
+                "# the Intune remediation Detection script slot.\n")
 
 
 def render_collect_script_panel() -> str:
@@ -5671,7 +5697,7 @@ async def inbox(request: Request) -> HTMLResponse:
     if not token:
         body = _INBOX_FORM % {"min": UPLOAD_TOKEN_MIN_LEN,
                               "cap": UPLOAD_API_MAX_JOBS_PER_TOKEN,
-                              "script": js_json(REMEDIATION_TEMPLATE)}
+                              "script": js_json(load_remediation_template())}
         return HTMLResponse(INBOX_PAGE % {
             "css": PAGE_CSS, "nav": NAV, "footer": FOOTER, "body": body})
 

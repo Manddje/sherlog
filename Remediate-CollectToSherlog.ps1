@@ -11,7 +11,10 @@
     with the slim -Remote profile and uploads the zip with your token. Review the
     uploads on <SherlogBase>/inbox (enter your token in the form).
 
-    Runs as SYSTEM. Output is kept short to fit the 2048-char output cap.
+    Runs as SYSTEM. Output is kept short to fit the 2048-char output cap. Skips
+    collection if it already ran within the last $MinHoursBetweenRuns hours
+    (stamped in the registry), so a recurring remediation schedule doesn't spam
+    the inbox or burn the upload caps across a large fleet.
 
 .NOTES
     Edit the two settings below. Generate the token on the Sherlog /inbox page.
@@ -21,13 +24,40 @@
 # ---- settings -------------------------------------------------------------
 $SherlogBase = 'https://sherlog.nl'          # your Sherlog base URL
 $UploadToken = '<PASTE-YOUR-TOKEN-HERE>'     # from <SherlogBase>/inbox
+$MinHoursBetweenRuns = 6                     # skip if collected more recently
 # ---------------------------------------------------------------------------
+
+if ($UploadToken -eq '<PASTE-YOUR-TOKEN-HERE>' -or $UploadToken.Length -lt 24) {
+    Write-Output 'Sherlog: UploadToken not configured (edit the script settings).'
+    exit 1
+}
+
+$stateKey = 'HKLM:\SOFTWARE\Sherlog'
+try {
+    $last = (Get-ItemProperty -Path $stateKey -Name LastRunUtc -ErrorAction Stop).LastRunUtc
+    $lastUtc = [DateTime]::Parse($last, $null, [Globalization.DateTimeStyles]::RoundtripKind)
+    $hoursSince = ((Get-Date).ToUniversalTime() - $lastUtc).TotalHours
+    if ($hoursSince -lt $MinHoursBetweenRuns) {
+        Write-Output "Sherlog: collected $([math]::Round($hoursSince,1))h ago, skipping (min $MinHoursBetweenRuns h)."
+        exit 0
+    }
+} catch {}
 
 try {
     [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 } catch {}
 
-$collector = Join-Path $env:TEMP 'Collect-IntuneDiagnostics.ps1'
+# Admin-only working directory: $env:TEMP (C:\Windows\Temp under SYSTEM) is
+# writable by standard users, so a downloaded script and the diagnostics zip
+# (full tenant data) would both be plantable/readable there.
+$workDir = Join-Path $env:ProgramData 'Sherlog'
+try {
+    New-Item -ItemType Directory -Path $workDir -Force | Out-Null
+    icacls $workDir /inheritance:r | Out-Null
+    icacls $workDir /grant:r 'SYSTEM:(OI)(CI)F' 'BUILTIN\Administrators:(OI)(CI)F' | Out-Null
+} catch {}
+
+$collector = Join-Path $workDir 'Collect-IntuneDiagnostics.ps1'
 try {
     Invoke-WebRequest -Uri "$SherlogBase/collect-script" -OutFile $collector -UseBasicParsing
 } catch {
@@ -35,17 +65,30 @@ try {
     exit 1
 }
 
+$resultLine = $null
 try {
-    & $collector -Remote -OutputPath $env:TEMP `
-        -UploadUrl "$SherlogBase/api/diagnostics" -UploadToken $UploadToken |
-        Where-Object { $_ -match 'Review at:|Upload failed' } |
-        Select-Object -Last 1 |
-        ForEach-Object { Write-Output "Sherlog: $_" }
+    $output = & $collector -Remote -OutputPath $workDir `
+        -UploadUrl "$SherlogBase/api/diagnostics" -UploadToken $UploadToken 2>&1
+    $resultLine = $output | Where-Object { $_ -match '^SHERLOG_(RESULT|ERROR)=' } | Select-Object -Last 1
 } catch {
     Write-Output "Sherlog: collection failed: $($_.Exception.Message)"
     exit 1
 } finally {
     Remove-Item $collector -Force -ErrorAction SilentlyContinue
+}
+
+try {
+    New-Item -Path $stateKey -Force | Out-Null
+    Set-ItemProperty -Path $stateKey -Name LastRunUtc -Value ((Get-Date).ToUniversalTime().ToString('o'))
+    if ($resultLine -match '^SHERLOG_RESULT=(.+)$') {
+        Set-ItemProperty -Path $stateKey -Name LastResultUrl -Value $matches[1]
+    }
+} catch {}
+
+if ($resultLine) {
+    Write-Output "Sherlog: $resultLine"
+} else {
+    Write-Output 'Sherlog: collector ran but produced no result line (upload may have been skipped - see UploadUrl/UploadToken).'
 }
 
 exit 0

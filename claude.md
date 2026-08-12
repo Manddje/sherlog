@@ -137,6 +137,27 @@ zonder allow-same-origin sturen ze geen credentials mee en zou de link onder
 basic auth 401'en. Het dark-mode bootstrap-script staat één keer in `_THEME_JS`
 en wordt via string-concatenatie in elke template gezet.
 
+**Collector-contract:** `_DASH_SOURCES` (paden) en een paar hardcoded
+`rglob`-namen (`Apps-IME/Logs`, `*-ErrorsWarnings.txt`,
+`PushNotification-Platform`) moeten letterlijk overeenkomen met wat
+`Collect-IntuneDiagnostics.ps1` schrijft — anders wordt een check stilletjes
+"unknown" i.p.v. een fout. `test_collector_produces_every_dashboard_source`
+bewaakt dit. `Remediate-CollectToSherlog.ps1` wordt **niet** meer inline
+gedupliceerd in app.py: `load_remediation_template()` leest het bestand van
+schijf (fallback bij ontbreken), zodat de twee nooit kunnen driften.
+`/collect-script` is uitgezonderd van basic auth (de Intune-remediation
+download het als SYSTEM zonder credentials). De collector-`Write-Host`/
+`Write-Warning`-regels stromen niet door een PowerShell-pipe; automatisering
+(de remediation-wrapper) leest daarom een aparte `Write-Output
+"SHERLOG_RESULT=…"`/`"SHERLOG_ERROR=…"`-slotregel. Het upload-token wordt
+altijd uit alle tekstbestanden geredigeerd (ook zonder `-Anonymize`) omdat
+`Start-Transcript` de volledige commandline vastlegt; `-Anonymize` slaat
+well-known SYSTEM-principals over (anders corrumpeert het `HKEY_LOCAL_
+MACHINE\SYSTEM\…`-paden en breekt het de PRT-SYSTEM-detectie hierboven).
+Firewall- en eventlog-checks prefereren een locale-onafhankelijke
+JSON-sidecar (`parse_firewall_profiles_json`, `count_event_issues_json`) als
+die in het pakket zit, met fallback op de Engelstalige tekstexport.
+
 **Achtergrondjobs:** start via `spawn_job()` — houdt een sterke referentie
 vast (asyncio houdt alleen weak refs; anders kan een job mid-run GC'd worden
 en blijft "running" hangen). Bij appstart markeert `fail_interrupted_jobs()`
