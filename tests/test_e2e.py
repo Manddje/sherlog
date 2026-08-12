@@ -1721,6 +1721,28 @@ def test_api_upload_and_inbox(upload_client):
     assert "PC01" not in other.text
 
 
+def test_api_upload_survives_dashboard_crash(upload_client, monkeypatch):
+    """A build_dashboard exception must never lose the upload: the job is still
+    created (just without a dashboard.json) so it appears in the inbox, instead
+    of 500-ing before write_status and dropping the package silently."""
+    import app as app_module
+
+    def boom(_input_dir):
+        raise RuntimeError("parser blew up")
+
+    monkeypatch.setattr(app_module, "build_dashboard", boom)
+    r = upload_client.post("/api/diagnostics", content=_diag_zip(),
+                           headers={"X-Upload-Token": _TOK,
+                                    "X-Device-Name": "PC02",
+                                    "Content-Type": "application/zip"})
+    assert r.status_code == 200
+    job_id = r.json()["job_id"]
+    assert app_module.read_status(job_id)["source"] == "api"
+    assert not app_module.read_dashboard(job_id)   # no dashboard.json written
+    inbox = upload_client.get("/inbox", headers={"X-Upload-Token": _TOK})
+    assert f"/result/{job_id}" in inbox.text
+
+
 def test_inbox_token_never_read_from_url_query(upload_client):
     """The inbox token must travel in a header or POST body, never the URL: a
     query string leaks into access logs, browser history and Referer, and the
@@ -1885,8 +1907,9 @@ def test_inbox_anonymize_toggle(upload_client):
     r = upload_client.get("/inbox")
     assert 'id="anon"' in r.text                       # the toggle
     assert "best-effort" in r.text                     # disclaimer text
-    # Toggle on inserts -Anonymize into the collector call.
-    assert "'-Remote -Anonymize -OutputPath'" in r.text
+    # Toggle on flips $CollectionMode to 'anon'; the wrapper derives -Anonymize
+    # (and its throttle key) from that single variable.
+    assert "$CollectionMode = 'anon'" in r.text
 
 
 def test_collector_has_anonymize_option():
@@ -1895,9 +1918,28 @@ def test_collector_has_anonymize_option():
     assert "<TENANT-ID>" in text and "<COMPANY>" in text and "<UPN>" in text
     # Best-effort disclaimer present.
     assert "best-effort" in text.lower()
-    # The inbox JS rewrites this exact token in the remediation template.
+    # The wrapper derives -Anonymize from $CollectionMode (single source of
+    # truth); the inbox JS flips that variable, not the collector call.
     import app as app_module
-    assert "-Remote -OutputPath" in app_module.load_remediation_template()
+    tpl = app_module.load_remediation_template()
+    assert "$CollectionMode" in tpl
+    assert "'-Remote', '-OutputPath'" in tpl
+    assert "if ($CollectionMode -eq 'anon') { $collectorArgs += '-Anonymize' }" in tpl
+
+
+def test_remediation_throttle_is_mode_scoped_and_success_only():
+    """The 6h throttle must key on the collection mode (so switching
+    full<->anon forces a fresh collection instead of being suppressed by the
+    other mode's timestamp) and must stamp the timestamp only after a
+    successful upload (so a failed run doesn't block retries for 6h)."""
+    import app as app_module
+    tpl = app_module.load_remediation_template()
+    assert '$runValue = "LastRunUtc_$CollectionMode"' in tpl
+    assert "-Name $runValue" in tpl
+    # The stamp is guarded by a SHERLOG_RESULT match (only-on-success).
+    guard = tpl.index("if ($resultLine -match '^SHERLOG_RESULT=(.+)$')")
+    stamp = tpl.index("Set-ItemProperty -Path $stateKey -Name $runValue")
+    assert guard < stamp
 
 
 def test_device_scripts_are_ascii_only():

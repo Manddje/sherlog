@@ -5569,9 +5569,14 @@ async def diagnostics_analyze(request: Request) -> Response:
     finally:
         shutil.rmtree(base / "tmp", ignore_errors=True)
 
-    dashboard = await asyncio.to_thread(build_dashboard, input_dir)
-    (output_dir / "dashboard.json").write_text(json.dumps(dashboard),
-                                               encoding="utf-8")
+    # A parser crash must never lose the upload: create the job regardless,
+    # just without a dashboard (result/inbox pages tolerate a missing one).
+    try:
+        dashboard = await asyncio.to_thread(build_dashboard, input_dir)
+        (output_dir / "dashboard.json").write_text(json.dumps(dashboard),
+                                                   encoding="utf-8")
+    except Exception:
+        log.exception("build_dashboard failed for %s; storing job without dashboard", job_id)
 
     ime_dir = find_ime_log_dir(input_dir)
     write_status(job_id, kind="diag", state="ready", created=time.time(),
@@ -5671,9 +5676,14 @@ async def api_diagnostics(request: Request) -> Response:
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
-    dashboard = await asyncio.to_thread(build_dashboard, input_dir)
-    (output_dir / "dashboard.json").write_text(json.dumps(dashboard),
-                                               encoding="utf-8")
+    # A parser crash must never lose the upload: create the job regardless,
+    # just without a dashboard (result/inbox pages tolerate a missing one).
+    try:
+        dashboard = await asyncio.to_thread(build_dashboard, input_dir)
+        (output_dir / "dashboard.json").write_text(json.dumps(dashboard),
+                                                   encoding="utf-8")
+    except Exception:
+        log.exception("build_dashboard failed for %s; storing job without dashboard", job_id)
 
     ime_dir = find_ime_log_dir(input_dir)
     write_status(job_id, kind="diag", state="ready", created=time.time(),
@@ -5847,10 +5857,11 @@ _INBOX_FORM = """
           // Also fill the placeholders in the comment text so the shown script
           // is fully concrete.
           s = s.split('<SherlogBase>').join(base).split('<token>').join(token);
-          // Add the -Anonymize switch to the collector call when the toggle is on.
+          // Flip $CollectionMode when the toggle is on; the wrapper derives
+          // -Anonymize (and the throttle key) from that single variable.
           var anon = document.getElementById('anon').checked;
           document.getElementById('anon-note').hidden = !anon;
-          if (anon) s = s.replace('-Remote -OutputPath', '-Remote -Anonymize -OutputPath');
+          if (anon) s = s.replace(/\\$CollectionMode\\s*=\\s*'[^']*'/, "$CollectionMode = 'anon'");
           document.getElementById('script').textContent = s;
           document.getElementById('tokshow').textContent = token;
           document.getElementById('inboxtok').value = token;
