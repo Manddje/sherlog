@@ -31,10 +31,11 @@ RUN grep -viE '^(httpx|pytest|# Test)' requirements.txt > /tmp/req.txt \
     && pip3 install --no-cache-dir -r /tmp/req.txt \
     && rm /tmp/req.txt
 
-# Application code: the analysis script, the collector script (shown and
-# downloadable on /diagnostics), web app and headless wrapper.
+# Application code: the analysis script, the collector + remediation scripts
+# (shown/downloadable on /diagnostics and /inbox), web app and headless wrapper.
 COPY Get-IntuneManagementExtensionDiagnostics.ps1 /app/
 COPY Collect-IntuneDiagnostics.ps1 /app/
+COPY Remediate-CollectToSherlog.ps1 /app/
 COPY app.py /app/
 COPY scripts/ /app/scripts/
 # Landing-page screenshots and the sample logs behind the homepage demo button.
@@ -42,7 +43,7 @@ COPY static/ /app/static/
 COPY testdata/ /app/testdata/
 
 RUN chmod +x /app/scripts/run-analysis.sh /app/scripts/docker-entrypoint.sh \
-    && chmod 0644 /app/Collect-IntuneDiagnostics.ps1
+    && chmod 0644 /app/Collect-IntuneDiagnostics.ps1 /app/Remediate-CollectToSherlog.ps1
 
 # Create the non-root runtime user (uid 10001). The container starts as root so
 # the entrypoint can chown the mounted JOBS_DIR volume, then drops to this user

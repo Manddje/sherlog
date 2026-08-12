@@ -3006,3 +3006,13 @@ def test_delivery_optimization_card_is_informational(client, tmp_path):
         "PercentPeerCaching : 42\n", encoding="utf-8")
     do = _by_label(app_module.build_dashboard(pkg))["Delivery Optimization"]
     assert do["status"] == "unknown"
+
+
+def test_dockerfile_ships_both_device_scripts():
+    """Both scripts must be COPYed into the image: Collect-IntuneDiagnostics.ps1
+    is served at /collect-script, and Remediate-CollectToSherlog.ps1 is read
+    from disk by load_remediation_template() - a missing COPY line leaves the
+    inbox showing the 'not found in this image' fallback in production."""
+    dockerfile = (REPO_ROOT / "Dockerfile").read_text(encoding="utf-8")
+    assert "COPY Collect-IntuneDiagnostics.ps1 " in dockerfile
+    assert "COPY Remediate-CollectToSherlog.ps1 " in dockerfile
