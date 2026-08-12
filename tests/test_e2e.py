@@ -2603,8 +2603,97 @@ def test_run_job_timeout_marks_failed(client, monkeypatch, tmp_path):
     (base / "output").mkdir(parents=True)
     app_module.write_status(jid, state="queued")
 
-    aio.run(app_module.run_job(jid, base / "input", base / "output"))
+    # Not asyncio.run(): on Python 3.9 that unsets the thread's event loop,
+    # which breaks the module-level asyncio.Semaphore on the next app reload.
+    loop = aio.new_event_loop()
+    aio.set_event_loop(loop)
+    try:
+        loop.run_until_complete(
+            app_module.run_job(jid, base / "input", base / "output"))
+    finally:
+        loop.close()
+        aio.set_event_loop(aio.new_event_loop())
 
     st = app_module.read_status(jid)
     assert st["state"] == "failed"
     assert "timed out" in st["stderr"]
+
+
+# --- SYSTEM-context PRT + enrollment-cert false-positive fixes ---------------
+
+def _by_label(dash):
+    return {c["label"]: c for c in dash["checks"]}
+
+
+def test_prt_unknown_when_collected_as_system(client, tmp_path):
+    import app as app_module
+    pkg = tmp_path / "pkg"
+    _write_utf16(pkg / "Identity" / "dsregcmd-status.txt",
+                 "AzureAdJoined : YES\n"
+                 "AzureAdPrt : NO\n"
+                 "Executing Account Name : WORKGROUP\\PC-01$\n")
+    prt = _by_label(app_module.build_dashboard(pkg))["Entra PRT"]
+    assert prt["status"] == "unknown"
+    assert "SYSTEM" in prt["detail"] and "per-user" in prt["detail"]
+
+
+def test_prt_still_bad_in_user_context(client, tmp_path):
+    import app as app_module
+    pkg = tmp_path / "pkg"
+    _write_utf16(pkg / "Identity" / "dsregcmd-status.txt",
+                 "AzureAdJoined : YES\n"
+                 "AzureAdPrt : NO\n"
+                 "Executing Account Name : CONTOSO\\j.doe\n")
+    prt = _by_label(app_module.build_dashboard(pkg))["Entra PRT"]
+    assert prt["status"] == "bad"
+
+
+def test_enrollment_cert_prefers_enrollment_with_reference(client, tmp_path):
+    import app as app_module
+    pkg = tmp_path / "pkg"
+    # Stale Intune enrollment (no cert ref) first, active one second.
+    _write_utf16(pkg / "Registry" / "Enrollments.reg",
+        "[HKLM\\SOFTWARE\\Microsoft\\Enrollments\\{aa111111-1111-1111-1111-111111111111}]\r\n"
+        "\"UPN\"=\"old@org.nl\"\r\n\"ProviderID\"=\"MS DM Server\"\r\n"
+        "\"EnrollmentState\"=dword:00000001\r\n"
+        "\"DiscoveryServiceFullURL\"=\"https://enrollment.manage.microsoft.com/x\"\r\n"
+        "\r\n"
+        "[HKLM\\SOFTWARE\\Microsoft\\Enrollments\\{bb222222-2222-2222-2222-222222222222}]\r\n"
+        "\"UPN\"=\"user@org.nl\"\r\n\"ProviderID\"=\"MS DM Server\"\r\n"
+        "\"EnrollmentState\"=dword:00000001\r\n"
+        "\"DiscoveryServiceFullURL\"=\"https://enrollment.manage.microsoft.com/x\"\r\n"
+        "\"SslClientCertReference\"=\"MY;System;AAAA1111BBBB2222CCCC3333DDDD4444EEEE5555\"\r\n")
+    _write_utf16(pkg / "Identity" / "certs-machine-overview.txt", _CERTS)
+    cert = _by_label(app_module.build_dashboard(pkg))["Enrollment certificate"]
+    assert cert["status"] == "ok"
+    assert "AAAA1111BBBB" in cert["detail"]
+
+
+def test_enrollment_cert_warns_not_bad_when_sync_healthy(client, tmp_path):
+    import app as app_module
+    pkg = tmp_path / "pkg"
+    _write_utf16(pkg / "Registry" / "Enrollments.reg",
+        "[HKLM\\SOFTWARE\\Microsoft\\Enrollments\\{aa111111-1111-1111-1111-111111111111}]\r\n"
+        "\"UPN\"=\"user@org.nl\"\r\n\"ProviderID\"=\"MS DM Server\"\r\n"
+        "\"EnrollmentState\"=dword:00000001\r\n"
+        "\"DiscoveryServiceFullURL\"=\"https://enrollment.manage.microsoft.com/x\"\r\n")
+    # Healthy MDM session (LastSessionResult 0).
+    _write_utf16(pkg / "Registry" / "OMADM-Accounts.reg",
+        "[HKLM\\SOFTWARE\\Microsoft\\Provisioning\\OMADM\\Accounts\\{12345678-1234-1234-1234-123456789012}]\r\n"
+        "\"LastSessionResult\"=dword:00000000\r\n"
+        "\"ServerLastAccessTime\"=\"2026-08-01T10:00:00Z\"\r\n")
+    # No expired certs: the zombie-sync correlation must not fire here.
+    _write_utf16(pkg / "Identity" / "certs-machine-overview.txt",
+                 "Subject    : CN=healthy\n"
+                 "NotAfter   : 1/1/2030 10:00:00\n"
+                 "Thumbprint : AAAA1111BBBB2222CCCC3333DDDD4444EEEE5555\n"
+                 "Expired    : False\n")
+    cert = _by_label(app_module.build_dashboard(pkg))["Enrollment certificate"]
+    assert cert["status"] == "warn"
+    assert "collection gap" in cert["detail"]
+    assert "SslClientCertReference" in cert["advice"]
+
+    # Without the healthy session it stays a hard failure.
+    (pkg / "Registry" / "OMADM-Accounts.reg").unlink()
+    cert2 = _by_label(app_module.build_dashboard(pkg))["Enrollment certificate"]
+    assert cert2["status"] == "bad"

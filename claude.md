@@ -108,7 +108,12 @@ toont een verdict-banner; rode/amber kaarten krijgen een "wat nu"-hint uit de
 `_ADVICE`-map (label → tekst, aangehecht in `build_dashboard`). Naast de
 basischecks: Autopilot-profiel + ESP-app-tracking (registry-hives), en een
 content-delivery-correlatiekaart (delivery/netwerk-foutcodes + proxy of
-onbereikbare endpoints). Win32-app-GUID's worden verrijkt met displaynamen via
+onbereikbare endpoints). Context-bewust: "Entra PRT" wordt `unknown` (niet
+rood) als dsregcmd onder SYSTEM draaide (machine-account in `Executing Account
+Name` — de PRT is per-user); "Enrollment certificate" kiest de Intune-enrollment
+mét `SslClientCertReference` (stale GUID's negeren) en degradeert naar warn
+i.p.v. bad wanneer de referentie ontbreekt terwijl MDM sync gezond is
+(collection gap, geen kapot device). Win32-app-GUID's worden verrijkt met displaynamen via
 Graph (`refresh_app_names`, cache `APP_NAMES_CACHE`, zelfde `GRAPH_*`-creds als
 de CSP-namen). Exports: `GET /result/{id}/dashboard.json` en `/summary.json`;
 de "Copy findings"-knop bouwt client-side markdown uit `js_json(dash)`.

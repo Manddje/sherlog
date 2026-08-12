@@ -1574,11 +1574,22 @@ def build_dashboard(input_dir: Path) -> dict:
         fallback = link("summary", *patterns)
         return fallback if fallback.get("line") else (primary or fallback)
 
+    # The PRT is per-user: dsregcmd run as SYSTEM (the Intune remediation
+    # context the collector normally runs in) always reports AzureAdPrt : NO.
+    # A machine account ("...$") or SYSTEM executing account means the value
+    # says nothing about the user — report unknown instead of a false red.
+    exec_acct = str(identity.get("Executing Account Name", "")).strip()
+    system_ctx = bool(re.search(r"(\$$|\bSYSTEM$)", exec_acct))
+    prt_check = _yesno_check("Entra PRT", identity.get("AzureAdPrt", ""))
+    if system_ctx and prt_check["status"] == "bad":
+        prt_check = {"label": "Entra PRT", "status": "unknown",
+                     "detail": "collected as SYSTEM — the PRT is per-user "
+                               "and not visible in this context"}
+
     checks = [
         {**_yesno_check("Entra joined", identity.get("AzureAdJoined", "")),
          **id_link(r"AzureAdJoined")},
-        {**_yesno_check("Entra PRT", identity.get("AzureAdPrt", "")),
-         **id_link(r"AzureAdPrt")},
+        {**prt_check, **id_link(r"AzureAdPrt")},
     ]
 
     mdm_url = identity.get("MdmUrl", identity.get("MDM URL", ""))
@@ -1727,7 +1738,12 @@ def build_dashboard(input_dir: Path) -> dict:
 
     # MDM enrollment detail (UPN, provider) from the Enrollments hive.
     enrolls = parse_enrollments(reg("enrollments"))
-    intune = next((e for e in enrolls if e["is_intune"]), None)
+    # Prefer the Intune enrollment that actually carries a client-cert
+    # reference: a stale/wiped enrollment GUID without one would otherwise be
+    # judged while the active enrollment is fine.
+    intune_enrolls = [e for e in enrolls if e["is_intune"]]
+    intune = next((e for e in intune_enrolls if e["ssl_cert_ref"]),
+                  intune_enrolls[0] if intune_enrolls else None)
     if enrolls:
         checks.append({
             "label": "Enrollment",
@@ -1761,8 +1777,23 @@ def build_dashboard(input_dir: Path) -> dict:
 
         if intune:
             thumb, state = _enroll_cert_state(intune)
+            cadvice = ""
             if state == "none":
-                cstatus, cdetail = "bad", "client-certificate reference missing"
+                # No reference anywhere in the export. When the MDM session
+                # itself is healthy the enrollment clearly works — that points
+                # at a collection/registry-layout gap, not a broken device.
+                mdm_healthy = any(c.get("label") == "MDM sync health"
+                                  and c.get("status") == "ok" for c in checks)
+                if mdm_healthy:
+                    cstatus = "warn"
+                    cdetail = ("no client-certificate reference in the export "
+                               "— MDM sync is healthy, so this is likely a "
+                               "collection gap rather than a broken enrollment")
+                    cadvice = ("Search the package for SslClientCertReference; "
+                               "if another enrollment GUID holds it, the "
+                               "device is fine.")
+                else:
+                    cstatus, cdetail = "bad", "client-certificate reference missing"
             elif state == "unknown":
                 cstatus, cdetail = ("warn", "cert reference present; machine-cert "
                                     "overview missing to confirm")
@@ -1783,10 +1814,13 @@ def build_dashboard(input_dir: Path) -> dict:
             if intune.get("upn"):
                 cert_patterns.append(re.escape(intune["upn"]))
             cert_patterns.append(r"DiscoveryServiceFullURL")
-            checks.append({
+            check = {
                 "label": "Enrollment certificate", "status": cstatus,
                 "detail": cdetail, **link("enrollments", *cert_patterns),
-            })
+            }
+            if cadvice:
+                check["advice"] = cadvice
+            checks.append(check)
 
         _CERT_STATE_TEXT = {"present": "present", "expired": "expired",
                             "missing": "missing", "unknown": "unknown",
