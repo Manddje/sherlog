@@ -111,11 +111,22 @@ heeft daarnaast een "?"-toggle met uitleg wat de check inhoudt, uit de
 `dashboard.json` opgeslagen), zodat bestaande jobs de uitleg ook krijgen; een
 test dwingt af dat elk `"label"` in app.py een `_WHAT`-entry heeft en omgekeerd.
 De toggle-knop moet `stopPropagation()` doen: de kaart zelf is een deep-link. Naast de
-basischecks: Autopilot-profiel + ESP-app-tracking (registry-hives), en een
+basischecks: Autopilot-profiel + ESP-app-tracking (registry-hives), een
 content-delivery-correlatiekaart (delivery/netwerk-foutcodes + proxy of
-onbereikbare endpoints). Context-bewust: "Entra PRT" wordt `unknown` (niet
-rood) als dsregcmd onder SYSTEM draaide (machine-account in `Executing Account
-Name` — de PRT is per-user); "Enrollment certificate" kiest de Intune-enrollment
+onbereikbare endpoints), GPO-policies, co-management/Defender for Endpoint
+(alleen als de betreffende service aanwezig is — geen ruis op
+niet-co-managed devices), Delivery Optimization (informatief, geen oordeel),
+schijfruimte, tijdsynchronisatie, TPM en een TLS-inspectiedetectie
+(certificate-issuer-check). Een `"Collection"`-kaart leest `_MANIFEST.json`
+(collectorversie, profiel, per-stap ok/mislukt — geëxposeerd op de device-regel
+en als kaart) zodat "geen brondata" en "collectiestap mislukt" niet meer
+allebei hetzelfde grijze "unknown" zijn. Context-bewust: "Entra PRT" leest bij
+voorkeur `Identity/dsregcmd-status-user.txt` (dsregcmd in interactieve
+gebruikerscontext, door de collector apart verzameld via een one-shot
+scheduled task); ontbreekt dat bestand, dan valt de check terug op `unknown`
+(niet rood) als de machine-context dsregcmd onder SYSTEM draaide (machine-
+account in `Executing Account Name` — de PRT is per-user); "Enrollment
+certificate" kiest de Intune-enrollment
 mét `SslClientCertReference` (stale GUID's negeren) en degradeert naar warn
 i.p.v. bad wanneer de referentie ontbreekt terwijl MDM sync gezond is
 (collection gap, geen kapot device). Win32-app-GUID's worden verrijkt met displaynamen via

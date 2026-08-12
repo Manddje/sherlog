@@ -763,6 +763,25 @@ def parse_installed_apps(text: str) -> List[dict]:
     return []
 
 
+def parse_disk_space(text: str) -> List[dict]:
+    """Rows of the disk-space Format-Table dump (DriveLetter/FileSystemLabel/
+    SizeGB/FreeGB), same dash-run column layout as `parse_installed_apps`.
+    Total: returns [] when the table (or file) is missing or a row's numbers
+    don't parse."""
+    rows = parse_installed_apps(text)  # same Format-Table -AutoSize shape
+    out = []
+    for r in rows:
+        try:
+            out.append({
+                "drive": r.get("DriveLetter", "?"),
+                "size_gb": float(r.get("SizeGB", "")),
+                "free_gb": float(r.get("FreeGB", "")),
+            })
+        except (TypeError, ValueError):
+            continue
+    return out
+
+
 def parse_cert_overview(text: str) -> List[dict]:
     """Format-List blocks (blank-line separated) of the machine cert overview."""
     certs = []
@@ -1483,7 +1502,9 @@ def app_display_name(app_id: str) -> str:
 # The collector exists in an English and a Dutch variant; accept both names.
 _DASH_SOURCES = {
     "summary": ("_SUMMARY.txt", "_SAMENVATTING.txt"),
+    "manifest": ("_MANIFEST.json",),
     "dsregcmd": ("Identity/dsregcmd-status.txt",),
+    "dsregcmd_user": ("Identity/dsregcmd-status-user.txt",),
     "endpoints": ("Network/endpoint-connectivity.txt",),
     "ime_service": ("Apps-IME/service-status.txt",),
     "certs": ("Identity/certs-machine-overview.txt",
@@ -1505,6 +1526,14 @@ _DASH_SOURCES = {
     "autopilot": ("Registry/Autopilot.reg",),
     "autopilot_settings": ("Registry/Autopilot-EstablishedCorr.reg",),
     "esp_tracking": ("Registry/EnrollmentStatusTracking.reg",),
+    "policies": ("Registry/Policies.reg",),
+    "comanagement": ("Management/co-management.txt",),
+    "defender_atp": ("Management/defender-atp-onboarding.txt",),
+    "delivery_optimization": ("Management/delivery-optimization-status.txt",),
+    "diskspace": ("System/disk-space.txt",),
+    "timesync": ("System/time-sync-status.txt",),
+    "tpm": ("System/tpm-status.txt",),
+    "tls_issuer": ("Network/tls-issuer-check.txt",),
 }
 
 
@@ -1547,6 +1576,25 @@ _ADVICE = {
     "Content delivery": "Downloads are failing while traffic is shaped: "
                         "verify proxy/firewall rules for Delivery "
                         "Optimization and *.manage.microsoft.com.",
+    "Collection": "Open the manifest below to see which step failed and why; "
+                  "the rest of the dashboard may be incomplete as a result.",
+    "GPO policies": "Compare these against the Policies (RSOP) card; a "
+                    "setting managed by both GPO and Intune is decided by "
+                    "MDMWinsOverGP, which is easy to get wrong.",
+    "Co-management": "Start the ConfigMgr client service; a stopped client "
+                     "means co-managed workloads silently stop applying.",
+    "Defender for Endpoint": "Re-run onboarding (the onboarding package from "
+                             "the Defender portal); a device that never "
+                             "onboarded has no EDR coverage.",
+    "Disk space": "Free up space (temp files, old profiles, WinSxS cleanup); "
+                  "Win32 app installs and ESP both fail silently when the "
+                  "disk is full.",
+    "Time sync": "Fix the time source (w32tm /resync, or check the domain/"
+                 "NTP config); clock skew breaks token and certificate "
+                 "validation in ways that look unrelated.",
+    "TLS inspection": "A non-Microsoft certificate issuer here usually means "
+                      "a TLS-inspecting proxy is breaking Intune/Entra "
+                      "traffic; exempt these endpoints from inspection.",
 }
 
 # One sentence per card explaining what the check looks at and why it matters.
@@ -1558,7 +1606,8 @@ _WHAT = {
                     "Everything else in Intune depends on this identity.",
     "Entra PRT": "Whether the signed-in user holds a Primary Refresh Token, "
                  "the credential that powers single sign-on to Microsoft 365. "
-                 "It is per-user, so a package collected as SYSTEM cannot see it.",
+                 "It is per-user; the collector runs a one-shot task as the "
+                 "interactive user to see it, since SYSTEM alone cannot.",
     "MDM enrollment": "The MDM enrollment URL the device reports. It should "
                       "point at Intune (manage.microsoft.com); another value "
                       "means the device is managed elsewhere or not at all.",
@@ -1623,6 +1672,33 @@ _WHAT = {
                         "logs with the proxy configuration and endpoint "
                         "reachability, to spot content delivery being broken "
                         "rather than an individual app.",
+    "Collection": "Whether every collector step on this device succeeded, so "
+                  "an 'unknown' card elsewhere can be told apart from a "
+                  "genuinely failed collection step.",
+    "GPO policies": "Group Policy-managed settings found under HKLM\\SOFTWARE"
+                    "\\Policies. Not a problem by itself, but a common source "
+                    "of conflicts with Intune-delivered policy.",
+    "Co-management": "Whether this device is also managed by Configuration "
+                     "Manager (ConfigMgr) alongside Intune, and whether that "
+                     "client is running.",
+    "Defender for Endpoint": "Whether the device has onboarded to Microsoft "
+                             "Defender for Endpoint and the Sense service is "
+                             "running.",
+    "Delivery Optimization": "Peer-caching/download-source data for Win32 "
+                             "app content delivery, captured for manual "
+                             "review (no automated verdict).",
+    "Disk space": "Free space on the device's local drives. Win32 app "
+                  "installs, ESP and updates all fail in confusing ways when "
+                  "a disk fills up.",
+    "Time sync": "The device's NTP time source and last successful sync. "
+                 "Clock skew breaks Kerberos/token and certificate "
+                 "validation well before anything else looks wrong.",
+    "TPM": "Whether a Trusted Platform Module is present and ready. Autopilot "
+           "hardware-hash and attestation-based scenarios depend on it.",
+    "TLS inspection": "The certificate issuer seen on a real HTTPS request to "
+                      "login.microsoftonline.com. A non-Microsoft issuer "
+                      "means a local proxy is terminating and re-signing "
+                      "TLS, which breaks Intune/Entra traffic in subtle ways.",
 }
 
 
@@ -1698,20 +1774,33 @@ def build_dashboard(input_dir: Path) -> dict:
 
     # The PRT is per-user: dsregcmd run as SYSTEM (the Intune remediation
     # context the collector normally runs in) always reports AzureAdPrt : NO.
-    # A machine account ("...$") or SYSTEM executing account means the value
-    # says nothing about the user — report unknown instead of a false red.
-    exec_acct = str(identity.get("Executing Account Name", "")).strip()
-    system_ctx = bool(re.search(r"(\$$|\bSYSTEM$)", exec_acct))
-    prt_check = _yesno_check("Entra PRT", identity.get("AzureAdPrt", ""))
-    if system_ctx and prt_check["status"] == "bad":
-        prt_check = {"label": "Entra PRT", "status": "unknown",
-                     "detail": "collected as SYSTEM — the PRT is per-user "
-                               "and not visible in this context"}
+    # The collector also runs dsregcmd as the interactive user via a one-shot
+    # scheduled task (Identity/dsregcmd-status-user.txt) - prefer that file's
+    # AzureAdPrt when present, since it's the only source that can show a
+    # real PRT. Older packages without it fall back to the SYSTEM-context guess.
+    user_identity = parse_dsregcmd(read("dsregcmd_user")) if read("dsregcmd_user") else {}
+    user_prt = str(user_identity.get("AzureAdPrt", "")).strip()
+    if user_prt:
+        prt_check = _yesno_check("Entra PRT", user_prt,
+                                 detail=f"{user_prt.upper()} (interactive user context)")
+        prt_link = link("dsregcmd_user", r"AzureAdPrt")
+    else:
+        # A machine account ("...$") or SYSTEM executing account means the
+        # value says nothing about the user — report unknown instead of a
+        # false red.
+        exec_acct = str(identity.get("Executing Account Name", "")).strip()
+        system_ctx = bool(re.search(r"(\$$|\bSYSTEM$)", exec_acct))
+        prt_check = _yesno_check("Entra PRT", identity.get("AzureAdPrt", ""))
+        if system_ctx and prt_check["status"] == "bad":
+            prt_check = {"label": "Entra PRT", "status": "unknown",
+                         "detail": "collected as SYSTEM — the PRT is per-user "
+                                   "and not visible in this context"}
+        prt_link = id_link(r"AzureAdPrt")
 
     checks = [
         {**_yesno_check("Entra joined", identity.get("AzureAdJoined", "")),
          **id_link(r"AzureAdJoined")},
-        {**prt_check, **id_link(r"AzureAdPrt")},
+        {**prt_check, **prt_link},
     ]
 
     mdm_url = identity.get("MdmUrl", identity.get("MDM URL", ""))
@@ -2182,6 +2271,143 @@ def build_dashboard(input_dir: Path) -> dict:
             "section": "errorcodes",
         })
 
+    # Collection health: tells "not collected" (unknown, missing source) apart
+    # from "collection step failed" (this device's collector run had a
+    # problem). Older packages have no manifest, so no card in that case.
+    collector_version = ""
+    manifest_text = read("manifest")
+    if manifest_text:
+        try:
+            manifest = json.loads(manifest_text)
+        except ValueError:
+            manifest = {}
+        if isinstance(manifest, dict):
+            ver = manifest.get("CollectorVersion")
+            profile = manifest.get("Profile")
+            if ver:
+                collector_version = f"collector v{ver}" + (f" ({profile})" if profile else "")
+            steps = manifest.get("Steps")
+            if isinstance(steps, list) and steps:
+                failed = [s.get("Name") for s in steps
+                         if isinstance(s, dict) and s.get("Ok") is False]
+                checks.append({
+                    "label": "Collection",
+                    "status": "warn" if failed else "ok",
+                    "detail": (f"{len(failed)} of {len(steps)} step(s) failed: "
+                              + ", ".join(str(n) for n in failed[:3])
+                              if failed else f"all {len(steps)} collection steps completed"),
+                    **link("manifest"),
+                })
+
+    # GPO policies: not a verdict by itself, just a pointer to check against
+    # the Policies (RSOP) card above for MDMWinsOverGP-style conflicts.
+    gpo = parse_reg(read("policies")) if read("policies") else {}
+    if gpo:
+        checks.append({
+            "label": "GPO policies",
+            "status": "warn",
+            "detail": f"{len(gpo)} GPO-managed key(s) found — review for "
+                     "conflicts with Intune policy",
+            **link("policies"),
+        })
+
+    # Co-management (ConfigMgr alongside Intune): only shown when the CCM
+    # client is actually present, so non-co-managed devices get no noise.
+    comgmt = parse_dsregcmd(read("comanagement")) if read("comanagement") else {}
+    ccm_svc = str(comgmt.get("CcmExecService", "")).strip()
+    if ccm_svc and ccm_svc != "not installed":
+        flags = str(comgmt.get("CoManagementFlags", "")).strip()
+        checks.append({
+            "label": "Co-management",
+            "status": "ok" if ccm_svc == "Running" else "warn",
+            "detail": f"ConfigMgr client {ccm_svc}" + (f", flags {flags}" if flags else ""),
+            **link("comanagement"),
+        })
+
+    # Defender for Endpoint onboarding: only shown when the Sense service
+    # exists, same reasoning as co-management.
+    atp = parse_dsregcmd(read("defender_atp")) if read("defender_atp") else {}
+    sense_svc = str(atp.get("SenseService", "")).strip()
+    if sense_svc and sense_svc != "not installed":
+        onboarded = str(atp.get("OnboardingState", "")).strip()
+        checks.append({
+            "label": "Defender for Endpoint",
+            "status": "ok" if sense_svc == "Running" and onboarded in ("1", "True")
+                      else "warn",
+            "detail": f"Sense service {sense_svc}, onboarding state "
+                     f"{onboarded or 'unknown'}",
+            **link("defender_atp"),
+        })
+
+    # Delivery Optimization: captured for manual review; the cmdlet's output
+    # shape varies across builds too much for a confident automated verdict.
+    if read("delivery_optimization").strip():
+        checks.append({
+            "label": "Delivery Optimization",
+            "status": "unknown",
+            "detail": "status captured — open to review peer-caching and "
+                     "download source mix",
+            **link("delivery_optimization"),
+        })
+
+    # Disk space: worst drive found, since Win32/ESP installs and updates all
+    # fail in confusing ways once a disk fills up.
+    disks = parse_disk_space(read("diskspace")) if read("diskspace") else []
+    if disks:
+        worst = min(disks, key=lambda d: d["free_gb"])
+        extra = f" (+{len(disks) - 1} more drive(s))" if len(disks) > 1 else ""
+        checks.append({
+            "label": "Disk space",
+            "status": ("bad" if worst["free_gb"] < 1
+                      else "warn" if worst["free_gb"] < 5 else "ok"),
+            "detail": (f"{worst['drive']}: {worst['free_gb']:.1f} GB free of "
+                      f"{worst['size_gb']:.1f} GB{extra}"),
+            **link("diskspace"),
+        })
+
+    # Time sync: a source of "Local CMOS Clock"/"Free-running" means the
+    # device never actually reached a real time server.
+    tsync = parse_dsregcmd(read("timesync")) if read("timesync") else {}
+    tsource = str(tsync.get("Source", "")).strip()
+    if tsource:
+        bad_source = bool(re.search(r"Local CMOS|Free-running|unspecified", tsource, re.I))
+        last_sync = str(tsync.get("Last Successful Sync Time", "")).strip()
+        checks.append({
+            "label": "Time sync",
+            "status": "bad" if bad_source else "ok",
+            "detail": f"source: {tsource}" + (f", last sync {last_sync}" if last_sync else ""),
+            **link("timesync"),
+        })
+
+    # TPM presence/readiness (Autopilot hardware-hash/attestation scenarios).
+    tpm = parse_dsregcmd(read("tpm")) if read("tpm") else {}
+    tpm_present = str(tpm.get("TpmPresent", "")).strip()
+    if tpm_present:
+        tpm_ready = str(tpm.get("TpmReady", "")).strip()
+        checks.append({
+            "label": "TPM",
+            "status": "ok" if tpm_present == "True" and tpm_ready == "True"
+                      else "warn" if tpm_present == "True" else "bad",
+            "detail": f"present={tpm_present}, ready={tpm_ready or 'unknown'}",
+            **link("tpm"),
+        })
+
+    # TLS-inspection detection: a non-Microsoft/DigiCert issuer on a real
+    # request usually means a local proxy is terminating and re-signing TLS.
+    tls_text = read("tls_issuer")
+    if tls_text:
+        m = re.search(r"issuer for .*?:\s*(.+)", tls_text)
+        if m:
+            issuer = m.group(1).strip()
+            suspicious = not re.search(r"Microsoft|DigiCert|Baltimore|GlobalSign", issuer, re.I)
+            checks.append({
+                "label": "TLS inspection",
+                "status": "warn" if suspicious else "ok",
+                "detail": (f"unexpected certificate issuer: {issuer}" if suspicious
+                          else f"issuer: {issuer}"),
+                **link("tls_issuer"),
+            })
+
     # Attach the per-label "what now" hint to every failing card.
     for c in checks:
         if c.get("status") in ("bad", "warn") and not c.get("advice"):
@@ -2194,6 +2420,7 @@ def build_dashboard(input_dir: Path) -> dict:
         "device_id": identity.get("DeviceId", ""),
         "tenant": identity.get("TenantName", ""),
         "collected": identity.get("Date", identity.get("Datum", "")),
+        "collector": collector_version,
     }
     return {"device": device, "checks": checks, "sections": sections}
 
@@ -4095,7 +4322,7 @@ def render_dashboard_panel(dash: Optional[dict]) -> str:
     parts = []
     device = dash.get("device", {})
     bits = [device.get("name", ""), device.get("tenant", ""),
-            device.get("collected", "")]
+            device.get("collected", ""), device.get("collector", "")]
     bits = [b for b in bits if b]
     if bits:
         parts.append(f'<p class="devline">{html_escape(" · ".join(bits))}</p>')

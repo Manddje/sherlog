@@ -2840,3 +2840,169 @@ def test_dashboard_summary_always_merged():
         dash = app_module.build_dashboard(pkg)
         assert dash["device"]["name"] == "WELLFORMED-PC"
         assert dash["device"]["collected"] == "2026-08-12"
+
+
+# --- New checks fed by the expanded collector output -------------------------
+
+def test_prt_uses_interactive_user_context_when_available(client, tmp_path):
+    """The collector now runs dsregcmd as the logged-on user too; that file's
+    AzureAdPrt must win over the always-NO SYSTEM-context guess."""
+    import app as app_module
+    pkg = tmp_path / "pkg"
+    _write_utf16(pkg / "Identity" / "dsregcmd-status.txt",
+                 "AzureAdJoined : YES\n"
+                 "AzureAdPrt : NO\n"
+                 "Executing Account Name : NT AUTHORITY\\SYSTEM\n")
+    _write_utf16(pkg / "Identity" / "dsregcmd-status-user.txt",
+                 "AzureAdJoined : YES\nAzureAdPrt : YES\n")
+    prt = _by_label(app_module.build_dashboard(pkg))["Entra PRT"]
+    assert prt["status"] == "ok"
+    assert "interactive user context" in prt["detail"]
+    assert prt["src"] == "Identity/dsregcmd-status-user.txt"
+
+
+def test_prt_falls_back_to_system_guess_without_user_file(client, tmp_path):
+    import app as app_module
+    pkg = tmp_path / "pkg"
+    _write_utf16(pkg / "Identity" / "dsregcmd-status.txt",
+                 "AzureAdJoined : YES\n"
+                 "AzureAdPrt : NO\n"
+                 "Executing Account Name : WORKGROUP\\PC-01$\n")
+    prt = _by_label(app_module.build_dashboard(pkg))["Entra PRT"]
+    assert prt["status"] == "unknown"
+
+
+def test_collection_manifest_surfaced(client, tmp_path):
+    import json
+    import app as app_module
+    pkg = tmp_path / "pkg"
+    pkg.mkdir(parents=True, exist_ok=True)
+    (pkg / "_MANIFEST.json").write_text(json.dumps({
+        "CollectorVersion": "1.1.0", "Profile": "Remote",
+        "Steps": [{"Name": "Registry: Win32Apps...", "Ok": True},
+                  {"Name": "Event log: System...", "Ok": False,
+                   "Error": "wevtutil exited with code 15"}],
+    }), encoding="utf-8")
+    dash = app_module.build_dashboard(pkg)
+    coll = _by_label(dash)["Collection"]
+    assert coll["status"] == "warn"
+    assert "1 of 2 step(s) failed" in coll["detail"]
+    assert "Event log: System" in coll["detail"]
+    assert dash["device"]["collector"] == "collector v1.1.0 (Remote)"
+
+
+def test_collection_manifest_all_ok(client, tmp_path):
+    import json
+    import app as app_module
+    pkg = tmp_path / "pkg"
+    pkg.mkdir(parents=True, exist_ok=True)
+    (pkg / "_MANIFEST.json").write_text(json.dumps({
+        "CollectorVersion": "1.1.0", "Profile": "Full",
+        "Steps": [{"Name": "Registry: Win32Apps...", "Ok": True}],
+    }), encoding="utf-8")
+    coll = _by_label(app_module.build_dashboard(pkg))["Collection"]
+    assert coll["status"] == "ok"
+
+
+def test_gpo_policies_card(client, tmp_path):
+    import app as app_module
+    pkg = tmp_path / "pkg"
+    _write_utf16(pkg / "Registry" / "Policies.reg",
+        "Windows Registry Editor Version 5.00\r\n\r\n"
+        "[HKEY_LOCAL_MACHINE\\SOFTWARE\\Policies\\Microsoft\\Windows\\WindowsUpdate]\r\n"
+        "\"NoAutoUpdate\"=dword:00000001\r\n")
+    gpo = _by_label(app_module.build_dashboard(pkg))["GPO policies"]
+    assert gpo["status"] == "warn"
+    assert "1 GPO-managed key" in gpo["detail"]
+
+
+def test_comanagement_and_defender_atp_cards_absent_when_not_installed(client, tmp_path):
+    import app as app_module
+    pkg = tmp_path / "pkg"
+    (pkg / "Management").mkdir(parents=True, exist_ok=True)
+    (pkg / "Management" / "co-management.txt").write_text(
+        "CcmExecService : not installed\nCoManagementFlags :\n", encoding="utf-8")
+    (pkg / "Management" / "defender-atp-onboarding.txt").write_text(
+        "SenseService : not installed\nOnboardingState :\nOrgId :\n", encoding="utf-8")
+    dash = app_module.build_dashboard(pkg)
+    labels = _by_label(dash)
+    assert "Co-management" not in labels
+    assert "Defender for Endpoint" not in labels
+
+
+def test_comanagement_and_defender_atp_cards_when_present(client, tmp_path):
+    import app as app_module
+    pkg = tmp_path / "pkg"
+    (pkg / "Management").mkdir(parents=True, exist_ok=True)
+    (pkg / "Management" / "co-management.txt").write_text(
+        "CcmExecService : Running\nCoManagementFlags : 145\n", encoding="utf-8")
+    (pkg / "Management" / "defender-atp-onboarding.txt").write_text(
+        "SenseService : Stopped\nOnboardingState : 0\nOrgId : abc123\n", encoding="utf-8")
+    labels = _by_label(app_module.build_dashboard(pkg))
+    assert labels["Co-management"]["status"] == "ok"
+    assert "145" in labels["Co-management"]["detail"]
+    assert labels["Defender for Endpoint"]["status"] == "warn"
+
+
+def test_disk_space_card_worst_drive(client, tmp_path):
+    import app as app_module
+    pkg = tmp_path / "pkg"
+    (pkg / "System").mkdir(parents=True, exist_ok=True)
+    (pkg / "System" / "disk-space.txt").write_text(
+        "DriveLetter FileSystemLabel SizeGB FreeGB\n"
+        "----------- --------------- ------ -------\n"
+        "C                           237.0  0.5\n"
+        "D           Data            931.0  400.2\n",
+        encoding="utf-8")
+    disk = _by_label(app_module.build_dashboard(pkg))["Disk space"]
+    assert disk["status"] == "bad"
+    assert "C: 0.5 GB free" in disk["detail"]
+    assert "+1 more drive" in disk["detail"]
+
+
+def test_time_sync_card_detects_no_real_source(client, tmp_path):
+    import app as app_module
+    pkg = tmp_path / "pkg"
+    (pkg / "System").mkdir(parents=True, exist_ok=True)
+    (pkg / "System" / "time-sync-status.txt").write_text(
+        "Leap Indicator: 3(not synchronized)\n"
+        "Source: Free-running System Clock\n", encoding="utf-8")
+    tsync = _by_label(app_module.build_dashboard(pkg))["Time sync"]
+    assert tsync["status"] == "bad"
+
+
+def test_tpm_card(client, tmp_path):
+    import app as app_module
+    pkg = tmp_path / "pkg"
+    (pkg / "System").mkdir(parents=True, exist_ok=True)
+    (pkg / "System" / "tpm-status.txt").write_text(
+        "TpmPresent : True\nTpmReady : True\n", encoding="utf-8")
+    tpm = _by_label(app_module.build_dashboard(pkg))["TPM"]
+    assert tpm["status"] == "ok"
+
+
+def test_tls_inspection_card_flags_unexpected_issuer(client, tmp_path):
+    import app as app_module
+    pkg = tmp_path / "pkg"
+    (pkg / "Network").mkdir(parents=True, exist_ok=True)
+    (pkg / "Network" / "tls-issuer-check.txt").write_text(
+        "TLS certificate issuer for login.microsoftonline.com: CN=CorpProxyCA\n",
+        encoding="utf-8")
+    tls = _by_label(app_module.build_dashboard(pkg))["TLS inspection"]
+    assert tls["status"] == "warn"
+
+    (pkg / "Network" / "tls-issuer-check.txt").write_text(
+        "TLS certificate issuer for login.microsoftonline.com: "
+        "CN=Microsoft Azure TLS Issuing CA\n", encoding="utf-8")
+    tls_ok = _by_label(app_module.build_dashboard(pkg))["TLS inspection"]
+    assert tls_ok["status"] == "ok"
+
+
+def test_delivery_optimization_card_is_informational(client, tmp_path):
+    import app as app_module
+    pkg = tmp_path / "pkg"
+    (pkg / "Management").mkdir(parents=True, exist_ok=True)
+    (pkg / "Management" / "delivery-optimization-status.txt").write_text(
+        "PercentPeerCaching : 42\n", encoding="utf-8")
+    do = _by_label(app_module.build_dashboard(pkg))["Delivery Optimization"]
+    assert do["status"] == "unknown"

@@ -54,11 +54,13 @@ redigeert het upload-token altijd uit alle tekstbestanden — ook zonder
 `-Anonymize` — omdat PowerShell's transcript de volledige commandline
 (inclusief token) vastlegt.
 
-1. **Diagnose-dashboard** — ruim twintig health checks uit het pakket, met
-   bovenaan een **verdict-banner** ("N problems and M warnings found") en de
-   kaarten gesorteerd op ernst (rood eerst). Checks o.a.: Entra join- en
-   PRT-status (`dsregcmd`), MDM-enrollment-URL, IME-servicestatus,
-   bereikbaarheid van de Intune/Entra-endpoints, verlopen
+1. **Diagnose-dashboard** — dertig health checks uit het pakket, met bovenaan
+   een **verdict-banner** ("N problems and M warnings found") en de kaarten
+   gesorteerd op ernst (rood eerst). Checks o.a.: Entra join- en **PRT-status**
+   (bij voorkeur uit `dsregcmd` in **interactieve gebruikerscontext** — de
+   collector draait die apart via een one-shot scheduled task, want de PRT is
+   per-user en onzichtbaar onder SYSTEM), MDM-enrollment-URL,
+   IME-servicestatus, bereikbaarheid van de Intune/Entra-endpoints, verlopen
    machinecertificaten, **MDM sync health** (herkent het "zombie
    device"-patroon: check-ins lopen door terwijl het MDM-certificaat verlopen
    is), **Win32-app-deploymentstatus** per app (foutcode + uitleg;
@@ -68,8 +70,15 @@ redigeert het upload-token altijd uit alle tekstbestanden — ook zonder
    scripts/remediations, het **push/remediation-kanaal** (WNS-events),
    geaggregeerde eventlog-fouten, herkende foutcodes in álle logs,
    WinHTTP-proxy, firewall-profielen, **Autopilot-profiel en
-   ESP-app-tracking**, en een **content-delivery-correlatie** (downloadfouten
-   + proxy/endpoints). Elke rode/amber kaart draagt een korte
+   ESP-app-tracking**, een **content-delivery-correlatie** (downloadfouten
+   + proxy/endpoints), **GPO-policies** (conflictrisico met Intune),
+   **co-management**- en **Defender for Endpoint**-status (alleen getoond als
+   van toepassing), Delivery Optimization, **schijfruimte**,
+   **tijdsynchronisatie**, **TPM**-status, een **TLS-inspectiedetectie**
+   (certificate-issuer-check tegen login.microsoftonline.com), en een
+   **Collection**-kaart die per collectorstap ok/mislukt toont (uit
+   `_MANIFEST.json`) zodat "geen data" en "collectie mislukt" niet meer
+   hetzelfde grijze "unknown" zijn. Elke rode/amber kaart draagt een korte
    "wat nu"-hint, elke kaart heeft een **"?"-knop met uitleg** wat die check
    precies controleert en waarom het uitmaakt, en elke kaart **deep-linkt naar
    de bewijsregel** in het bronbestand. Ontbreekt een bronbestand, dan toont de check "unknown"
