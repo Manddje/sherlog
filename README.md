@@ -60,8 +60,9 @@ en biedt drie dingen in één resultaatpagina:
    WinHTTP-proxy, firewall-profielen, **Autopilot-profiel en
    ESP-app-tracking**, en een **content-delivery-correlatie** (downloadfouten
    + proxy/endpoints). Elke rode/amber kaart draagt een korte
-   "wat nu"-hint, en elke kaart **deep-linkt naar de bewijsregel** in het
-   bronbestand. Ontbreekt een bronbestand, dan toont de check "unknown"
+   "wat nu"-hint, elke kaart heeft een **"?"-knop met uitleg** wat die check
+   precies controleert en waarom het uitmaakt, en elke kaart **deep-linkt naar
+   de bewijsregel** in het bronbestand. Ontbreekt een bronbestand, dan toont de check "unknown"
    (grijs) in plaats van een fout. Via **Copy findings** kopieer je het
    dashboard als markdown; `/result/<id>/dashboard.json` en
    `/result/<id>/summary.json` leveren dezelfde data machine-leesbaar.

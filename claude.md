@@ -105,7 +105,12 @@ een diagnostics-job:
 
 **Dashboard-extra's:** `render_dashboard_panel` sorteert kaarten op ernst en
 toont een verdict-banner; rode/amber kaarten krijgen een "wat nu"-hint uit de
-`_ADVICE`-map (label → tekst, aangehecht in `build_dashboard`). Naast de
+`_ADVICE`-map (label → tekst, aangehecht in `build_dashboard`). Elke kaart
+heeft daarnaast een "?"-toggle met uitleg wat de check inhoudt, uit de
+`_WHAT`-map — die wordt **in de renderer** op label opgezocht (niet in
+`dashboard.json` opgeslagen), zodat bestaande jobs de uitleg ook krijgen; een
+test dwingt af dat elk `"label"` in app.py een `_WHAT`-entry heeft en omgekeerd.
+De toggle-knop moet `stopPropagation()` doen: de kaart zelf is een deep-link. Naast de
 basischecks: Autopilot-profiel + ESP-app-tracking (registry-hives), en een
 content-delivery-correlatiekaart (delivery/netwerk-foutcodes + proxy of
 onbereikbare endpoints). Context-bewust: "Entra PRT" wordt `unknown` (niet

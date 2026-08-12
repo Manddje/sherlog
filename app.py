@@ -1505,6 +1505,82 @@ _ADVICE = {
                         "Optimization and *.manage.microsoft.com.",
 }
 
+# One sentence per card explaining what the check looks at and why it matters.
+# Looked up by label at render time (not stored in dashboard.json), so existing
+# jobs get the explanations too and the on-disk model stays UI-free. Every
+# label emitted by build_dashboard must have an entry — a test enforces it.
+_WHAT = {
+    "Entra joined": "Whether the device is joined to Entra ID (Azure AD). "
+                    "Everything else in Intune depends on this identity.",
+    "Entra PRT": "Whether the signed-in user holds a Primary Refresh Token, "
+                 "the credential that powers single sign-on to Microsoft 365. "
+                 "It is per-user, so a package collected as SYSTEM cannot see it.",
+    "MDM enrollment": "The MDM enrollment URL the device reports. It should "
+                      "point at Intune (manage.microsoft.com); another value "
+                      "means the device is managed elsewhere or not at all.",
+    "IME service": "Whether the Intune Management Extension service is "
+                   "running — the agent that installs Win32 apps and runs "
+                   "scripts and remediations.",
+    "Intune/Entra endpoints": "Results of the connectivity test to the Intune "
+                              "and Entra service endpoints on port 443. "
+                              "Blocked endpoints break enrolment, sync and "
+                              "app delivery.",
+    "Machine certificates": "The certificates in the device's machine store "
+                            "and whether any expired. The MDM client "
+                            "certificate lives here; an expired one silently "
+                            "kills management.",
+    "MDM sync health": "The result of the last MDM sync session with Intune. "
+                       "Also catches the 'zombie device' pattern: check-ins "
+                       "keep succeeding while the MDM certificate is expired, "
+                       "so the device looks alive but is no longer managed.",
+    "Installed apps": "Inventory of everything installed on the device, read "
+                      "from both uninstall registry hives — useful to confirm "
+                      "whether an app Intune reports as failed is actually "
+                      "present.",
+    "Win32 apps": "Per-app deployment state of the Win32 apps Intune tracks "
+                  "on this device, with the detection/enforcement result and "
+                  "the deployment error code for anything that failed.",
+    "Enrollment": "The MDM enrollment record itself: which user it belongs to "
+                  "and its enrolment state.",
+    "Enrollment certificate": "Whether the client certificate the enrolment "
+                              "points at actually exists in the machine store "
+                              "and is still valid. A broken binding is the "
+                              "classic cause of a device that looks enrolled "
+                              "but no longer syncs.",
+    "Intune Sync Debug Tool": "A Repair.log from the community Intune Sync "
+                              "Debug Tool was included in the upload; its "
+                              "output is viewable in the file browser.",
+    "Policies (RSOP)": "The policy settings that actually landed on the "
+                       "device (the winning provider per setting), with the "
+                       "Intune setting name and OMA-URI for each.",
+    "Scripts / remediations": "PowerShell scripts and remediation packages "
+                              "the IME has executed, and when they last ran.",
+    "Push / remediation channel": "Whether the device received WNS push "
+                                  "notifications for Intune. Without this "
+                                  "channel, on-demand sync and remediations "
+                                  "only run on the built-in schedule.",
+    "MDM event log": "Errors and warnings counted across the exported Windows "
+                     "event logs, with the device-management admin log as the "
+                     "starting point for troubleshooting.",
+    "Known error codes": "Error codes recognised anywhere in the log files, "
+                         "with a plain-language explanation and a link to the "
+                         "exact log line each one came from.",
+    "WinHTTP proxy": "The system-wide WinHTTP proxy configuration. IME and "
+                     "MDM traffic follow this setting, not the user's browser "
+                     "proxy.",
+    "Firewall": "The on/off state of the Windows firewall profiles, as "
+                "context for connectivity problems.",
+    "Autopilot profile": "The Autopilot deployment profile assigned to this "
+                         "device and the tenant it was provisioned for.",
+    "ESP app tracking": "Per-app installation state tracked by the Enrolment "
+                        "Status Page, which shows what blocked or delayed "
+                        "the out-of-box provisioning experience.",
+    "Content delivery": "Correlates download and network error codes in the "
+                        "logs with the proxy configuration and endpoint "
+                        "reachability, to spot content delivery being broken "
+                        "rather than an individual app.",
+}
+
 
 def _find_package_file(input_dir: Path, candidates) -> Optional[Path]:
     """Locate a package file by relative path, falling back to a leaf-name
@@ -3420,6 +3496,13 @@ DIAG_PAGE = """<!doctype html>
   .check .det{color:var(--muted);font-size:.85rem;margin-top:.2rem;word-break:break-word}
   .check .adv{color:var(--fg);font-size:.78rem;margin-top:.3rem;
     padding-top:.3rem;border-top:1px dashed var(--border);font-style:italic}
+  .check .whatbtn{float:right;margin:-.15rem -.2rem 0 .3rem;width:1.25rem;
+    height:1.25rem;line-height:1;border-radius:50%%;cursor:pointer;
+    border:1px solid var(--border);background:var(--bg);color:var(--muted);
+    font:inherit;font-size:.72rem;padding:0}
+  .check .whatbtn:hover{color:var(--fg);border-color:var(--muted)}
+  .check .what{color:var(--muted);font-size:.78rem;margin-top:.3rem;
+    padding-top:.3rem;border-top:1px dashed var(--border)}
   .check[data-file],.check[data-section]{cursor:pointer}
   .check[data-file]:hover,.check[data-file]:focus-visible,
   .check[data-section]:hover,.check[data-section]:focus-visible{border-color:var(--accent)}
@@ -3642,6 +3725,18 @@ DIAG_PAGE = """<!doctype html>
     f.scrollIntoView({block: 'nearest'});
     view.scrollIntoView({behavior: 'smooth', block: 'nearest'});
   }
+  // "?" toggle with the plain-language explanation of a check. The card
+  // itself is a deep-link, so the button must not bubble into it.
+  document.querySelectorAll('.check .whatbtn').forEach(b => {
+    b.addEventListener('click', ev => {
+      ev.stopPropagation();
+      const box = b.closest('.check').querySelector('.what');
+      if (!box) return;
+      box.hidden = !box.hidden;
+      b.setAttribute('aria-expanded', String(!box.hidden));
+    });
+    b.addEventListener('keydown', ev => ev.stopPropagation());
+  });
   document.querySelectorAll('.check[data-file],.seclink[data-file]').forEach(card => {
     card.addEventListener('click', () => openSource(card));
     card.addEventListener('keydown', ev => {
@@ -3980,13 +4075,23 @@ def render_dashboard_panel(dash: Optional[dict]) -> str:
         advice = c.get("advice")
         adv_html = (f'<div class="adv">{html_escape(str(advice))}</div>'
                     if advice else "")
+        # "What does this check mean?" toggle. The text is looked up by label
+        # here (not stored in dashboard.json), so older jobs get it too.
+        what = _WHAT.get(str(c.get("label", "")))
+        what_btn = ('<button class="whatbtn" type="button" aria-expanded="false"'
+                    ' title="What does this check mean?"'
+                    ' aria-label="What does this check mean?">?</button>'
+                    if what else "")
+        what_html = (f'<div class="what" hidden>{html_escape(what)}</div>'
+                     if what else "")
         cards.append(
             f'<div class="check"{attrs}>'
+            f'{what_btn}'
             f'<span class="lbl"><span class="st {st}" aria-hidden="true"></span>'
             f'<span class="sr">status {st}: </span>'
             f'{html_escape(str(c.get("label", "")))}</span>'
             f'<div class="det">{html_escape(str(c.get("detail", "")))}</div>'
-            f'{adv_html}</div>'
+            f'{adv_html}{what_html}</div>'
         )
     if cards:
         parts.append(f'<div class="dash">{"".join(cards)}</div>')

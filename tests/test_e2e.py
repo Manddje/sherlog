@@ -2697,3 +2697,52 @@ def test_enrollment_cert_warns_not_bad_when_sync_healthy(client, tmp_path):
     (pkg / "Registry" / "OMADM-Accounts.reg").unlink()
     cert2 = _by_label(app_module.build_dashboard(pkg))["Enrollment certificate"]
     assert cert2["status"] == "bad"
+
+
+# --- Per-card explanations ("what does this check mean?") --------------------
+
+def test_every_check_label_has_explanation():
+    """Every label build_dashboard can emit must have a _WHAT entry, so a new
+    check can't ship without a user-facing explanation."""
+    import re as _re
+    import app as app_module
+    src = (REPO_ROOT / "app.py").read_text(encoding="utf-8")
+    labels = set(_re.findall(r'"label":\s*"([^"]+)"', src))
+    labels |= set(_re.findall(r'_yesno_check\(\s*"([^"]+)"', src))
+    labels.discard("")
+    assert labels, "no check labels found in app.py"
+    missing = sorted(l for l in labels if l not in app_module._WHAT)
+    assert not missing, f"labels without a _WHAT explanation: {missing}"
+    # And no stale entries for checks that no longer exist.
+    stale = sorted(l for l in app_module._WHAT if l not in labels)
+    assert not stale, f"_WHAT entries for unknown labels: {stale}"
+
+
+def test_check_card_renders_explanation_toggle():
+    import app as app_module
+    html = app_module.render_dashboard_panel({"checks": [
+        {"label": "IME service", "status": "bad", "detail": "Stopped",
+         "src": "Apps-IME/service-status.txt", "line": 3},
+    ]})
+    assert 'class="whatbtn"' in html
+    assert 'aria-expanded="false"' in html
+    assert 'class="what" hidden' in html
+    assert "Intune Management Extension service is running" in html
+    # Unknown labels simply get no toggle (older dashboard.json files).
+    plain = app_module.render_dashboard_panel({"checks": [
+        {"label": "Some retired check", "status": "ok", "detail": "x"},
+    ]})
+    assert "whatbtn" not in plain
+
+
+def test_what_toggle_does_not_trigger_card_deeplink(client, monkeypatch):
+    """The card is itself a deep-link; the toggle must stop propagation."""
+    import app as app_module
+    monkeypatch.setattr(app_module, "spawn_job", lambda coro: coro.close())
+    r = client.post("/diagnostics-analyze",
+                    files=[("files", ("d.zip", _zip_of_diag_package(),
+                                      "application/zip"))],
+                    follow_redirects=False)
+    page = client.get(r.headers["location"]).text
+    assert ".check .whatbtn" in page
+    assert "ev.stopPropagation();" in page
