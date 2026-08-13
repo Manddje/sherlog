@@ -90,7 +90,7 @@ param(
     [switch]$Anonymize
 )
 
-$ScriptVersion = '1.1.0'
+$ScriptVersion = '1.2.0'
 
 # ============================================================
 # 0. Preparation
@@ -213,6 +213,10 @@ $eventLogs = @{
     'CodeIntegrity'               = 'Microsoft-Windows-CodeIntegrity/Operational'
     'TaskScheduler'               = 'Microsoft-Windows-TaskScheduler/Operational'
     'PushNotification-Platform'   = 'Microsoft-Windows-PushNotification-Platform/Operational'
+    # SCEP/PKCS certificate enrollment + renewal failures surface here long
+    # before the expiring MDM cert itself becomes visible.
+    'CertificateServicesClient'   = 'Microsoft-Windows-CertificateServicesClient-Lifecycle-System/Operational'
+    'LAPS'                        = 'Microsoft-Windows-LAPS/Operational'
     'Application'                 = 'Application'
     'System'                      = 'System'
 }
@@ -276,6 +280,12 @@ $regKeys = @{
     'Policies'                 = 'HKLM\SOFTWARE\Policies'
     'CoManagement'             = 'HKLM\SOFTWARE\Microsoft\CCM'
     'DefenderATP-Onboarding'   = 'HKLM\SOFTWARE\Microsoft\Windows Advanced Threat Protection\Status'
+    # Per-CSP applied-value cache: what the DM client actually set, next to
+    # the PolicyManager intent above.
+    'NodeCache'                = 'HKLM\SOFTWARE\Microsoft\Provisioning\NodeCache\CSP\Device\MS DM Server\Nodes'
+    # Policy only, never password material; key is absent on most devices
+    # (the step then records a clean failure in the manifest).
+    'LAPS-Policy'              = 'HKLM\SOFTWARE\Microsoft\Policies\LAPS'
 }
 
 foreach ($entry in $regKeys.GetEnumerator()) {
@@ -362,17 +372,23 @@ Invoke-Safe 'Connectivity test to Intune/Entra endpoints...' {
         'nps.notify.windows.com',
         'client.wns.windows.com',
         'ztd.dds.microsoft.com',
-        'cs.dds.microsoft.com'
+        'cs.dds.microsoft.com',
+        'manage.microsoft.com',
+        'dl.delivery.mp.microsoft.com',
+        'emdl.ws.microsoft.com',
+        'autologon.microsoftazuread-sso.com'
     )
     $results = foreach ($ep in $endpoints) {
         $t = Test-NetConnection -ComputerName $ep -Port 443 -WarningAction SilentlyContinue
         [pscustomobject]@{
             Endpoint  = $ep
             Reachable = $t.TcpTestSucceeded
-            RemoteIP  = $t.RemoteAddress
+            RemoteIP  = "$($t.RemoteAddress)"
         }
     }
     $results | Format-Table -AutoSize | Out-File (Join-Path $work 'Network\endpoint-connectivity.txt')
+    # Locale-invariant twin (same pattern as firewall-profiles.json).
+    $results | ConvertTo-Json | Out-File (Join-Path $work 'Network\endpoint-connectivity.json')
 
     # TLS-inspection detection: a plain port-443 handshake only proves *a* TLS
     # server answered. A real request's certificate issuer should be a
@@ -400,7 +416,23 @@ Invoke-Safe 'Connectivity test to Intune/Entra endpoints...' {
 Invoke-Safe 'Copying IME logs...' {
     $imeLogs = "$env:ProgramData\Microsoft\IntuneManagementExtension\Logs"
     if (Test-Path $imeLogs) {
-        Copy-Item $imeLogs (Join-Path $work 'Apps-IME\Logs') -Recurse -Force
+        if ($Remote) {
+            # Slim profile: recent logs only (rotated archives go back months)
+            # and a running size cap so the package stays uploadable.
+            $dest = Join-Path $work 'Apps-IME\Logs'
+            New-Item -ItemType Directory -Path $dest -Force | Out-Null
+            $budget = 40MB
+            Get-ChildItem $imeLogs -File -Recurse |
+                Where-Object { $_.LastWriteTime -gt (Get-Date).AddDays(-14) } |
+                Sort-Object LastWriteTime -Descending | ForEach-Object {
+                    if ($budget -ge $_.Length) {
+                        Copy-Item $_.FullName (Join-Path $dest $_.Name) -Force
+                        $budget -= $_.Length
+                    }
+                }
+        } else {
+            Copy-Item $imeLogs (Join-Path $work 'Apps-IME\Logs') -Recurse -Force
+        }
     }
 }
 
@@ -467,9 +499,72 @@ Invoke-Safe 'Drivers, battery, OS info...' {
 }
 
 Invoke-Safe 'Relevant scheduled tasks...' {
-    Get-ScheduledTask -TaskPath '\Microsoft\Windows\EnterpriseMgmt\*' -ErrorAction SilentlyContinue |
-        Select-Object TaskPath, TaskName, State |
+    $emTasks = Get-ScheduledTask -TaskPath '\Microsoft\Windows\EnterpriseMgmt\*' -ErrorAction SilentlyContinue
+    $emTasks | Select-Object TaskPath, TaskName, State |
         Format-Table -AutoSize | Out-File (Join-Path $work 'System\enterprisemgmt-tasks.txt') -Width 250
+    # JSON twin with run results: LastTaskResult answers "does the sync
+    # schedule actually fire and succeed", which the State column cannot.
+    $emTasks | ForEach-Object {
+        $i = $_ | Get-ScheduledTaskInfo -ErrorAction SilentlyContinue
+        [pscustomobject]@{
+            TaskName       = $_.TaskName
+            TaskPath       = $_.TaskPath
+            State          = $_.State.ToString()
+            LastRunTime    = if ($i -and $i.LastRunTime)  { $i.LastRunTime.ToString('o') } else { $null }
+            LastTaskResult = if ($i) { $i.LastTaskResult } else { $null }
+            NextRunTime    = if ($i -and $i.NextRunTime)  { $i.NextRunTime.ToString('o') } else { $null }
+        }
+    } | ConvertTo-Json | Out-File (Join-Path $work 'System\enterprisemgmt-tasks.json')
+}
+
+Invoke-Safe 'Key service states...' {
+    Get-Service -Name 'IntuneManagementExtension','dmwappushservice','WpnService',
+        'wuauserv','DoSvc','W32Time','CcmExec','Sense','WinDefend','Schedule' -ErrorAction SilentlyContinue |
+        Select-Object Name,
+            @{n='Status';e={$_.Status.ToString()}},
+            @{n='StartType';e={$_.StartType.ToString()}} |
+        ConvertTo-Json | Out-File (Join-Path $work 'System\services.json')
+}
+
+Invoke-Safe 'BitLocker / Secure Boot state...' {
+    Get-BitLockerVolume -ErrorAction SilentlyContinue |
+        Select-Object MountPoint,
+            @{n='VolumeStatus';e={$_.VolumeStatus.ToString()}},
+            @{n='ProtectionStatus';e={$_.ProtectionStatus.ToString()}},
+            EncryptionPercentage,
+            @{n='KeyProtectors';e={@($_.KeyProtector | ForEach-Object { $_.KeyProtectorType.ToString() })}} |
+        ConvertTo-Json -Depth 3 | Out-File (Join-Path $work 'System\bitlocker.json')
+    # null = legacy BIOS / not queryable (distinct from $false = disabled).
+    $sb = try { Confirm-SecureBootUEFI } catch { $null }
+    @{ SecureBoot = $sb } | ConvertTo-Json | Out-File (Join-Path $work 'System\secureboot.json')
+}
+
+Invoke-Safe 'Pending reboot state...' {
+    @{
+        CbsRebootPending  = Test-Path 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Component Based Servicing\RebootPending'
+        WuRebootRequired  = Test-Path 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\WindowsUpdate\Auto Update\RebootRequired'
+        PendingFileRename = [bool](Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager' -Name PendingFileRenameOperations -ErrorAction SilentlyContinue)
+    } | ConvertTo-Json | Out-File (Join-Path $work 'System\pending-reboot.json')
+}
+
+Invoke-Safe 'Device info (build, boot, locale)...' {
+    $os = Get-CimInstance Win32_OperatingSystem -ErrorAction Stop
+    $cv = Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion' -ErrorAction Stop
+    @{
+        LastBootUtc    = $os.LastBootUpTime.ToUniversalTime().ToString('o')
+        OSBuild        = "$($cv.CurrentBuildNumber).$($cv.UBR)"
+        DisplayVersion = "$($cv.DisplayVersion)"
+        Edition        = "$($cv.EditionID)"
+        Locale         = (Get-Culture).Name
+        TimeZone       = (Get-TimeZone).Id
+    } | ConvertTo-Json | Out-File (Join-Path $work 'System\device-info.json')
+}
+
+Invoke-Safe 'Devices in error state...' {
+    Get-PnpDevice -Status Error -ErrorAction SilentlyContinue |
+        Select-Object FriendlyName, Class,
+            @{n='Status';e={$_.Status.ToString()}} |
+        ConvertTo-Json | Out-File (Join-Path $work 'System\pnp-errors.json')
 }
 
 Invoke-Safe 'Time sync status...' {
@@ -518,6 +613,25 @@ Invoke-Safe 'Windows Update for Business state...' {
         Format-List | Out-File (Join-Path $work 'WindowsUpdate\wufb-ux-settings.txt')
     Get-ItemProperty 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate' -ErrorAction SilentlyContinue |
         Format-List | Out-File (Join-Path $work 'WindowsUpdate\wufb-policy.txt')
+}
+
+Invoke-Safe 'Windows Update history...' {
+    # COM history is cheap and structured, unlike the ETL-based
+    # Get-WindowsUpdateLog. ResultCode: 2=Succeeded, 3=SucceededWithErrors,
+    # 4=Failed, 5=Aborted.
+    $session  = New-Object -ComObject Microsoft.Update.Session
+    $searcher = $session.CreateUpdateSearcher()
+    $n = [Math]::Min($searcher.GetTotalHistoryCount(), 30)
+    if ($n -gt 0) {
+        $searcher.QueryHistory(0, $n) | ForEach-Object {
+            [pscustomobject]@{
+                Date       = $_.Date.ToString('o')
+                Title      = $_.Title
+                ResultCode = $_.ResultCode
+                HResult    = $_.HResult
+            }
+        } | ConvertTo-Json | Out-File (Join-Path $work 'WindowsUpdate\wu-history.json')
+    }
 }
 
 if (-not $Remote) {
@@ -582,15 +696,17 @@ $($recentErrors | Format-List | Out-String)
 
 See the subfolders for all details:
   MDM\           - mdmdiagnosticstool output (HTML report, registry dump, evtx)
-  EventLogs\     - evtx exports + errors/warnings as text and JSON (incl. push notifications)
-  Registry\      - Enrollments, PolicyManager, IME, Autopilot, OMADM accounts, GPO policies
+  EventLogs\     - evtx exports + errors/warnings as text and JSON (incl. push, cert enrollment, LAPS)
+  Registry\      - Enrollments, PolicyManager, NodeCache, IME, Autopilot, OMADM accounts, GPO policies
   Identity\      - dsregcmd (machine + interactive user), certificates
-  Network\       - ipconfig, proxy, firewall, endpoint connectivity, TLS-issuer check
+  Network\       - ipconfig, proxy, firewall, endpoint connectivity (txt+json), TLS-issuer check
   Apps-IME\      - IME logs, app inventory
   Management\    - co-management, Defender for Endpoint onboarding, Delivery Optimization
-  System\        - msinfo32, drivers, hotfixes, scheduled tasks, disk space, time sync, TPM
+  System\        - msinfo32, drivers, hotfixes, scheduled tasks (+run results), services,
+                   BitLocker/Secure Boot, pending reboot, device info, PnP errors,
+                   disk space, time sync, TPM
   Defender\      - MpSupportFiles.cab, status
-  WindowsUpdate\ - WindowsUpdate.log, WUfB settings
+  WindowsUpdate\ - WindowsUpdate.log, WUfB settings, update history (json)
   Autopilot\     - setupact.log, provisioning logs
   _MANIFEST.json - collector version, profile and per-step outcome
 ==========================================================
