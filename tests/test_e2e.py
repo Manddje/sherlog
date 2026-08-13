@@ -3161,3 +3161,154 @@ def test_copy_findings_sorted_and_advised(client, monkeypatch):
     page = client.get(r.headers["location"]).text
     assert "what now: " in page
     assert "check(s) ok, " in page
+
+
+# --- Fase 2: collector v1.2 JSON sidecar checks ------------------------------
+
+def test_json_rows_accepts_single_object():
+    """PowerShell 5.1 ConvertTo-Json serializes one element as a bare object;
+    the parser must accept both shapes."""
+    import app as app_module
+    assert app_module._json_rows('{"Name": "W32Time"}') == [{"Name": "W32Time"}]
+    assert app_module._json_rows('[{"Name": "a"}, {"Name": "b"}]') == [
+        {"Name": "a"}, {"Name": "b"}]
+    assert app_module._json_rows("") is None
+    assert app_module._json_rows("not json") is None
+
+
+def test_bitlocker_and_secureboot_checks(tmp_path):
+    import json
+    import app as app_module
+    pkg = tmp_path / "pkg"
+    (pkg / "System").mkdir(parents=True, exist_ok=True)
+    (pkg / "System" / "bitlocker.json").write_text(json.dumps([
+        {"MountPoint": "C:", "VolumeStatus": "FullyDecrypted",
+         "ProtectionStatus": "Off", "EncryptionPercentage": 0,
+         "KeyProtectors": []},
+    ]), encoding="utf-8")
+    (pkg / "System" / "secureboot.json").write_text(
+        json.dumps({"SecureBoot": None}), encoding="utf-8")
+    labels = _by_label(app_module.build_dashboard(pkg))
+    assert labels["BitLocker"]["status"] == "bad"
+    assert labels["Secure Boot"]["status"] == "unknown"
+    assert "legacy BIOS" in labels["Secure Boot"]["detail"]
+
+    (pkg / "System" / "bitlocker.json").write_text(json.dumps(
+        {"MountPoint": "C:", "VolumeStatus": "FullyEncrypted",
+         "ProtectionStatus": "On", "EncryptionPercentage": 100,
+         "KeyProtectors": ["Tpm", "RecoveryPassword"]}), encoding="utf-8")
+    (pkg / "System" / "secureboot.json").write_text(
+        json.dumps({"SecureBoot": True}), encoding="utf-8")
+    labels = _by_label(app_module.build_dashboard(pkg))
+    assert labels["BitLocker"]["status"] == "ok"
+    assert "Tpm+RecoveryPassword" in labels["BitLocker"]["detail"]
+    assert labels["Secure Boot"]["status"] == "ok"
+
+
+def test_pending_reboot_and_wu_history_checks(tmp_path):
+    import json
+    import app as app_module
+    pkg = tmp_path / "pkg"
+    (pkg / "System").mkdir(parents=True, exist_ok=True)
+    (pkg / "WindowsUpdate").mkdir(parents=True, exist_ok=True)
+    (pkg / "System" / "pending-reboot.json").write_text(json.dumps({
+        "CbsRebootPending": True, "WuRebootRequired": False,
+        "PendingFileRename": False}), encoding="utf-8")
+    (pkg / "WindowsUpdate" / "wu-history.json").write_text(json.dumps([
+        {"Date": "2026-08-10T01:00:00.0000000Z", "Title": "KB1",
+         "ResultCode": 4, "HResult": -2145124329},
+        {"Date": "2026-08-09T01:00:00.0000000Z", "Title": "KB2",
+         "ResultCode": 2, "HResult": 0},
+    ]), encoding="utf-8")
+    labels = _by_label(app_module.build_dashboard(pkg))
+    assert labels["Pending reboot"]["status"] == "warn"
+    assert "CbsRebootPending" in labels["Pending reboot"]["detail"]
+    assert labels["Windows Update"]["status"] == "warn"
+    assert "0x80240017" in labels["Windows Update"]["detail"]
+
+
+def test_mdm_sync_schedule_and_push_service_checks(tmp_path):
+    import json
+    import app as app_module
+    pkg = tmp_path / "pkg"
+    (pkg / "System").mkdir(parents=True, exist_ok=True)
+    (pkg / "System" / "enterprisemgmt-tasks.json").write_text(json.dumps([
+        {"TaskName": "Schedule #3 created by enrollment client",
+         "TaskPath": "\\Microsoft\\Windows\\EnterpriseMgmt\\{g}\\",
+         "State": "Ready", "LastRunTime": "2026-08-13T01:00:00Z",
+         "LastTaskResult": 2147942402, "NextRunTime": None},
+        {"TaskName": "Schedule #1", "TaskPath": "x", "State": "Ready",
+         "LastRunTime": None, "LastTaskResult": 267011, "NextRunTime": None},
+    ]), encoding="utf-8")
+    labels = _by_label(app_module.build_dashboard(pkg))
+    sync = labels["MDM sync schedule"]
+    assert sync["status"] == "warn"
+    assert "Schedule #3" in sync["detail"] and "0x80070002" in sync["detail"]
+
+    # All-success (0x41303 'never ran' is not a failure) -> ok.
+    (pkg / "System" / "enterprisemgmt-tasks.json").write_text(json.dumps([
+        {"TaskName": "Schedule #1", "TaskPath": "x", "State": "Ready",
+         "LastRunTime": "2026-08-13T01:00:00Z", "LastTaskResult": 0},
+        {"TaskName": "Schedule #2", "TaskPath": "x", "State": "Ready",
+         "LastRunTime": None, "LastTaskResult": 267011},
+    ]), encoding="utf-8")
+    assert _by_label(app_module.build_dashboard(pkg))[
+        "MDM sync schedule"]["status"] == "ok"
+
+
+def test_defender_av_and_pnp_checks(tmp_path):
+    import json
+    import app as app_module
+    pkg = tmp_path / "pkg"
+    (pkg / "Defender").mkdir(parents=True, exist_ok=True)
+    (pkg / "System").mkdir(parents=True, exist_ok=True)
+    (pkg / "Defender" / "mp-status.txt").write_text(
+        "RealTimeProtectionEnabled : False\n"
+        "AntivirusSignatureAge     : 12\n", encoding="utf-8")
+    (pkg / "System" / "pnp-errors.json").write_text(json.dumps(
+        {"FriendlyName": "TPM 2.0 Device", "Class": "SecurityDevices",
+         "Status": "Error"}), encoding="utf-8")
+    labels = _by_label(app_module.build_dashboard(pkg))
+    av = labels["Defender AV"]
+    assert av["status"] == "warn"
+    assert "OFF" in av["detail"] and "12 day(s)" in av["detail"]
+    pnp = labels["PnP devices"]
+    assert pnp["status"] == "warn"
+    assert "TPM 2.0 Device" in pnp["detail"]
+
+
+def test_endpoints_json_preferred_over_localized_text(tmp_path):
+    """The JSON twin must win over the text export (which is localized and
+    layout-fragile on non-English Windows)."""
+    import json
+    import app as app_module
+    pkg = tmp_path / "pkg"
+    (pkg / "Network").mkdir(parents=True, exist_ok=True)
+    # Text says everything reachable; JSON knows one endpoint is down.
+    (pkg / "Network" / "endpoint-connectivity.txt").write_text(
+        "Endpoint Reachable\nlogin.microsoftonline.com True\n",
+        encoding="utf-8")
+    (pkg / "Network" / "endpoint-connectivity.json").write_text(json.dumps([
+        {"Endpoint": "login.microsoftonline.com", "Reachable": True,
+         "RemoteIP": "1.2.3.4"},
+        {"Endpoint": "manage.microsoft.com", "Reachable": False,
+         "RemoteIP": ""},
+    ]), encoding="utf-8")
+    ep = _by_label(app_module.build_dashboard(pkg))["Intune/Entra endpoints"]
+    assert ep["status"] == "warn"
+    assert "manage.microsoft.com" in ep["detail"]
+
+
+def test_device_info_enriches_device_header(tmp_path):
+    import json
+    import app as app_module
+    pkg = tmp_path / "pkg"
+    (pkg / "System").mkdir(parents=True, exist_ok=True)
+    (pkg / "System" / "device-info.json").write_text(json.dumps({
+        "LastBootUtc": "2026-08-12T06:00:00.0000000Z",
+        "OSBuild": "26100.4652", "DisplayVersion": "24H2",
+        "Edition": "Enterprise", "Locale": "nl-NL",
+        "TimeZone": "W. Europe Standard Time"}), encoding="utf-8")
+    dash = app_module.build_dashboard(pkg)
+    assert dash["device"]["os_build"] == "Windows 24H2 (26100.4652)"
+    assert dash["device"]["boot"].startswith("2026-08-12")

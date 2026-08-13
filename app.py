@@ -59,6 +59,7 @@ import xml.etree.ElementTree as ET
 import zipfile
 from collections import Counter
 from contextlib import asynccontextmanager
+from datetime import datetime
 from dataclasses import dataclass, field
 from html.parser import HTMLParser
 from pathlib import Path
@@ -866,6 +867,24 @@ def _json_or_empty(s) -> dict:
         return {}
 
 
+def _json_rows(text: str) -> Optional[List[dict]]:
+    """ConvertTo-Json output as a list of dicts. PowerShell 5.1 serializes a
+    single element as a bare object, not a one-element array — accept both.
+    None when the text is missing or not valid JSON (caller treats as
+    'source absent')."""
+    if not isinstance(text, str) or not text.strip():
+        return None
+    try:
+        v = json.loads(text)
+    except ValueError:
+        return None
+    if isinstance(v, dict):
+        v = [v]
+    if not isinstance(v, list):
+        return None
+    return [r for r in v if isinstance(r, dict)]
+
+
 def hresult_code(err) -> str:
     """Normalize an Intune ErrorCode (decimal int/string) to the 0xXXXXXXXX
     key form used in ERROR_CODES; '' for null/zero/empty/non-numeric."""
@@ -1584,6 +1603,20 @@ _DASH_SOURCES = {
     "timesync": ("System/time-sync-status.txt",),
     "tpm": ("System/tpm-status.txt",),
     "tls_issuer": ("Network/tls-issuer-check.txt",),
+    # Collector v1.2 JSON sidecars (locale-invariant by construction). Older
+    # packages simply lack these files; every consumer is total.
+    "services": ("System/services.json",),
+    "tasks_json": ("System/enterprisemgmt-tasks.json",),
+    "bitlocker": ("System/bitlocker.json",),
+    "secureboot": ("System/secureboot.json",),
+    "pending_reboot": ("System/pending-reboot.json",),
+    "device_info": ("System/device-info.json",),
+    "pnp_errors": ("System/pnp-errors.json",),
+    "wu_history": ("WindowsUpdate/wu-history.json",),
+    "endpoints_json": ("Network/endpoint-connectivity.json",),
+    "hotfixes": ("System/hotfixes.txt",),
+    "defender_av": ("Defender/mp-status.txt",),
+    "nodecache": ("Registry/NodeCache.reg",),
 }
 
 
@@ -1654,6 +1687,24 @@ _ADVICE = {
     "TLS inspection": "A non-Microsoft certificate issuer here usually means "
                       "a TLS-inspecting proxy is breaking Intune/Entra "
                       "traffic; exempt these endpoints from inspection.",
+    "BitLocker": "Turn on BitLocker for the OS volume (or fix the blocked "
+                 "encryption); an unencrypted disk is the most common "
+                 "compliance failure.",
+    "Secure Boot": "Enable Secure Boot in the UEFI firmware settings; "
+                   "attestation and some compliance policies require it.",
+    "Pending reboot": "Restart the device; a pending reboot silently blocks "
+                      "app installs and updates until it happens.",
+    "Windows Update": "Look up the failing update's error code and check the "
+                      "WUfB policy/deferral settings; a device that cannot "
+                      "update drifts out of compliance.",
+    "MDM sync schedule": "Check the failing EnterpriseMgmt task's result "
+                         "code; when the schedule never fires the device "
+                         "only syncs manually.",
+    "Defender AV": "Re-enable real-time protection or fix signature updates "
+                   "(check connectivity to the update endpoints).",
+    "PnP devices": "Review the failing devices' drivers; a broken TPM/"
+                   "camera/sensor driver can block attestation and "
+                   "Windows Hello.",
 }
 
 # One sentence per card explaining what the check looks at and why it matters.
@@ -1760,6 +1811,28 @@ _WHAT = {
                       "login.microsoftonline.com. A non-Microsoft issuer "
                       "means a local proxy is terminating and re-signing "
                       "TLS, which breaks Intune/Entra traffic in subtle ways.",
+    "BitLocker": "Per-volume BitLocker state (protection on/off, encryption "
+                 "progress and key protectors). Encryption of the OS volume "
+                 "is the most common Intune compliance requirement.",
+    "Secure Boot": "Whether UEFI Secure Boot is enabled. Attestation, "
+                   "credential/device guard and some compliance policies "
+                   "depend on it; 'unknown' means legacy BIOS.",
+    "Pending reboot": "Whether Windows is waiting for a restart (servicing, "
+                      "Windows Update or a file-rename operation). A pending "
+                      "reboot blocks app installs and updates.",
+    "Windows Update": "The device's recent Windows Update install history "
+                      "(from the update session API), with the error code of "
+                      "the most recent failure.",
+    "MDM sync schedule": "The run results of the enrollment's scheduled sync "
+                         "tasks. These tasks are how the device checks in "
+                         "with Intune on its own; a failing schedule means "
+                         "sync only happens manually.",
+    "Defender AV": "Microsoft Defender antivirus basics: real-time "
+                   "protection and signature age. Stale signatures often "
+                   "point at blocked update endpoints.",
+    "PnP devices": "Hardware devices whose driver reports an error state. "
+                   "Relevant for attestation (TPM), Windows Hello (camera) "
+                   "and anything a failing driver can block.",
 }
 
 # Checks a well-formed package should always be able to produce. When the
@@ -1777,6 +1850,12 @@ _EXPECTED = {
     "Time sync": "Time sync",
     "TPM": "TPM status",
     "TLS inspection": "Connectivity test",
+    # Collector v1.2 compliance-critical sidecars: on an older package these
+    # read "not present in this package", nudging toward a collector update.
+    "BitLocker": "BitLocker / Secure Boot",
+    "Secure Boot": "BitLocker / Secure Boot",
+    "Pending reboot": "Pending reboot",
+    "Windows Update": "Windows Update history",
 }
 
 
@@ -1900,7 +1979,15 @@ def build_dashboard(input_dir: Path) -> dict:
                r"\b(Running|Stopped)\b"),
     })
 
-    endpoints = parse_endpoint_connectivity(read("endpoints"))
+    # Prefer the locale-invariant JSON twin (collector v1.2+); the text
+    # export stays the evidence link target and the pre-1.2 fallback.
+    ep_rows = _json_rows(read("endpoints_json"))
+    if ep_rows is not None:
+        endpoints = [{"endpoint": str(r.get("Endpoint", "")),
+                      "reachable": bool(r.get("Reachable"))}
+                     for r in ep_rows if r.get("Endpoint")]
+    else:
+        endpoints = parse_endpoint_connectivity(read("endpoints"))
     if endpoints:
         down = [e["endpoint"] for e in endpoints if not e["reachable"]]
         checks.append({
@@ -2212,18 +2299,31 @@ def build_dashboard(input_dir: Path) -> dict:
     # evidence. Event ID 1010 (routed to IME) followed by 1225 (payload) means
     # the wake-up channel works; their absence means instant actions may never
     # reach the device.
+    services = {str(s.get("Name", "")): str(s.get("Status", ""))
+                for s in (_json_rows(read("services")) or [])}
     push_evtx = next(iter(input_dir.rglob("PushNotification-Platform.evtx")), None)
     if push_evtx is not None:
         recs, _ = parse_evtx_file(push_evtx)
         pc = count_push_events(recs)
         n = pc["ev1010"] + pc["ev1225"]
         seen = pc["ev1010"] and pc["ev1225"]
+        # The WNS user-mode plumbing: a stopped WpnService/dmwappushservice
+        # explains a silent push channel better than the event counts alone.
+        stopped = [s for s in ("WpnService", "dmwappushservice")
+                   if services.get(s) and services[s] != "Running"]
+        if stopped:
+            status, detail = "warn", ("push service(s) not running: "
+                                      + ", ".join(stopped))
+        elif seen:
+            status, detail = "ok", f"push channel active ({n} notifications)"
+        else:
+            status = "warn"
+            detail = ("no push notifications observed — on-demand "
+                      "remediations/sync may not reach the device")
         checks.append({
             "label": "Push / remediation channel",
-            "status": "ok" if seen else "warn",
-            "detail": (f"push channel active ({n} notifications)" if seen
-                       else "no push notifications observed — on-demand "
-                            "remediations/sync may not reach the device"),
+            "status": status,
+            "detail": detail,
             "src": push_evtx.relative_to(input_dir).as_posix(),
         })
 
@@ -2499,6 +2599,177 @@ def build_dashboard(input_dir: Path) -> dict:
             **link("tpm"),
         })
 
+    # --- Collector v1.2 JSON sidecars: encryption, updates, schedule, AV ----
+    # All total: an old package without these files gets no card here (the
+    # _EXPECTED pass below adds explicit unknowns for the compliance-critical
+    # ones).
+
+    # BitLocker: unencrypted OS volume is the #1 compliance-failure cause.
+    bl_rows = _json_rows(read("bitlocker"))
+    if bl_rows:
+        def _vol(r: dict) -> str:
+            prot = str(r.get("ProtectionStatus", ""))
+            kps = r.get("KeyProtectors")
+            kp = "+".join(str(k) for k in kps) if isinstance(kps, list) and kps else ""
+            return (f'{r.get("MountPoint", "?")} {prot}'
+                    + (f' ({kp})' if kp else ""))
+        os_vol = next((r for r in bl_rows
+                       if str(r.get("MountPoint", "")).upper().startswith("C")),
+                      bl_rows[0])
+        encrypting = [r for r in bl_rows
+                      if isinstance(r.get("EncryptionPercentage"), (int, float))
+                      and 0 < r["EncryptionPercentage"] < 100]
+        if str(os_vol.get("ProtectionStatus", "")) != "On":
+            bl_status = "bad"
+        elif encrypting:
+            bl_status = "warn"
+        else:
+            bl_status = "ok"
+        checks.append({
+            "label": "BitLocker",
+            "status": bl_status,
+            "detail": "; ".join(_vol(r) for r in bl_rows[:4]),
+            **link("bitlocker"),
+        })
+
+    # Secure Boot: null means legacy BIOS / not queryable, not "off".
+    sb = _json_or_empty(read("secureboot"))
+    if sb:
+        sb_val = sb.get("SecureBoot")
+        checks.append({
+            "label": "Secure Boot",
+            "status": "ok" if sb_val is True else "warn" if sb_val is False
+                      else "unknown",
+            "detail": ("enabled" if sb_val is True else "disabled"
+                       if sb_val is False
+                       else "legacy BIOS or not queryable"),
+            **link("secureboot"),
+        })
+
+    # Pending reboot: a stuck reboot blocks app installs and updates in ways
+    # that look like deployment failures.
+    pr = _json_or_empty(read("pending_reboot"))
+    if pr:
+        flags = [n for n in ("CbsRebootPending", "WuRebootRequired",
+                             "PendingFileRename") if pr.get(n) is True]
+        checks.append({
+            "label": "Pending reboot",
+            "status": "warn" if flags else "ok",
+            "detail": ("pending: " + ", ".join(flags) if flags
+                       else "no reboot pending"),
+            **link("pending_reboot"),
+        })
+
+    # Windows Update: COM history (ResultCode 2=ok, 3=ok-with-errors,
+    # 4=failed, 5=aborted), cross-checked with the hotfix inventory age.
+    wu = _json_rows(read("wu_history"))
+    if wu:
+        def _wu_date(r: dict):
+            try:
+                return datetime.fromisoformat(
+                    str(r.get("Date", "")).split(".")[0].rstrip("Z"))
+            except ValueError:
+                return None
+        wu = sorted(wu, key=lambda r: str(r.get("Date", "")), reverse=True)
+        recent = wu[:3]
+        failed = [r for r in wu if r.get("ResultCode") in (4, 5)]
+        last_ok = next((r for r in wu if r.get("ResultCode") in (2, 3)), None)
+        if recent and all(r.get("ResultCode") == 4 for r in recent):
+            wu_status = "bad"
+            wu_detail = (f"last {len(recent)} update installs failed"
+                         + (f' ({hresult_code(recent[0].get("HResult")) or ""})'
+                            if recent[0].get("HResult") else ""))
+        elif failed:
+            wu_status = "warn"
+            code = hresult_code(failed[0].get("HResult"))
+            wu_detail = (f"{len(failed)} of {len(wu)} recent update(s) failed"
+                         + (f" ({code})" if code else ""))
+        else:
+            wu_status = "ok"
+            d = _wu_date(last_ok) if last_ok else None
+            wu_detail = (f"{len(wu)} recent updates ok"
+                         + (f', last success {d.date().isoformat()}' if d else ""))
+        checks.append({"label": "Windows Update", "status": wu_status,
+                       "detail": wu_detail, **link("wu_history")})
+
+    # MDM sync schedule: the enrollment's scheduled tasks are how the device
+    # actually checks in; State alone can't show a task that fires and fails.
+    tasks = _json_rows(read("tasks_json"))
+    if tasks:
+        def _task_res(r: dict) -> int:
+            try:
+                return int(r.get("LastTaskResult"))
+            except (TypeError, ValueError):
+                return 0
+        sched = [r for r in tasks if "schedule" in str(r.get("TaskName", "")).lower()]
+        # 0x41303 = task has not yet run — normal right after enrollment.
+        failing = [r for r in sched if _task_res(r) not in (0, 0x41303)]
+        if failing:
+            worst = failing[0]
+            checks.append({
+                "label": "MDM sync schedule", "status": "warn",
+                "detail": (f'{len(failing)} sync task(s) failing, e.g. '
+                           f'{worst.get("TaskName", "?")} → '
+                           f'0x{_task_res(worst) & 0xFFFFFFFF:X}'),
+                **link("tasks_json"),
+            })
+        elif sched:
+            checks.append({
+                "label": "MDM sync schedule", "status": "ok",
+                "detail": f"{len(sched)} sync task(s), all last runs succeeded",
+                **link("tasks_json"),
+            })
+
+    # Defender AV basics from the status export the collector always wrote
+    # but nothing consumed: real-time protection + signature age.
+    av = parse_dsregcmd(read("defender_av")) if read("defender_av") else {}
+    rtp = str(av.get("RealTimeProtectionEnabled", "")).strip()
+    if rtp:
+        sig_age = str(av.get("AntivirusSignatureAge", "")).strip()
+        stale = sig_age.isdigit() and int(sig_age) > 7
+        checks.append({
+            "label": "Defender AV",
+            "status": "warn" if (rtp != "True" or stale) else "ok",
+            "detail": (f"real-time protection {'on' if rtp == 'True' else 'OFF'}"
+                       + (f", signatures {sig_age} day(s) old" if sig_age else "")),
+            **link("defender_av"),
+        })
+
+    # Devices in error state: driver failures block attestation, sensors and
+    # occasionally app installs; surface them with the device names.
+    pnp = _json_rows(read("pnp_errors"))
+    if pnp:
+        names = [str(r.get("FriendlyName") or r.get("Class") or "?") for r in pnp]
+        checks.append({
+            "label": "PnP devices",
+            "status": "warn",
+            "detail": (f"{len(pnp)} device(s) in error state: "
+                       + ", ".join(names[:3])
+                       + ("…" if len(names) > 3 else "")),
+            **link("pnp_errors"),
+        })
+
+    # NodeCache: the CSP values the DM client actually applied — evidence
+    # next to the PolicyManager intent, no verdict of its own.
+    nodecache = reg("nodecache")
+    if nodecache:
+        nc_rows = []
+        for key, vals in nodecache.items():
+            uri = _ci_get(vals, "NodeUri")
+            if uri:
+                nc_rows.append([key.rsplit("\\", 1)[-1], uri,
+                                _ci_get(vals, "ExpectedValue")])
+        if nc_rows:
+            sections.append({
+                "key": "nodecache",
+                "title": f"Applied CSP values / NodeCache ({len(nc_rows)})",
+                "src": src_of("nodecache"),
+                "columns": ["Node", "URI", "Expected value"],
+                "widths": [10, 55, 35],
+                "searchable": True,
+                "rows": nc_rows[:500],
+            })
+
     # TLS-inspection detection: a non-Microsoft/DigiCert issuer on a real
     # request usually means a local proxy is terminating and re-signing TLS.
     tls_text = read("tls_issuer")
@@ -2537,12 +2808,18 @@ def build_dashboard(input_dir: Path) -> dict:
             if hint:
                 c["advice"] = hint
 
+    dev_info = _json_or_empty(read("device_info"))
+    os_build = str(dev_info.get("OSBuild", "") or "")
+    display_ver = str(dev_info.get("DisplayVersion", "") or "")
     device = {
         "name": identity.get("Device", ""),
         "device_id": identity.get("DeviceId", ""),
         "tenant": identity.get("TenantName", ""),
         "collected": identity.get("Date", identity.get("Datum", "")),
         "collector": collector_version,
+        "os_build": (f"Windows {display_ver} ({os_build})" if display_ver
+                     else os_build),
+        "boot": str(dev_info.get("LastBootUtc", "") or ""),
     }
     return {"device": device, "checks": checks, "sections": sections}
 
