@@ -1008,7 +1008,57 @@ def parse_sidecar_scripts(reg: dict) -> List[dict]:
         m = rx.search(key)
         if m:
             out.append({"policy": m.group(1).strip("{}"),
-                        "last_execution": str(vals.get("LastExecution", ""))})
+                        "last_execution": str(vals.get("LastExecution", "")),
+                        "result": _ci_get(vals, "Result")})
+    return out
+
+
+def parse_sidecar_script_reports(reg: dict) -> List[dict]:
+    """Per-script/remediation result blobs from SideCarPolicies\\Scripts\\Reports.
+
+    The IME writes a JSON result per policy under
+    `…\\SideCarPolicies\\Scripts\\Reports\\<userGUID>\\<policyGUID>[_n]\\…`.
+    The blob's shape varies between platform scripts and remediations, but
+    ErrorCode is always present; remediations add a detect/remediate outcome.
+    Total: keys without a parsable JSON dict are skipped; one row per
+    (user, policy), first blob wins.
+    """
+    out: List[dict] = []
+    seen = set()
+    rx = re.compile(
+        rf"\\SideCarPolicies\\Scripts\\Reports\\([^\\]+)\\({_GUID_TAIL}(?:_\d+)?)")
+    for key, vals in reg.items():
+        m = rx.search(key)
+        if not m:
+            continue
+        ident = (m.group(1), m.group(2).split("_")[0].strip("{}"))
+        if ident in seen:
+            continue
+        blob = None
+        for data in vals.values():
+            if isinstance(data, str) and data.lstrip().startswith("{"):
+                d = _json_or_empty(data)
+                if d:
+                    blob = d
+                    break
+        if blob is None:
+            continue
+        seen.add(ident)
+        code = hresult_code(blob.get("ErrorCode"))
+        # Remediations carry a status enum under varying names; platform
+        # scripts a plain Result. Keep whichever is present, raw, for display.
+        status_raw = next((str(blob[k]) for k in
+                           ("RemediationStatus", "Result", "ResultType")
+                           if blob.get(k) not in (None, "")), "")
+        out.append({
+            "policy": ident[1],
+            "user": m.group(1).strip("{}"),
+            "error_code": code,
+            "error_text": ERROR_CODES.get(code, "") if code else "",
+            "status_raw": status_raw,
+            "failed": bool(code),
+        })
+    out.sort(key=lambda r: (not r["failed"], r["policy"]))
     return out
 
 
@@ -1558,9 +1608,16 @@ _ADVICE = {
                        "re-enroll; otherwise look up the session error code.",
     "Win32 apps": "Open the Win32 app table below; each failed app lists its "
                   "deployment error code and explanation.",
+    "Enrollment": "No Intune enrollment found among the enrollment records; "
+                  "check whether the device is enrolled in another MDM or the "
+                  "enrollment was removed.",
     "Enrollment certificate": "Re-enroll the device: its enrollment points at "
                               "a client certificate that is missing or "
                               "expired.",
+    "Scripts / remediations": "Open the script results table below; each "
+                              "failed policy lists its error code. Re-run the "
+                              "script from the Intune portal after fixing the "
+                              "cause.",
     "Push / remediation channel": "Check WNS connectivity (*.notify.windows."
                                   "com); without it, on-demand sync and "
                                   "remediations wait for the schedule.",
@@ -1592,6 +1649,8 @@ _ADVICE = {
     "Time sync": "Fix the time source (w32tm /resync, or check the domain/"
                  "NTP config); clock skew breaks token and certificate "
                  "validation in ways that look unrelated.",
+    "TPM": "A missing or not-ready TPM blocks Autopilot attestation and "
+           "hardware-backed keys; check TPM state in the BIOS/UEFI (tpm.msc).",
     "TLS inspection": "A non-Microsoft certificate issuer here usually means "
                       "a TLS-inspecting proxy is breaking Intune/Entra "
                       "traffic; exempt these endpoints from inspection.",
@@ -1647,7 +1706,9 @@ _WHAT = {
                        "device (the winning provider per setting), with the "
                        "Intune setting name and OMA-URI for each.",
     "Scripts / remediations": "PowerShell scripts and remediation packages "
-                              "the IME has executed, and when they last ran.",
+                              "the IME has executed, when they last ran and "
+                              "the per-policy result (error code) the IME "
+                              "reported for each.",
     "Push / remediation channel": "Whether the device received WNS push "
                                   "notifications for Intune. Without this "
                                   "channel, on-demand sync and remediations "
@@ -1699,6 +1760,23 @@ _WHAT = {
                       "login.microsoftonline.com. A non-Microsoft issuer "
                       "means a local proxy is terminating and re-signing "
                       "TLS, which breaks Intune/Entra traffic in subtle ways.",
+}
+
+# Checks a well-formed package should always be able to produce. When the
+# label is absent from the built dashboard, an explicit "unknown" card is
+# emitted instead of silently omitting it — cross-referenced against the
+# manifest's step log so "collection step failed" and "not in this package"
+# read differently. Conditional checks (Co-management, Defender for Endpoint,
+# Autopilot, ESP, ...) are deliberately NOT listed: absent there means
+# "not applicable", which should stay invisible.
+# label -> substring of the collector's Invoke-Safe step name.
+_EXPECTED = {
+    "WinHTTP proxy": "Network configuration",
+    "Firewall": "Network configuration",
+    "Disk space": "Disk space",
+    "Time sync": "Time sync",
+    "TPM": "TPM status",
+    "TLS inspection": "Connectivity test",
 }
 
 
@@ -2092,17 +2170,41 @@ def build_dashboard(input_dir: Path) -> dict:
             "searchable": True,
         })
 
-    # Proactive Remediations / platform scripts (SideCarPolicies executions).
+    # Proactive Remediations / platform scripts (SideCarPolicies): the
+    # Execution keys say *that* something ran, the Reports blobs say *how it
+    # went* (ErrorCode per policy). Verdict on the report results; the table
+    # below lists every policy with its outcome.
     scripts = parse_sidecar_scripts(reg("ime_reg"))
-    if scripts:
+    script_reports = parse_sidecar_script_reports(reg("ime_reg"))
+    if scripts or script_reports:
+        failed_scripts = [r for r in script_reports if r["failed"]]
         last = max((s["last_execution"] for s in scripts if s["last_execution"]),
                    default="")
-        npol = len({s["policy"] for s in scripts})
+        npol = len({s["policy"] for s in scripts}
+                   | {r["policy"] for r in script_reports})
+        if failed_scripts:
+            detail = (f"{len(failed_scripts)} of {len(script_reports)} "
+                      "script/remediation result(s) failed")
+        else:
+            detail = f"{npol} policies executed" + (f", last {last}" if last else "")
         checks.append({
             "label": "Scripts / remediations",
-            "status": "ok",
-            "detail": f"{npol} policies executed" + (f", last {last}" if last else ""),
-            **link("ime_reg"),
+            "status": "bad" if failed_scripts else "ok",
+            "detail": detail,
+            **({"section": "scripts"} if script_reports else link("ime_reg")),
+        })
+    if script_reports:
+        sections.append({
+            "key": "scripts",
+            "title": f"Script / remediation results ({len(script_reports)})",
+            "src": src_of("ime_reg"),
+            "columns": ["Policy", "User", "Status", "Error"],
+            "widths": [34, 24, 14, 28],
+            "searchable": True,
+            "rows": [[r["policy"], r["user"], r["status_raw"] or "—",
+                      (f'{r["error_code"]} — {r["error_text"]}'
+                       if r["error_text"] else r["error_code"] or "—")]
+                     for r in script_reports[:200]],
         })
 
     # Push channel for on-demand remediations / sync: WNS gives no failure
@@ -2275,6 +2377,7 @@ def build_dashboard(input_dir: Path) -> dict:
     # from "collection step failed" (this device's collector run had a
     # problem). Older packages have no manifest, so no card in that case.
     collector_version = ""
+    failed_step_errors: "dict[str, str]" = {}  # step name -> error message
     manifest_text = read("manifest")
     if manifest_text:
         try:
@@ -2290,6 +2393,10 @@ def build_dashboard(input_dir: Path) -> dict:
             if isinstance(steps, list) and steps:
                 failed = [s.get("Name") for s in steps
                          if isinstance(s, dict) and s.get("Ok") is False]
+                failed_step_errors = {
+                    str(s.get("Name", "")): str(s.get("Error") or "")
+                    for s in steps
+                    if isinstance(s, dict) and s.get("Ok") is False}
                 checks.append({
                     "label": "Collection",
                     "status": "warn" if failed else "ok",
@@ -2407,6 +2514,21 @@ def build_dashboard(input_dir: Path) -> dict:
                           else f"issuer: {issuer}"),
                 **link("tls_issuer"),
             })
+
+    # Expected-but-absent checks: emit an explicit "unknown" card so a
+    # missing source is visible, and tell a failed collection step apart from
+    # a package that simply never contained the data.
+    present_labels = {str(c.get("label", "")) for c in checks}
+    for label, stepword in _EXPECTED.items():
+        if label in present_labels:
+            continue
+        err = next((e for n, e in failed_step_errors.items()
+                    if stepword.lower() in n.lower()), None)
+        checks.append({
+            "label": label, "status": "unknown",
+            "detail": (f"collection step failed: {err or 'see manifest'}"
+                       if err is not None else "not present in this package"),
+        })
 
     # Attach the per-label "what now" hint to every failing card.
     for c in checks:
@@ -3967,9 +4089,21 @@ DIAG_PAGE = """<!doctype html>
     if (dev.tenant) lines.push('Tenant: ' + dev.tenant);
     if (dev.collected) lines.push('Collected: ' + dev.collected);
     lines.push('');
-    (d.checks || []).forEach(c =>
+    // Same order as the page: severity first, failures with their advice;
+    // healthy checks roll up to one line instead of burying the failures.
+    const sev = {bad: 0, warn: 1, ok: 2, unknown: 3};
+    const cs = (d.checks || []).slice()
+      .sort((a, b) => (sev[a.status] ?? 3) - (sev[b.status] ?? 3));
+    const failing = cs.filter(c => c.status === 'bad' || c.status === 'warn');
+    failing.forEach(c => {
       lines.push('- ' + (mark[c.status] || '[?]') + ' ' + c.label +
-                 (c.detail ? ': ' + c.detail : '')));
+                 (c.detail ? ': ' + c.detail : ''));
+      if (c.advice) lines.push('  - what now: ' + c.advice);
+    });
+    const nOk = cs.filter(c => c.status === 'ok').length;
+    const nUnk = cs.filter(c => !(c.status in mark) || c.status === 'unknown').length;
+    if (failing.length) lines.push('');
+    lines.push('- ' + nOk + ' check(s) ok, ' + nUnk + ' unknown');
     navigator.clipboard.writeText(lines.join('\\n')).then(() => {
       const t = cf.textContent; cf.textContent = 'Copied!';
       setTimeout(() => { cf.textContent = t; }, 1500);
@@ -5732,9 +5866,15 @@ def list_inbox_jobs(token: str) -> List[dict]:
         except OSError:
             mtime = 0
         analysis = (st.get("analysis") or {}).get("state", "none")
+        # Health verdict from the stored dashboard so the inbox can show
+        # which devices are unhealthy without opening each upload.
+        smap = _dash_status_map(child.name)
         rows.append({"job_id": child.name, "device": st.get("device", "device"),
                      "mtime": mtime, "state": st.get("state", "?"),
-                     "analysis": analysis})
+                     "analysis": analysis,
+                     "has_dash": bool(smap),
+                     "n_bad": sum(1 for s in smap.values() if s == "bad"),
+                     "n_warn": sum(1 for s in smap.values() if s == "warn")})
     rows.sort(key=lambda r: r["mtime"], reverse=True)
     return rows[:200]
 
@@ -5753,6 +5893,15 @@ INBOX_PAGE = """<!doctype html>
   .delta{font-size:.8rem;margin-top:.2rem}
   .delta.bad{color:#dc2626}
   .delta.ok{color:#16a34a}
+  .hdot{display:inline-block;width:.6rem;height:.6rem;border-radius:50%%;
+    margin-right:.35rem;vertical-align:baseline}
+  .hdot.ok{background:#16a34a}
+  .hdot.warn{background:#d97706}
+  .hdot.bad{background:#dc2626}
+  .health{white-space:nowrap}
+  .health.bad{color:#dc2626}
+  .health.warn{color:#d97706}
+  .health.ok{color:#16a34a}
   .tokrow{display:flex;gap:.5rem;flex-wrap:wrap;align-items:center;margin:.5rem 0}
   .tokrow input[type=text]{flex:1;min-width:16rem;padding:.55rem .8rem;
     border:1px solid var(--border);border-radius:8px;background:var(--bg);
@@ -5950,13 +6099,38 @@ async def inbox(request: Request) -> HTMLResponse:
         diffs = await asyncio.to_thread(
             lambda: {d: inbox_device_diff(g[0]["job_id"], g[1]["job_id"])
                      for d, g in groups.items() if len(g) >= 2})
+        def health_bits(r: dict) -> tuple[str, str]:
+            """(severity-class, text) for one upload's dashboard verdict."""
+            if not r.get("has_dash"):
+                return "", ""
+            if r["n_bad"]:
+                cls = "bad"
+            elif r["n_warn"]:
+                cls = "warn"
+            else:
+                cls = "ok"
+            bits = []
+            if r["n_bad"]:
+                bits.append(f'{r["n_bad"]} problem(s)')
+            if r["n_warn"]:
+                bits.append(f'{r["n_warn"]} warning(s)')
+            return cls, ", ".join(bits) or "healthy"
+
         parts_rows = []
         for device, g in groups.items():
+            # Newest upload's verdict is the device's current health — show
+            # it on the group header so a bad device stands out in the list.
+            hcls, _ = health_bits(g[0])
+            hdot = f'<span class="hdot {hcls}"></span>' if hcls else ""
             parts_rows.append(
-                f'<tr class="devhdr"><td colspan="4">{html_escape(device)}'
+                f'<tr class="devhdr"><td colspan="4">{hdot}{html_escape(device)}'
                 f' <span class="muted">({len(g)} upload(s))</span></td></tr>')
             for idx, r in enumerate(g):
                 delta = ""
+                hcls, htext = health_bits(r)
+                health = (f'<span class="health {hcls}">'
+                          f'<span class="hdot {hcls}"></span>'
+                          f'{html_escape(htext)}</span> · ' if hcls else "")
                 if idx == 0 and device in diffs:
                     d = diffs[device]
                     if d["worse"]:
@@ -5971,7 +6145,7 @@ async def inbox(request: Request) -> HTMLResponse:
                 parts_rows.append(
                     f'<tr><td class="muted">&#8627;</td>'
                     f'<td>{time.strftime("%Y-%m-%d %H:%M", time.localtime(r["mtime"]))}</td>'
-                    f'<td>{html_escape(r["state"])}'
+                    f'<td>{health}{html_escape(r["state"])}'
                     + (f' · analysis {html_escape(r["analysis"])}'
                        if r["analysis"] not in ("none", "") else "")
                     + delta

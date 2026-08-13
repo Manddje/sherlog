@@ -3058,3 +3058,106 @@ def test_dockerfile_ships_both_device_scripts():
     dockerfile = (REPO_ROOT / "Dockerfile").read_text(encoding="utf-8")
     assert "COPY Collect-IntuneDiagnostics.ps1 " in dockerfile
     assert "COPY Remediate-CollectToSherlog.ps1 " in dockerfile
+
+
+# --- Fase 0: script results, expected-check fallback, inbox health -----------
+
+def test_parse_sidecar_script_reports():
+    """The Reports blobs carry the actual per-policy outcome; a non-zero
+    ErrorCode marks the row failed and resolves to the known-code text."""
+    import app as app_module
+    blob_ok = '{\\"ErrorCode\\":0,\\"RemediationStatus\\":3}'
+    blob_bad = '{\\"ErrorCode\\":-2016281112,\\"Result\\":2}'
+    reg = app_module.parse_reg(
+        "[HKLM\\SOFTWARE\\Microsoft\\IntuneManagementExtension\\SideCarPolicies"
+        "\\Scripts\\Reports\\{cc111111-1111-1111-1111-111111111111}"
+        "\\{dd222222-2222-2222-2222-222222222222}]\r\n"
+        "\"Result\"=\"" + blob_ok + "\"\r\n"
+        "[HKLM\\SOFTWARE\\Microsoft\\IntuneManagementExtension\\SideCarPolicies"
+        "\\Scripts\\Reports\\{cc111111-1111-1111-1111-111111111111}"
+        "\\{ee333333-3333-3333-3333-333333333333}_1]\r\n"
+        "\"Result\"=\"" + blob_bad + "\"\r\n")
+    rows = app_module.parse_sidecar_script_reports(reg)
+    assert len(rows) == 2
+    failed = [r for r in rows if r["failed"]]
+    assert len(failed) == 1
+    assert failed[0]["policy"] == "ee333333-3333-3333-3333-333333333333"
+    assert failed[0]["error_code"] == "0x87D1FDE8"
+    # Failed rows sort first.
+    assert rows[0]["failed"] is True
+
+
+def test_scripts_check_goes_bad_on_failed_report(tmp_path):
+    import app as app_module
+    pkg = tmp_path / "pkg"
+    (pkg / "Registry").mkdir(parents=True, exist_ok=True)
+    (pkg / "Registry" / "IntuneManagementExtension.reg").write_text(
+        "Windows Registry Editor Version 5.00\r\n\r\n"
+        "[HKEY_LOCAL_MACHINE\\SOFTWARE\\Microsoft\\IntuneManagementExtension"
+        "\\SideCarPolicies\\Scripts\\Reports"
+        "\\{cc111111-1111-1111-1111-111111111111}"
+        "\\{dd222222-2222-2222-2222-222222222222}]\r\n"
+        "\"Result\"=\"{\\\"ErrorCode\\\":-2016281112}\"\r\n",
+        encoding="utf-8")
+    dash = app_module.build_dashboard(pkg)
+    chk = _by_label(dash)["Scripts / remediations"]
+    assert chk["status"] == "bad"
+    assert chk["section"] == "scripts"
+    sec = next(s for s in dash["sections"] if s.get("key") == "scripts")
+    assert sec["rows"][0][0] == "dd222222-2222-2222-2222-222222222222"
+
+
+def test_expected_checks_surface_as_unknown(tmp_path):
+    """A package without e.g. a TPM/disk/firewall source must show explicit
+    unknown cards instead of silently omitting them; when the manifest says
+    the matching collection step failed, the card says so."""
+    import json
+    import app as app_module
+    pkg = tmp_path / "pkg"
+    pkg.mkdir(parents=True, exist_ok=True)
+    labels = _by_label(app_module.build_dashboard(pkg))
+    for lbl in ("Firewall", "WinHTTP proxy", "Disk space", "Time sync",
+                "TPM", "TLS inspection"):
+        assert labels[lbl]["status"] == "unknown"
+        assert labels[lbl]["detail"] == "not present in this package"
+
+    (pkg / "_MANIFEST.json").write_text(json.dumps({
+        "CollectorVersion": "1.1.0", "Profile": "Remote",
+        "Steps": [{"Name": "TPM status...", "Ok": False,
+                   "Error": "Get-Tpm not supported"},
+                  {"Name": "Disk space...", "Ok": True, "Error": None}],
+    }), encoding="utf-8")
+    labels = _by_label(app_module.build_dashboard(pkg))
+    assert labels["TPM"]["detail"] == "collection step failed: Get-Tpm not supported"
+    assert labels["Disk space"]["detail"] == "not present in this package"
+
+
+def test_inbox_rows_carry_health_verdict(upload_client, monkeypatch):
+    """The inbox must show dashboard health per upload, not just pipeline
+    state - a bad device has to stand out without opening it."""
+    import app as app_module
+    monkeypatch.setattr(app_module, "spawn_job", lambda coro: coro.close())
+    r = upload_client.post("/api/diagnostics", content=_diag_zip(),
+                           headers={"X-Upload-Token": _TOK,
+                                    "X-Device-Name": "PC-HEALTH",
+                                    "Content-Type": "application/zip"})
+    assert r.status_code == 200
+    rows = app_module.list_inbox_jobs(_TOK)
+    assert rows and rows[0]["has_dash"] is True
+    assert isinstance(rows[0]["n_bad"], int)
+    page = upload_client.post("/inbox", data={"token": _TOK}).text
+    assert 'class="hdot' in page
+
+
+def test_copy_findings_sorted_and_advised(client, monkeypatch):
+    """The copy-findings markdown must match the on-screen order: failures
+    first with their advice, healthy checks as a one-line rollup."""
+    import app as app_module
+    monkeypatch.setattr(app_module, "spawn_job", lambda coro: coro.close())
+    r = client.post("/diagnostics-analyze",
+                    files=[("files", ("d.zip", _zip_of_diag_package(),
+                                      "application/zip"))],
+                    follow_redirects=False)
+    page = client.get(r.headers["location"]).text
+    assert "what now: " in page
+    assert "check(s) ok, " in page
