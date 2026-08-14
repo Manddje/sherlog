@@ -1835,6 +1835,55 @@ _WHAT = {
                    "and anything a failing driver can block.",
 }
 
+# Domain grouping for the dashboard cards, looked up by label at render time
+# (same retroactive pattern as _WHAT): existing dashboard.json files gain the
+# grouping without a rebuild. Every label build_dashboard can emit must have
+# an entry — the completeness test enforces it. Unmapped labels (from a future
+# or hand-edited dashboard.json) fall into "Other".
+_GROUP_ORDER = ("Identity", "Enrollment & sync", "Apps & scripts", "Network",
+                "Security & updates", "System", "Collection", "Other")
+_GROUP = {
+    "Entra joined": "Identity",
+    "Entra PRT": "Identity",
+    "Machine certificates": "Identity",
+    "MDM enrollment": "Enrollment & sync",
+    "Enrollment": "Enrollment & sync",
+    "Enrollment certificate": "Enrollment & sync",
+    "MDM sync health": "Enrollment & sync",
+    "MDM sync schedule": "Enrollment & sync",
+    "Push / remediation channel": "Enrollment & sync",
+    "MDM event log": "Enrollment & sync",
+    "Policies (RSOP)": "Enrollment & sync",
+    "GPO policies": "Enrollment & sync",
+    "Autopilot profile": "Enrollment & sync",
+    "Co-management": "Enrollment & sync",
+    "IME service": "Apps & scripts",
+    "Installed apps": "Apps & scripts",
+    "Win32 apps": "Apps & scripts",
+    "Scripts / remediations": "Apps & scripts",
+    "ESP app tracking": "Apps & scripts",
+    "Content delivery": "Apps & scripts",
+    "Delivery Optimization": "Apps & scripts",
+    "Known error codes": "Apps & scripts",
+    "Intune/Entra endpoints": "Network",
+    "WinHTTP proxy": "Network",
+    "Firewall": "Network",
+    "TLS inspection": "Network",
+    "BitLocker": "Security & updates",
+    "Secure Boot": "Security & updates",
+    "TPM": "Security & updates",
+    "Defender AV": "Security & updates",
+    "Defender for Endpoint": "Security & updates",
+    "Windows Update": "Security & updates",
+    "Pending reboot": "Security & updates",
+    "Disk space": "System",
+    "Time sync": "System",
+    "PnP devices": "System",
+    "Collection": "Collection",
+    "Intune Sync Debug Tool": "Collection",
+}
+
+
 # Checks a well-formed package should always be able to produce. When the
 # label is absent from the built dashboard, an explicit "unknown" card is
 # emitted instead of silently omitting it — cross-referenced against the
@@ -2091,22 +2140,38 @@ def build_dashboard(input_dir: Path) -> dict:
             "status": "bad" if failed else "ok",
             "detail": (f"{len(failed)} of {len(w32)} with errors" if failed
                        else f"{len(w32)} tracked, all healthy"),
-            **link("win32apps"),
+            # A failing card jumps straight to the failed-deployments table.
+            **({"section": "failedapps"} if failed else link("win32apps")),
         })
         def _app_cell(a: dict) -> str:
             name = app_display_name(a["app_id"])
             return f'{name} ({a["app_id"]})' if name else a["app_id"]
 
+        def _w32_row(a: dict) -> list:
+            return [_app_cell(a), a["compliance"], a["enforcement"],
+                    (f'{a["error_code"]} — {a["error_text"]}' if a["error_text"]
+                     else a["error_code"])]
+
+        # Failed deployments get their own always-open table first: "which
+        # app failed and why" is the #1 support question and must not hide
+        # inside a collapsed 200-row inventory.
+        if failed:
+            sections.append({
+                "key": "failedapps",
+                "title": f"Failed app deployments ({len(failed)})",
+                "src": src_of("win32apps"),
+                "columns": ["App", "Compliance", "Enforcement", "Error"],
+                "widths": [30, 16, 18, 36],
+                "open": True,
+                "rows": [_w32_row(a) for a in failed[:100]],
+            })
         sections.append({
             "title": f"Win32 app deployment status ({len(w32)})",
             "src": src_of("win32apps"),
             "columns": ["App", "Compliance", "Enforcement", "Error"],
             "widths": [30, 16, 18, 36],
             "searchable": True,
-            "rows": [[_app_cell(a), a["compliance"], a["enforcement"],
-                      (f'{a["error_code"]} — {a["error_text"]}' if a["error_text"]
-                       else a["error_code"])]
-                     for a in w32[:200]],
+            "rows": [_w32_row(a) for a in w32[:200]],
         })
     else:
         checks.append({"label": "Win32 apps", "status": "unknown",
@@ -4166,7 +4231,7 @@ DIAG_PAGE = """<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
 """ + _THEME_JS + """
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Sherlog &mdash; diagnostics package</title>
+<title>Sherlog &mdash; %(ptitle)s</title>
 <link rel="stylesheet" href="/assets/app.css"><style>
   .topbar{display:flex;align-items:center;justify-content:space-between;
     padding:.6rem 1.25rem;border-bottom:1px solid var(--border);background:var(--bg)}
@@ -4174,11 +4239,25 @@ DIAG_PAGE = """<!doctype html>
     flex-direction:column;gap:.8rem}
   .panels>h2{margin:.2rem 0 0;font-size:1.15rem}
   .devline{color:var(--muted);font-size:.9rem;margin:0}
-  .verdict{display:inline-block;padding:.45rem .9rem;border-radius:10px;
-    border:1px solid var(--border);margin:.2rem 0 .6rem;font-weight:600}
+  .devhead h2{margin:.2rem 0 0;font-size:1.25rem}
+  .chips{display:flex;flex-wrap:wrap;gap:.35rem;margin-top:.4rem}
+  .chip{border:1px solid var(--border);border-radius:999px;padding:.1rem .6rem;
+    font-size:.78rem;color:var(--muted);background:var(--surface)}
+  .ghead{margin:.4rem 0 0;font-size:.95rem;color:var(--muted)}
+  .gcount{margin-left:.5rem;font-size:.75rem;color:#d97706;font-weight:600}
+  .verdict{display:block;padding:.45rem .9rem;border-radius:10px;
+    border:1px solid var(--border);margin:.2rem 0 .3rem;font-weight:600}
   .verdict.bad{border-color:#dc2626;color:#dc2626}
   .verdict.warn{border-color:#d97706;color:#d97706}
   .verdict.ok{border-color:#16a34a;color:#16a34a}
+  .verdict .vchips{display:inline-flex;flex-wrap:wrap;gap:.35rem;
+    margin-left:.6rem;vertical-align:middle}
+  .vchip{border:1px solid var(--border);border-radius:999px;
+    padding:.05rem .55rem;font-size:.75rem;font-weight:400;
+    text-decoration:none}
+  .vchip.bad{border-color:#dc2626;color:#dc2626}
+  .vchip.warn{border-color:#d97706;color:#d97706}
+  .vchip:hover{background:var(--surface)}
   .dash{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:.7rem}
   .check{border:1px solid var(--border);border-radius:10px;padding:.65rem .9rem;
     background:var(--bg)}
@@ -4219,6 +4298,8 @@ DIAG_PAGE = """<!doctype html>
     z-index:1;background:var(--surface)}
   .acard{border:1px solid var(--border);border-radius:10px;padding:.75rem 1rem;
     background:var(--surface);display:flex;align-items:center;gap:.8rem;flex-wrap:wrap}
+  .acard.ready{border-color:var(--accent)}
+  .acard .amuted{color:var(--muted);font-size:.85rem;flex:1;min-width:12rem}
   .acard pre{margin:.4rem 0 0;width:100%%;max-height:10rem}
   .spin-sm{width:1.1rem;height:1.1rem;border:2px solid var(--border);
     border-top-color:var(--accent);border-radius:50%%;flex:none;
@@ -4295,10 +4376,10 @@ DIAG_PAGE = """<!doctype html>
     </span>
   </div>
   <div class="panels">
-    <h2>Device health</h2>
     %(dashboard)s
     %(analysis)s
     %(summary)s
+    %(sections)s
   </div>
   <div class="browser">
     <nav class="side" id="side">
@@ -4722,85 +4803,158 @@ def render_summary_panel(summary: Optional[dict]) -> str:
             f'{"".join(parts)}</details>')
 
 
-def render_dashboard_panel(dash: Optional[dict]) -> str:
-    """Health-check cards for the diagnostics result page.
+def _check_slug(label: str) -> str:
+    """Anchor-safe id fragment for a check label (verdict chips link to it)."""
+    return re.sub(r"[^a-z0-9]+", "-", str(label).lower()).strip("-")
+
+
+def _render_check_card(c: dict) -> str:
+    st = c.get("status", "unknown")
+    if st not in ("ok", "bad", "warn", "unknown"):
+        st = "unknown"
+    # Deep-link to the evidence in the file browser when the parser
+    # recorded a source (older dashboard.json files have none).
+    attrs = f' id="chk-{attr_escape(_check_slug(c.get("label", "")))}"'
+    src = c.get("src")
+    section_key = c.get("section")
+    if isinstance(src, str) and src:
+        line = c.get("line")
+        attrs += (f' data-file="{attr_escape(src)}"'
+                  + (f' data-line="{line}"' if isinstance(line, int) else "")
+                  + f' role="link" tabindex="0"'
+                    f' title="Open {attr_escape(src)}"')
+    elif isinstance(section_key, str) and section_key:
+        # Card opens its matching detail section instead of a file.
+        attrs += (f' data-section="{attr_escape(section_key)}"'
+                  f' role="link" tabindex="0" title="Show details"')
+    advice = c.get("advice")
+    adv_html = (f'<div class="adv">{html_escape(str(advice))}</div>'
+                if advice else "")
+    # "What does this check mean?" toggle. The text is looked up by label
+    # here (not stored in dashboard.json), so older jobs get it too.
+    what = _WHAT.get(str(c.get("label", "")))
+    what_btn = ('<button class="whatbtn" type="button" aria-expanded="false"'
+                ' title="What does this check mean?"'
+                ' aria-label="What does this check mean?">?</button>'
+                if what else "")
+    what_html = (f'<div class="what" hidden>{html_escape(what)}</div>'
+                 if what else "")
+    return (
+        f'<div class="check"{attrs}>'
+        f'{what_btn}'
+        f'<span class="lbl"><span class="st {st}" aria-hidden="true"></span>'
+        f'<span class="sr">status {st}: </span>'
+        f'{html_escape(str(c.get("label", "")))}</span>'
+        f'<div class="det">{html_escape(str(c.get("detail", "")))}</div>'
+        f'{adv_html}{what_html}</div>'
+    )
+
+
+def render_dashboard_cards(dash: Optional[dict]) -> str:
+    """Device header, verdict banner and the domain-grouped health cards.
 
     Rendered in the app origin, so every value — all parsed from untrusted
-    package content — is escaped.
+    package content — is escaped. Grouping comes from the renderer-side
+    _GROUP map, so dashboards stored before it existed group correctly too.
     """
     if not dash:
         return '<p class="devline">No dashboard data for this package.</p>'
     parts = []
     device = dash.get("device", {})
-    bits = [device.get("name", ""), device.get("tenant", ""),
-            device.get("collected", ""), device.get("collector", "")]
-    bits = [b for b in bits if b]
-    if bits:
-        parts.append(f'<p class="devline">{html_escape(" · ".join(bits))}</p>')
+    name = str(device.get("name", "") or "")
+    chips = [str(b) for b in (device.get("tenant", ""),
+                              device.get("os_build", ""),
+                              device.get("collected", ""),
+                              device.get("collector", "")) if b]
+    boot = str(device.get("boot", "") or "")
+    if boot:
+        chips.append("boot " + boot[:16].replace("T", " ") + " UTC")
+    if name or chips:
+        chip_html = "".join(f'<span class="chip">{html_escape(c)}</span>'
+                            for c in chips)
+        parts.append(
+            '<div class="devhead">'
+            + (f'<h2>{html_escape(name)}</h2>' if name
+               else '<h2>Device health</h2>')
+            + (f'<div class="chips">{chip_html}</div>' if chip_html else "")
+            + '</div>')
+    else:
+        parts.append('<div class="devhead"><h2>Device health</h2></div>')
     checks = dash.get("checks", [])
-    # Overall verdict + severity-first ordering: a red card must not hide
-    # below a wall of green ones. Sort is stable, so code order is kept
-    # within each severity bucket.
     _sev = {"bad": 0, "warn": 1, "ok": 2, "unknown": 3}
-    checks = sorted(checks, key=lambda c: _sev.get(c.get("status"), 3))
-    n_bad = sum(1 for c in checks if c.get("status") == "bad")
-    n_warn = sum(1 for c in checks if c.get("status") == "warn")
+    failing = sorted((c for c in checks if c.get("status") in ("bad", "warn")),
+                     key=lambda c: _sev.get(c.get("status"), 3))
+    n_bad = sum(1 for c in failing if c.get("status") == "bad")
+    n_warn = len(failing) - n_bad
     if checks:
-        if n_bad or n_warn:
+        if failing:
             bits = []
             if n_bad:
                 bits.append(f"{n_bad} problem{'s' if n_bad != 1 else ''}")
             if n_warn:
                 bits.append(f"{n_warn} warning{'s' if n_warn != 1 else ''}")
             cls = "bad" if n_bad else "warn"
-            parts.append(f'<p class="verdict {cls}">'
-                         f'{html_escape(" and ".join(bits))} found</p>')
+            # Each failing check becomes a clickable chip that scrolls to its
+            # card, so the banner answers *what* is wrong, not just how much.
+            vchips = "".join(
+                f'<a class="vchip {c.get("status")}" '
+                f'href="#chk-{attr_escape(_check_slug(c.get("label", "")))}">'
+                f'{html_escape(str(c.get("label", "")))}</a>'
+                for c in failing)
+            parts.append(f'<div class="verdict {cls}">'
+                         f'{html_escape(" and ".join(bits))} found'
+                         f'<span class="vchips">{vchips}</span></div>')
         else:
-            parts.append('<p class="verdict ok">No problems found</p>')
-    cards = []
+            parts.append('<div class="verdict ok">No problems found</div>')
+    # Domain groups; severity-first inside each group so a red card still
+    # tops its domain. Unmapped labels land in "Other".
+    by_group: "dict[str, list]" = {}
     for c in checks:
-        st = c.get("status", "unknown")
-        if st not in ("ok", "bad", "warn", "unknown"):
-            st = "unknown"
-        # Deep-link to the evidence in the file browser when the parser
-        # recorded a source (older dashboard.json files have none).
-        attrs = ""
-        src = c.get("src")
-        section_key = c.get("section")
-        if isinstance(src, str) and src:
-            line = c.get("line")
-            attrs = (f' data-file="{attr_escape(src)}"'
-                     + (f' data-line="{line}"' if isinstance(line, int) else "")
-                     + f' role="link" tabindex="0"'
-                       f' title="Open {attr_escape(src)}"')
-        elif isinstance(section_key, str) and section_key:
-            # Card opens its matching detail section instead of a file.
-            attrs = (f' data-section="{attr_escape(section_key)}"'
-                     f' role="link" tabindex="0" title="Show details"')
-        advice = c.get("advice")
-        adv_html = (f'<div class="adv">{html_escape(str(advice))}</div>'
-                    if advice else "")
-        # "What does this check mean?" toggle. The text is looked up by label
-        # here (not stored in dashboard.json), so older jobs get it too.
-        what = _WHAT.get(str(c.get("label", "")))
-        what_btn = ('<button class="whatbtn" type="button" aria-expanded="false"'
-                    ' title="What does this check mean?"'
-                    ' aria-label="What does this check mean?">?</button>'
-                    if what else "")
-        what_html = (f'<div class="what" hidden>{html_escape(what)}</div>'
-                     if what else "")
-        cards.append(
-            f'<div class="check"{attrs}>'
-            f'{what_btn}'
-            f'<span class="lbl"><span class="st {st}" aria-hidden="true"></span>'
-            f'<span class="sr">status {st}: </span>'
-            f'{html_escape(str(c.get("label", "")))}</span>'
-            f'<div class="det">{html_escape(str(c.get("detail", "")))}</div>'
-            f'{adv_html}{what_html}</div>'
-        )
-    if cards:
-        parts.append(f'<div class="dash">{"".join(cards)}</div>')
-    for sec in dash.get("sections", []):
+        by_group.setdefault(_GROUP.get(str(c.get("label", "")), "Other"),
+                            []).append(c)
+    for group in _GROUP_ORDER:
+        members = sorted(by_group.get(group, []),
+                         key=lambda c: _sev.get(c.get("status"), 3))
+        if not members:
+            continue
+        issues = sum(1 for c in members
+                     if c.get("status") in ("bad", "warn"))
+        badge = (f'<span class="gcount">{issues} issue(s)</span>'
+                 if issues else "")
+        parts.append(f'<h3 class="ghead">{html_escape(group)}{badge}</h3>')
+        parts.append('<div class="dash">'
+                     + "".join(_render_check_card(c) for c in members)
+                     + '</div>')
+    return "".join(parts)
+
+
+# Detail tables render most-actionable first, independent of the order
+# build_dashboard discovered them in (older dashboard.json files included).
+_SECTION_PRIORITY = ("failedapps", "errorcodes", "scripts")
+
+
+def _section_sort_key(sec: dict) -> int:
+    key = str(sec.get("key") or "")
+    if key in _SECTION_PRIORITY:
+        return _SECTION_PRIORITY.index(key)
+    title = str(sec.get("title", ""))
+    if title.startswith("Win32 app deployment"):
+        return 3
+    if title.startswith("MDM enrollments"):
+        return 4
+    if title.startswith("Policy settings"):
+        return 5
+    if key == "instapps":
+        return 6
+    return 7
+
+
+def render_dashboard_sections(dash: Optional[dict]) -> str:
+    """The collapsible detail tables below the cards (and analysis card)."""
+    if not dash:
+        return ""
+    parts = []
+    for sec in sorted(dash.get("sections", []), key=_section_sort_key):
         cols = sec.get("columns", [])
         rows = sec.get("rows", [])
         if not rows:
@@ -4844,21 +4998,31 @@ def render_dashboard_panel(dash: Optional[dict]) -> str:
             for row in rows)
         key = sec.get("key")
         keyattr = f' data-key="{attr_escape(key)}"' if isinstance(key, str) and key else ""
+        # Sections marked open (e.g. failed app deployments) start expanded.
+        openattr = " open" if sec.get("open") else ""
         search = ('<input class="secsearch" type="search" autocomplete="off"'
                   ' placeholder="Filter rows…">' if sec.get("searchable") else "")
         parts.append(
-            f'<details class="section"{keyattr}><summary>'
+            f'<details class="section"{keyattr}{openattr}><summary>'
             f'{html_escape(str(sec.get("title", "")))}{link}</summary>'
             f'{search}<table>{colgroup}<thead><tr>{head}</tr></thead>'
             f'<tbody>{body}</tbody></table></details>')
     return "".join(parts)
 
 
+def render_dashboard_panel(dash: Optional[dict]) -> str:
+    """Cards + detail sections in one string (compatibility composition; the
+    diagnostics page places the analysis card between the two)."""
+    return render_dashboard_cards(dash) + render_dashboard_sections(dash)
+
+
 def render_analysis_card(job_id: str, analysis: dict) -> str:
     """State card for the timeline-analysis sub-task of a diagnostics job."""
     state = analysis.get("state", "none")
     if state == "done":
-        return (f'<div class="acard"><strong>Timeline analysis ready.</strong>'
+        return (f'<div class="acard ready"><strong>Timeline analysis ready.</strong>'
+                f'<span class="amuted">Every Win32 app, policy and sync event '
+                f'from the IME logs on one timeline.</span>'
                 f'<a class="btn" href="/result/{job_id}/timeline">'
                 f'Open timeline report</a></div>')
     if state in ("queued", "running"):
@@ -6754,9 +6918,14 @@ def render_diag_page(job_id: str, status: dict) -> HTMLResponse:
     dash = read_dashboard(job_id)
     inboxlink = ('<a class="btn btn-ghost" href="/inbox">Inbox</a>'
                  if status.get("source") == "api" else "")
+    devname = str((dash or {}).get("device", {}).get("name", "") or "")
     return HTMLResponse(DIAG_PAGE % {
         "css": PAGE_CSS, "logo": _LOGO, "job": job_id,
-        "dashboard": render_dashboard_panel(dash),
+        # Device name in the tab title: two open result tabs were otherwise
+        # indistinguishable in history/bookmarks.
+        "ptitle": html_escape(devname or "diagnostics package"),
+        "dashboard": render_dashboard_cards(dash),
+        "sections": render_dashboard_sections(dash),
         "dashjson": js_json(dash or {}),
         "expiry": expiry_note(status),
         "inboxlink": inboxlink,

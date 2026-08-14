@@ -768,7 +768,8 @@ def test_diag_full_flow(client):
     # Dashboard + browser are available immediately (state "ready").
     page = client.get(f"/result/{job_id}")
     assert page.status_code == 200
-    assert "Device health" in page.text
+    assert 'class="devhead"' in page.text            # device header block
+    assert 'class="ghead"' in page.text              # domain-grouped cards
     assert "Entra joined" in page.text
     assert "graph.microsoft.com" in page.text       # unreachable endpoint named
     assert "1 of 2 expired" in page.text            # expired machine cert
@@ -2803,6 +2804,15 @@ def test_every_check_label_has_explanation():
     # And no stale entries for checks that no longer exist.
     stale = sorted(l for l in app_module._WHAT if l not in labels)
     assert not stale, f"_WHAT entries for unknown labels: {stale}"
+    # Same contract for the domain grouping, or a new card silently lands in
+    # the catch-all "Other" group.
+    ungrouped = sorted(l for l in labels if l not in app_module._GROUP)
+    assert not ungrouped, f"labels without a _GROUP domain: {ungrouped}"
+    stale_g = sorted(l for l in app_module._GROUP if l not in labels)
+    assert not stale_g, f"_GROUP entries for unknown labels: {stale_g}"
+    unknown_domain = sorted(set(app_module._GROUP.values())
+                            - set(app_module._GROUP_ORDER))
+    assert not unknown_domain, f"domains missing from _GROUP_ORDER: {unknown_domain}"
 
 
 def test_check_card_renders_explanation_toggle():
@@ -3312,3 +3322,83 @@ def test_device_info_enriches_device_header(tmp_path):
     dash = app_module.build_dashboard(pkg)
     assert dash["device"]["os_build"] == "Windows 24H2 (26100.4652)"
     assert dash["device"]["boot"].startswith("2026-08-12")
+
+
+# --- Fase 3: grouped cards, verdict chips, section priority ------------------
+
+def test_cards_grouped_by_domain_with_verdict_chips():
+    """Cards render per domain, and the verdict banner links to each failing
+    card by anchor instead of only counting them."""
+    import app as app_module
+    html = app_module.render_dashboard_cards({
+        "device": {"name": "PC-01", "tenant": "contoso",
+                   "os_build": "Windows 24H2 (26100.4652)"},
+        "checks": [
+            {"label": "Disk space", "status": "ok", "detail": "plenty"},
+            {"label": "BitLocker", "status": "bad", "detail": "C: Off"},
+            {"label": "Entra joined", "status": "ok", "detail": "YES"},
+            {"label": "Firewall", "status": "warn", "detail": "off: Public"},
+        ],
+    })
+    # Device header with chips, not a muted one-liner.
+    assert 'class="devhead"' in html and "<h2>PC-01</h2>" in html
+    assert "Windows 24H2 (26100.4652)" in html
+    # Domain headings.
+    for group in ("Identity", "Network", "Security &amp; updates", "System"):
+        assert f'class="ghead"&gt;' not in html  # heading is real markup
+        assert group in html
+    # Verdict chips deep-link to the card anchors.
+    assert 'href="#chk-bitlocker"' in html
+    assert 'href="#chk-firewall"' in html
+    assert 'id="chk-bitlocker"' in html
+    assert "1 problem and 1 warning found" in html
+
+
+def test_unmapped_label_falls_back_to_other_group():
+    import app as app_module
+    html = app_module.render_dashboard_cards({
+        "checks": [{"label": "Some retired check", "status": "ok", "detail": "x"}]})
+    assert ">Other<" in html
+
+
+def test_failed_apps_section_is_first_and_open(tmp_path):
+    """A failing Win32 card must open a dedicated, expanded failures table."""
+    import app as app_module
+    pkg = tmp_path / "pkg"
+    (pkg / "Registry").mkdir(parents=True, exist_ok=True)
+    app_key = ("[HKEY_LOCAL_MACHINE\\SOFTWARE\\Microsoft\\IntuneManagementExtension"
+               "\\Win32Apps\\{u1}\\{aaaa1111-1111-1111-1111-111111111111}_1")
+    (pkg / "Registry" / "Win32Apps.reg").write_text(
+        "Windows Registry Editor Version 5.00\r\n\r\n"
+        + app_key + "]\r\n\r\n"
+        + app_key + "\\EnforcementStateMessage]\r\n"
+        "\"EnforcementStateMessage\"=\"{\\\"EnforcementState\\\":3000,"
+        "\\\"ErrorCode\\\":-2016345004}\"\r\n",
+        encoding="utf-8")
+    dash = app_module.build_dashboard(pkg)
+    w32 = _by_label(dash)["Win32 apps"]
+    assert w32["status"] == "bad"
+    assert w32["section"] == "failedapps"
+    html = app_module.render_dashboard_sections(dash)
+    # Expanded, and ahead of the full inventory table.
+    assert '<details class="section" data-key="failedapps" open>' in html
+    assert html.index("Failed app deployments") < html.index(
+        "Win32 app deployment status")
+
+
+def test_diag_page_titles_and_orders_analysis_before_sections(client, monkeypatch):
+    import app as app_module
+    monkeypatch.setattr(app_module, "spawn_job", lambda coro: coro.close())
+    r = client.post("/diagnostics-analyze",
+                    files=[("files", ("d.zip", _zip_of_diag_package(),
+                                      "application/zip"))],
+                    follow_redirects=False)
+    page = client.get(r.headers["location"]).text
+    # Tab title carries the device name from the package.
+    assert "<title>Sherlog &mdash; " in page
+    # The page composes cards -> analysis card -> detail sections, so the
+    # timeline CTA can never end up below screens of tables.
+    tpl_body = app_module.DIAG_PAGE.split('<div class="panels">', 1)[1]
+    assert (tpl_body.index("%(dashboard)s") < tpl_body.index("%(analysis)s")
+            < tpl_body.index("%(sections)s"))
+    assert 'class="acard' in page

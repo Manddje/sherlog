@@ -103,13 +103,30 @@ een diagnostics-job:
    leest het token uit de header of POST-body, **nooit uit de URL-query**
    (lekt anders in access-logs/history/Referer).
 
-**Dashboard-extra's:** `render_dashboard_panel` sorteert kaarten op ernst en
-toont een verdict-banner; rode/amber kaarten krijgen een "wat nu"-hint uit de
-`_ADVICE`-map (label → tekst, aangehecht in `build_dashboard`). Elke kaart
+**Dashboard-extra's:** de renderer is gesplitst in `render_dashboard_cards`
+(device-header met chips, verdict-banner, kaarten) en
+`render_dashboard_sections` (detailtabellen), zodat de timeline-analysekaart
+er tússen past (`%(dashboard)s` → `%(analysis)s` → `%(sections)s` in
+DIAG_PAGE); `render_dashboard_panel` is de compositie van beide (compat).
+Kaarten worden gegroepeerd per domein via de **renderer-side** `_GROUP`-map
+(`_GROUP_ORDER`: Identity, Enrollment & sync, Apps & scripts, Network,
+Security & updates, System, Collection, Other) met binnen elke groep
+ernst-eerst; net als `_WHAT` op label opgezocht, dus bestaande jobs krijgen de
+groepering ook. De verdict-banner toont elke falende check als klikbare chip
+naar `#chk-<slug>`. Secties sorteren via `_SECTION_PRIORITY` (failedapps →
+errorcodes → scripts → rest); een sectie met `"open": True` (failed app
+deployments) start uitgeklapt. Rode/amber kaarten krijgen een "wat nu"-hint
+uit de `_ADVICE`-map (label → tekst, aangehecht in `build_dashboard`). Elke kaart
 heeft daarnaast een "?"-toggle met uitleg wat de check inhoudt, uit de
 `_WHAT`-map — die wordt **in de renderer** op label opgezocht (niet in
 `dashboard.json` opgeslagen), zodat bestaande jobs de uitleg ook krijgen; een
-test dwingt af dat elk `"label"` in app.py een `_WHAT`-entry heeft en omgekeerd.
+test dwingt af dat elk `"label"` in app.py een `_WHAT`- én `_GROUP`-entry heeft
+en omgekeerd. Checks die een goed pakket altijd moet kunnen produceren staan in
+`_EXPECTED` (label → collector-stapnaam): ontbreken ze, dan komt er een
+expliciete unknown-kaart die "collection step failed: <error uit
+`_MANIFEST.json`>" onderscheidt van "not present in this package" —
+conditionele checks (co-management, MDE, Autopilot, ESP) staan er bewust níet
+in, want daar is afwezigheid "n.v.t.".
 De toggle-knop moet `stopPropagation()` doen: de kaart zelf is een deep-link. Naast de
 basischecks: Autopilot-profiel + ESP-app-tracking (registry-hives), een
 content-delivery-correlatiekaart (delivery/netwerk-foutcodes + proxy of
@@ -136,7 +153,9 @@ de "Copy findings"-knop bouwt client-side markdown uit `js_json(dash)`.
 Pakket-brede zoek: `GET /result/{id}/search?q=` (`search_package`, begrensd
 40/bestand + 300 totaal, regelnummers = viewer-nummering). Result-pagina's
 tonen een expiry-hint (`created`-stamp in job.json + `JOB_RETENTION_HOURS`).
-De inbox groepeert per device en dieft de nieuwste upload t.o.v. z'n voorganger
+De inbox groepeert per device, toont per upload het dashboard-verdict
+(gekleurde dot + aantal problemen/waarschuwingen uit `_dash_status_map`, ook op
+de device-header) en dieft de nieuwste upload t.o.v. z'n voorganger
 (`inbox_device_diff` op dashboard.json-statussen).
 
 **Routes-conventies:** `_job_guard(job_id, ...)` is de gedeelde preamble
@@ -165,9 +184,21 @@ altijd uit alle tekstbestanden geredigeerd (ook zonder `-Anonymize`) omdat
 `Start-Transcript` de volledige commandline vastlegt; `-Anonymize` slaat
 well-known SYSTEM-principals over (anders corrumpeert het `HKEY_LOCAL_
 MACHINE\SYSTEM\…`-paden en breekt het de PRT-SYSTEM-detectie hierboven).
-Firewall- en eventlog-checks prefereren een locale-onafhankelijke
-JSON-sidecar (`parse_firewall_profiles_json`, `count_event_issues_json`) als
-die in het pakket zit, met fallback op de Engelstalige tekstexport.
+Firewall-, eventlog- en endpoint-checks prefereren een locale-onafhankelijke
+JSON-sidecar (`parse_firewall_profiles_json`, `count_event_issues_json`,
+`Network/endpoint-connectivity.json`) als die in het pakket zit, met fallback
+op de Engelstalige tekstexport. Collector **v1.2** voegt daar een reeks
+JSON-sidecars aan toe (alle via `_json_rows`, dat PS 5.1's
+"één element = object i.p.v. array" opvangt): `System/services.json`,
+`enterprisemgmt-tasks.json` (met `LastTaskResult` → check "MDM sync schedule";
+0x41303 = nog nooit gelopen, géén fout), `bitlocker.json`, `secureboot.json`
+(null = legacy BIOS, niet "uit"), `pending-reboot.json`, `device-info.json`
+(OS-build/boot/locale → device-header), `pnp-errors.json` en
+`WindowsUpdate/wu-history.json`. Registry kreeg `NodeCache` (toegepaste
+CSP-waarden, evidence-tabel) en `LAPS-Policy`; eventlogs kregen
+CertificateServicesClient (SCEP) en LAPS. Het `-Remote`-profiel kopieert IME-logs
+alleen van de laatste 14 dagen tot ~40 MB, zodat chatty devices onder de
+uploadlimiet blijven.
 
 **Achtergrondjobs:** start via `spawn_job()` — houdt een sterke referentie
 vast (asyncio houdt alleen weak refs; anders kan een job mid-run GC'd worden
