@@ -72,14 +72,19 @@ try {
 
 $resultLine = $null
 try {
+    # Splat a HASHTABLE, never an array: array splatting binds every element
+    # POSITIONALLY, so the literal string '-OutputPath' landed in $OutputPath,
+    # everything shifted one slot and '-UploadUrl' hit [int]$MaxUploadMB
+    # ("Cannot convert value "-UploadUrl" to type "System.Int32"").
     # -Anonymize is driven solely by $CollectionMode (single source of truth);
     # the /inbox generator flips that variable, not this call.
-    $collectorArgs = @(
-        '-Remote', '-OutputPath', $workDir,
-        '-UploadUrl', "$SherlogBase/api/diagnostics",
-        '-UploadToken', $UploadToken
-    )
-    if ($CollectionMode -eq 'anon') { $collectorArgs += '-Anonymize' }
+    $collectorArgs = @{
+        Remote      = $true
+        OutputPath  = $workDir
+        UploadUrl   = "$SherlogBase/api/diagnostics"
+        UploadToken = $UploadToken
+    }
+    if ($CollectionMode -eq 'anon') { $collectorArgs['Anonymize'] = $true }
     $output = & $collector @collectorArgs 2>&1
     $resultLine = $output | Where-Object { $_ -match '^SHERLOG_(RESULT|ERROR)=' } | Select-Object -Last 1
 } catch {

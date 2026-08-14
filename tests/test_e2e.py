@@ -7,6 +7,7 @@ tests: oversized upload, wrong extension, zip-slip attempt.
 
 import io
 import os
+import re
 import time
 import zipfile
 from pathlib import Path
@@ -1924,8 +1925,27 @@ def test_collector_has_anonymize_option():
     import app as app_module
     tpl = app_module.load_remediation_template()
     assert "$CollectionMode" in tpl
-    assert "'-Remote', '-OutputPath'" in tpl
-    assert "if ($CollectionMode -eq 'anon') { $collectorArgs += '-Anonymize' }" in tpl
+    assert "if ($CollectionMode -eq 'anon') { $collectorArgs['Anonymize'] = $true }" in tpl
+
+
+def test_remediation_splats_a_hashtable_not_an_array():
+    """Array splatting binds POSITIONALLY: '-OutputPath' itself landed in
+    $OutputPath, every value shifted one slot and '-UploadUrl' reached
+    [int]$MaxUploadMB ("Cannot convert value "-UploadUrl" to type
+    "System.Int32""), so every remediation run died before collecting."""
+    import app as app_module
+    tpl = app_module.load_remediation_template()
+    # Comments quote the old broken form; only the code matters here.
+    code = "\n".join(l for l in tpl.splitlines() if not l.lstrip().startswith("#"))
+    assert "$collectorArgs = @{" in code
+    assert "$collectorArgs = @(" not in code
+    assert "'-UploadUrl'" not in code and "'-OutputPath'" not in code
+    # Every collector parameter the wrapper needs is a hashtable key.
+    for key in ("Remote", "OutputPath", "UploadUrl", "UploadToken"):
+        assert re.search(rf"^\s+{key}\s+= ", code, re.M), key
+    collector = (REPO_ROOT / "Collect-IntuneDiagnostics.ps1").read_text(encoding="utf-8")
+    for key in ("Remote", "OutputPath", "UploadUrl", "UploadToken", "Anonymize"):
+        assert f"${key}" in collector, key
 
 
 def test_remediation_throttle_is_mode_scoped_and_success_only():
