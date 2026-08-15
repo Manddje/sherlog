@@ -166,6 +166,7 @@ Alle configuratie loopt via environment variables met veilige defaults:
 | `UPLOAD_TOKEN_MIN_LEN`   | `24`    | Minimale lengte van een (zelfgekozen) upload-token.                                            |
 | `UPLOAD_API_MAX_JOBS`    | `2000`  | Globale rem op het aantal drop-off-jobs (tegen disk-misbruik); daarboven `429`.                |
 | `UPLOAD_API_MAX_JOBS_PER_TOKEN` | `200` | Per-inbox rem op het aantal drop-off-jobs per token; daarboven `429`. Voorkomt dat één token de globale cap vult. |
+| `COLLECT_PENDING_TTL_MINUTES` | `45` | Hoe lang een "collecting"-melding van een device in de inbox blijft staan zonder dat er een upload volgt. Een gemelde *fout* blijft `JOB_RETENTION_HOURS` staan. |
 
 De Graph-verrijking is **optioneel en uit by default**: zonder de drie `GRAPH_*`
 vars doet de app geen externe call en blijft de RSOP-tabel zoals hij is (OMA-URI +
@@ -211,6 +212,14 @@ geen token-register bij.
    een device → **Run remediation** (on-demand). Draait als SYSTEM, verzamelt
    het slimme `-Remote`-profiel en POST't de zip.
 5. Open `<sherlog>/inbox`, voer je token in en klik de device-upload open.
+
+> **Live status.** Een collectie duurt minuten. De collector meldt daarom bij
+> het starten "collecting" aan Sherlog (en meldt het ook als hij zelf ziet dat
+> de run mislukte, bijv. een te groot pakket of een geweigerde upload), zodat
+> het device meteen in de inbox staat met verstreken tijd. De inbox ververst
+> zichzelf elke 30 s zolang er iets loopt. De melding verdwijnt zodra de zip
+> binnen is, of vanzelf na `COLLECT_PENDING_TTL_MINUTES`. Deze seintjes maken
+> géén job aan en tellen niet mee voor de jobcaps.
 
 > Het detection-script staat ook kant-en-klaar (met je token al ingevuld) op
 > de `/inbox`-pagina nadat je een token genereert.

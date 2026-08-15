@@ -35,6 +35,9 @@ Configuration (env, with safe defaults):
   UPLOAD_API_MAX_JOBS_PER_TOKEN
                           default 200 (per-inbox cap: one token can't fill the
                           global cap and lock out every other inbox)
+  COLLECT_PENDING_TTL_MINUTES
+                          default 45 (how long a "collecting" ping from a
+                          device stays in the inbox without an upload)
 """
 
 from __future__ import annotations
@@ -50,6 +53,7 @@ import secrets
 import shutil
 import signal
 import subprocess
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -135,6 +139,13 @@ UPLOAD_TOKEN_MIN_LEN = max(8, int(os.environ.get("UPLOAD_TOKEN_MIN_LEN", "24")))
 UPLOAD_API_MAX_JOBS = max(1, int(os.environ.get("UPLOAD_API_MAX_JOBS", "2000")))
 UPLOAD_API_MAX_JOBS_PER_TOKEN = max(
     1, int(os.environ.get("UPLOAD_API_MAX_JOBS_PER_TOKEN", "200")))
+# How long a "collecting" ping stays visible in the inbox without an upload
+# following it. Longer than the slowest -Remote collection (minutes), short
+# enough that a device that never uploads doesn't linger for a day. A "failed"
+# ping expires on JOB_RETENTION_HOURS instead: a failure must still be there
+# the next morning.
+COLLECT_PENDING_TTL_MINUTES = max(
+    5, int(os.environ.get("COLLECT_PENDING_TTL_MINUTES", "45")))
 
 # Global rem op het aantal interactieve (web-form) jobs op schijf. De drop-off
 # API heeft zijn eigen cap (UPLOAD_API_MAX_JOBS); deze begrenst de
@@ -259,6 +270,128 @@ def bump_upload_count() -> None:
         os.replace(tmp, p)
     except OSError:
         log.warning("upload counter bump failed", exc_info=True)
+
+
+# --- Collection status (device is collecting / collection failed) ------------
+# A collector run takes minutes; without a signal the inbox stays empty until
+# the zip lands and the admin can't tell "still running" from "never started".
+# The collector therefore pings /api/collect-status at the start of a run and
+# again when it knows the run failed. Those pings live in ONE plain file per
+# token at the JOBS_DIR root — deliberately not a placeholder job directory,
+# which would eat UPLOAD_API_MAX_JOBS_PER_TOKEN quota, be swept by
+# cleanup_old_jobs() and render an empty /result page. Being a file (not a
+# dir) makes it invisible to iter_job_dirs() and everything built on it, the
+# same trick as upload-count.json above.
+#
+# Shape: {"devices": {"<device>": {"phase": "collecting"|"failed",
+#         "started": <epoch>, "updated": <epoch>, "version": str,
+#         "profile": str, "reason": str}}}
+#
+# Every helper is total: a missing or corrupt file reads as "no pending
+# devices" and a write error is swallowed — a status ping must never be able
+# to break an upload or the inbox.
+_PENDING_MAX_DEVICES = 200
+_pending_lock = threading.Lock()
+
+
+def pending_path(hash_hex: str) -> Path:
+    return JOBS_DIR / f"pending-{hash_hex}.json"
+
+
+def read_pending(hash_hex: str) -> dict:
+    """Device → entry map for a token hash. {} on missing/corrupt. Total."""
+    try:
+        data = json.loads(pending_path(hash_hex).read_text(encoding="utf-8"))
+    except (ValueError, OSError):
+        return {}
+    devices = data.get("devices") if isinstance(data, dict) else None
+    return devices if isinstance(devices, dict) else {}
+
+
+def _write_pending(hash_hex: str, devices: dict) -> None:
+    """Replace the on-disk map (atomic), or remove the file when empty."""
+    p = pending_path(hash_hex)
+    try:
+        if not devices:
+            p.unlink(missing_ok=True)
+            return
+        p.parent.mkdir(parents=True, exist_ok=True)
+        tmp = p.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps({"devices": devices}), encoding="utf-8")
+        os.replace(tmp, p)
+    except OSError:
+        log.warning("pending status write failed", exc_info=True)
+
+
+def _pending_expired(entry: dict, now: float) -> bool:
+    """A collecting entry outlives the run by TTL; a failure by the retention
+    window, so it is still visible the next morning."""
+    try:
+        updated = float(entry.get("updated", 0))
+    except (TypeError, ValueError):
+        return True
+    age = now - updated
+    if entry.get("phase") == "failed":
+        return age > JOB_RETENTION_HOURS * 3600
+    return age > COLLECT_PENDING_TTL_MINUTES * 60
+
+
+def set_pending(token: str, device: str, **fields) -> None:
+    """Create or update one device entry. Held under a lock because several
+    devices can ping the same token concurrently and the file is shared."""
+    hash_hex = token_hash(token)
+    now = time.time()
+    with _pending_lock:
+        devices = {d: e for d, e in read_pending(hash_hex).items()
+                   if isinstance(e, dict) and not _pending_expired(e, now)}
+        entry = dict(devices.get(device) or {})
+        entry.update(fields)
+        entry["updated"] = now
+        entry.setdefault("started", now)
+        devices[device] = entry
+        if len(devices) > _PENDING_MAX_DEVICES:
+            # Keep the newest; a token shared by a whole fleet must not grow
+            # this file without bound.
+            devices = dict(sorted(devices.items(),
+                                  key=lambda kv: kv[1].get("updated", 0),
+                                  reverse=True)[:_PENDING_MAX_DEVICES])
+        _write_pending(hash_hex, devices)
+
+
+def clear_pending(token: str, device: str) -> None:
+    """Drop one device entry — the upload arrived, so there is nothing pending
+    (this also clears an earlier failure for that device). Never raises."""
+    hash_hex = token_hash(token)
+    with _pending_lock:
+        devices = read_pending(hash_hex)
+        if device not in devices:
+            return
+        devices.pop(device, None)
+        _write_pending(hash_hex, devices)
+
+
+def clear_all_pending(token: str) -> None:
+    """Drop the whole pending file for a token (inbox 'Delete all')."""
+    with _pending_lock:
+        try:
+            pending_path(token_hash(token)).unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
+def list_pending(token: str) -> List[dict]:
+    """Live entries for a token, newest first, pruning expired ones on the way."""
+    hash_hex = token_hash(token)
+    now = time.time()
+    with _pending_lock:
+        devices = read_pending(hash_hex)
+        live = {d: e for d, e in devices.items()
+                if isinstance(e, dict) and not _pending_expired(e, now)}
+        if len(live) != len(devices):
+            _write_pending(hash_hex, live)
+    rows = [dict(e, device=d) for d, e in live.items()]
+    rows.sort(key=lambda r: r.get("updated", 0), reverse=True)
+    return rows
 
 
 def find_report(output_dir: Path) -> Optional[Path]:
@@ -3309,7 +3442,8 @@ class BasicAuthMiddleware(BaseHTTPMiddleware):
         # reachable too: the Intune remediation wrapper downloads it as
         # SYSTEM with Invoke-WebRequest, which also can't answer a Basic
         # challenge, and the script itself is meant to be publicly served.
-        if (request.url.path in ("/health", "/api/diagnostics", "/collect-script")
+        if (request.url.path in ("/health", "/api/diagnostics",
+                                 "/api/collect-status", "/collect-script")
                 or not AUTH_ENABLED):
             return await call_next(request)
 
@@ -3378,10 +3512,34 @@ def cleanup_old_jobs() -> int:
     return removed
 
 
+def cleanup_pending_files() -> int:
+    """Remove collection-status files whose entries can no longer be live.
+
+    list_pending() prunes a token's own file when the inbox is opened, but a
+    token whose devices stopped pinging and whose admin never returns would
+    otherwise leave the file behind forever."""
+    cutoff = time.time() - max(COLLECT_PENDING_TTL_MINUTES * 60,
+                               JOB_RETENTION_HOURS * 3600)
+    removed = 0
+    try:
+        candidates = list(JOBS_DIR.glob("pending-*.json"))
+    except OSError:
+        return 0
+    for p in candidates:
+        try:
+            if p.is_file() and p.stat().st_mtime < cutoff:
+                p.unlink(missing_ok=True)
+                removed += 1
+        except OSError:
+            continue
+    return removed
+
+
 async def cleanup_loop() -> None:
     while True:
         try:
             cleanup_old_jobs()
+            cleanup_pending_files()
         except Exception:  # pragma: no cover
             log.exception("cleanup loop error")
         await asyncio.sleep(3600)
@@ -6267,10 +6425,79 @@ async def api_diagnostics(request: Request) -> Response:
                  skipped=skipped[:_MAX_SKIPPED_LISTED],
                  analysis={"state": "queued" if ime_dir else "none"})
     bump_upload_count()
+    # The package landed, so whatever this device last reported (collecting, or
+    # a failed earlier attempt) is history.
+    await asyncio.to_thread(clear_pending, token, device)
     if ime_dir is not None:
         spawn_job(run_job(job_id, ime_dir, output_dir,
                             _diag_state_writer(job_id)))
     return JSONResponse({"job_id": job_id, "url": f"/result/{job_id}"})
+
+
+# Cap on the ping body. It carries a phase, a profile and a short reason —
+# anything bigger is not a collector.
+_COLLECT_STATUS_MAX_BODY = 4096
+_COLLECT_REASON_MAX = 200
+
+
+def _clean_reason(raw: str) -> str:
+    """Normalise a collector-supplied failure reason. It is attacker-controlled
+    text (anyone holding the token can post it), so: control characters out,
+    hard length cap, never logged — and HTML-escaped where it is rendered."""
+    text = "".join(ch for ch in str(raw) if ch == " " or ch.isprintable())
+    return text.strip()[:_COLLECT_REASON_MAX]
+
+
+@app.post("/api/collect-status")
+async def api_collect_status(request: Request) -> Response:
+    """Collection heartbeat from the device collector.
+
+    A collection run takes minutes; this lets the matching /inbox show the
+    device as "collecting" right away, and show a failure the collector saw
+    (package too large, upload rejected, run aborted) instead of a silence
+    that expires. Scoped by the same X-Upload-Token as the upload; no job is
+    created and the token itself is never stored — only its hash, as the
+    pending file's name."""
+    if not ENABLE_UPLOAD_API:
+        return JSONResponse({"error": "upload api disabled"}, status_code=404)
+
+    token = (request.headers.get("X-Upload-Token")
+             or request.headers.get("Authorization", "").removeprefix("Bearer ").strip())
+    if not token or len(token) < UPLOAD_TOKEN_MIN_LEN:
+        return JSONResponse(
+            {"error": f"missing or too-short token (min {UPLOAD_TOKEN_MIN_LEN})"},
+            status_code=401)
+
+    raw = await request.body()
+    if len(raw) > _COLLECT_STATUS_MAX_BODY:
+        return JSONResponse({"error": "body too large"}, status_code=413)
+    try:
+        body = json.loads(raw or b"{}")
+    except ValueError:
+        body = {}
+    if not isinstance(body, dict):
+        body = {}
+
+    phase = str(body.get("phase") or "").strip().lower()
+    if phase not in ("start", "failed"):
+        return JSONResponse({"error": "phase must be start or failed"},
+                            status_code=400)
+
+    device = (request.headers.get("X-Device-Name") or "device").strip()[:128]
+    fields = {
+        "phase": "collecting" if phase == "start" else "failed",
+        "version": (request.headers.get("X-Collector-Version") or "").strip()[:32],
+        "profile": _clean_reason(body.get("profile") or "")[:16],
+    }
+    if phase == "start":
+        # A new run supersedes an older failure for the same device.
+        fields["started"] = time.time()
+        fields["reason"] = ""
+    else:
+        fields["reason"] = _clean_reason(body.get("reason") or "")
+    await asyncio.to_thread(set_pending, token, device, **fields)
+    # No echo: the response must not reflect the token, device or reason back.
+    return Response(status_code=204)
 
 
 def _dash_status_map(job_id: str) -> dict:
@@ -6339,6 +6566,9 @@ INBOX_PAGE = """<!doctype html>
   .hdot.ok{background:#16a34a}
   .hdot.warn{background:#d97706}
   .hdot.bad{background:#dc2626}
+  .hdot.run{background:#2563eb;animation:pulse 1.6s ease-in-out infinite}
+  @keyframes pulse{0%%,100%%{opacity:1}50%%{opacity:.25}}
+  .health.run{color:#2563eb}
   .health{white-space:nowrap}
   .health.bad{color:#dc2626}
   .health.warn{color:#d97706}
@@ -6530,13 +6760,33 @@ async def inbox(request: Request) -> HTMLResponse:
             "css": PAGE_CSS, "nav": NAV, "footer": FOOTER, "body": body})
 
     rows = await asyncio.to_thread(list_inbox_jobs, token)
-    if rows:
+    pending = await asyncio.to_thread(list_pending, token)
+    if rows or pending:
         # Group per device (rows are newest-first, so groups are ordered by
         # each device's latest upload) and diff the newest upload against its
         # predecessor so a regression is visible from the inbox itself.
         groups: "dict[str, list]" = {}
         for r in rows:
             groups.setdefault(r["device"], []).append(r)
+        # Collection-status pings: a device is only still "collecting" if no
+        # upload arrived after the ping. Devices that pinged but never
+        # uploaded get a group of their own, listed first.
+        pend: "dict[str, dict]" = {}
+        for e in pending:
+            dev = str(e.get("device") or "device")
+            g = groups.get(dev)
+            try:
+                stamp = float(e.get("started", e.get("updated", 0)))
+            except (TypeError, ValueError):
+                stamp = 0.0
+            # Compare against the START of the run, not the last ping: a
+            # collector whose upload succeeded but whose response read timed
+            # out sends a "failed" ping *after* the job was stored, and that
+            # stale failure must not outrank the package that did arrive.
+            if g and g[0]["mtime"] >= stamp:
+                continue
+            pend[dev] = e
+        order = [d for d in pend if d not in groups] + list(groups)
         diffs = await asyncio.to_thread(
             lambda: {d: inbox_device_diff(g[0]["job_id"], g[1]["job_id"])
                      for d, g in groups.items() if len(g) >= 2})
@@ -6557,15 +6807,47 @@ async def inbox(request: Request) -> HTMLResponse:
                 bits.append(f'{r["n_warn"]} warning(s)')
             return cls, ", ".join(bits) or "healthy"
 
+        def pending_row(e: dict) -> str:
+            """One 'collecting…' / 'collection failed' row, same 4 columns."""
+            collecting = e.get("phase") == "collecting"
+            cls = "run" if collecting else "bad"
+            try:
+                stamp = float(e.get("updated", 0))
+                started = float(e.get("started", stamp))
+            except (TypeError, ValueError):
+                stamp = started = time.time()
+            mins = max(0, int((time.time() - (started if collecting else stamp)) / 60))
+            ago = "just now" if mins < 1 else (
+                f"{mins} min ago" if mins < 60 else f"{mins // 60}h {mins % 60}m ago")
+            if collecting:
+                text = f"collecting&hellip; ({ago})"
+            else:
+                reason = html_escape(str(e.get("reason") or "no reason reported"))
+                text = f"collection failed ({ago}) &mdash; {reason}"
+            meta = " ".join(x for x in (str(e.get("profile") or ""),
+                                        str(e.get("version") or "")) if x)
+            note = (f' <span class="muted">{html_escape(meta)}</span>'
+                    if meta else "")
+            return (f'<tr><td class="muted">&#8627;</td>'
+                    f'<td>{time.strftime("%Y-%m-%d %H:%M", time.localtime(started if collecting else stamp))}</td>'
+                    f'<td><span class="health {cls}"><span class="hdot {cls}"></span>'
+                    f'{text}</span>{note}</td><td></td></tr>')
+
         parts_rows = []
-        for device, g in groups.items():
+        for device in order:
+            g = groups.get(device, [])
             # Newest upload's verdict is the device's current health — show
             # it on the group header so a bad device stands out in the list.
-            hcls, _ = health_bits(g[0])
+            hcls, _ = health_bits(g[0]) if g else ("", "")
+            if not g and device in pend:
+                hcls = "run" if pend[device].get("phase") == "collecting" else "bad"
             hdot = f'<span class="hdot {hcls}"></span>' if hcls else ""
+            count = (f'{len(g)} upload(s)' if g else 'no uploads yet')
             parts_rows.append(
                 f'<tr class="devhdr"><td colspan="4">{hdot}{html_escape(device)}'
-                f' <span class="muted">({len(g)} upload(s))</span></td></tr>')
+                f' <span class="muted">({count})</span></td></tr>')
+            if device in pend:
+                parts_rows.append(pending_row(pend[device]))
             for idx, r in enumerate(g):
                 delta = ""
                 hcls, htext = health_bits(r)
@@ -6598,8 +6880,11 @@ async def inbox(request: Request) -> HTMLResponse:
         cap = UPLOAD_API_MAX_JOBS_PER_TOKEN
         full_note = (' &mdash; inbox full, new uploads are refused until you '
                      'delete some or they expire' if len(rows) >= cap else '')
+        busy = sum(1 for e in pend.values() if e.get("phase") == "collecting")
+        busy_note = f' {busy} device(s) collecting now.' if busy else ''
         body = (f'<div class="tokrow"><p class="muted" style="flex:1">'
-                f'{len(rows)} of {cap} upload(s) for this token.{full_note}</p>'
+                f'{len(rows)} of {cap} upload(s) for this token.{full_note}'
+                f'{busy_note}</p>'
                 '<button class="linkbtn danger" id="delall" type="button">'
                 'Delete all</button></div>'
                 '<table class="inbox"><thead><tr><th>Device</th><th>Uploaded</th>'
@@ -6621,6 +6906,19 @@ async def inbox(request: Request) -> HTMLResponse:
                 + ',"X-Job-Id":b.getAttribute("data-job")}})'
                 '.then(function(){location.reload();});'
                 '});});</script>')
+        if busy:
+            # Keep the page live while a collection runs, but only then — a
+            # failed entry must not reload the inbox forever. The inbox is a
+            # POST page (the token travels in the body, never the URL), so
+            # re-submit a hidden form instead of location.reload(), which
+            # would pop the browser's "resend form data?" dialog.
+            body += ('<form method="post" action="/inbox" id="rfrm" '
+                     'style="display:none"><input type="hidden" name="token" '
+                     f'value="{attr_escape(token)}"></form>'
+                     '<p class="muted">Refreshing every 30s while a device is '
+                     'collecting.</p>'
+                     '<script>setTimeout(function(){'
+                     'document.getElementById("rfrm").submit();},30000);</script>')
     else:
         body = ('<p>No uploads found for this token yet. Deploy the collector '
                 'with this token via Intune, then refresh.</p>'
@@ -6646,6 +6944,9 @@ async def inbox_delete(request: Request) -> JSONResponse:
                 and secrets.compare_digest(str(st.get("upload_token_hash", "")), want)
                 and delete_job(child.name)):
             deleted += 1
+    # "Delete all" clears the collection-status pings too, otherwise a wiped
+    # inbox would still show devices as collecting.
+    clear_all_pending(token)
     return JSONResponse({"deleted": deleted})
 
 

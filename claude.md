@@ -45,11 +45,13 @@ HTML-rendering → routes.
 **State = bestandssysteem** (geen DB/Redis): `<JOBS_DIR>/<uuid>/` met
 `input/` (geüpload), `output/` (rapport, `summary.json`, `dashboard.json`) en
 `job.json` (status). `JOBS_DIR` default `/data/jobs`. Retentie via
-achtergrondtaak (`JOB_RETENTION_HOURS`, default 24). Eén niet-job-bestand staat
-in de root: `<JOBS_DIR>/upload-count.json` — de cumulatieve upload-teller
-(`bump_upload_count`/`read_upload_count`); het is een bestand, niet een dir,
-dus `iter_job_dirs` en de retentie-sweep raken het nooit aan en de teller
-overleeft job-expiry.
+achtergrondtaak (`JOB_RETENTION_HOURS`, default 24). Twee soorten niet-job-
+bestanden staan in de root, allebei **bestanden i.p.v. dirs** en daarmee
+onzichtbaar voor `iter_job_dirs` (en dus voor de retentie-sweep, de jobcaps en
+`fail_interrupted_jobs`): `upload-count.json` — de cumulatieve upload-teller
+(`bump_upload_count`/`read_upload_count`), die job-expiry overleeft — en
+`pending-<sha256(token)>.json` — de collectie-status per drop-off-token
+(zie hieronder).
 
 **Homepage** (`GET /`): tegels naar de twee upload-tools (CMTrace,
 Diagnostics) plus — alleen met `ENABLE_UPLOAD_API` — een Inbox-tegel, een
@@ -102,6 +104,25 @@ een diagnostics-job:
    `X-Upload-Token`-header; alleen `sha256(token)` belandt op schijf. De inbox
    leest het token uit de header of POST-body, **nooit uit de URL-query**
    (lekt anders in access-logs/history/Referer).
+   **Collectie-status** (`POST /api/collect-status`, zelfde token, ook vrij van
+   basic auth): de collector pingt `phase=start` bij aanvang en `phase=failed`
+   als hij zelf ziet dat de run mislukte, zodat de inbox het device meteen als
+   "collecting" toont i.p.v. minuten leeg te blijven. Bewust **geen**
+   placeholder-job: dat zou `UPLOAD_API_MAX_JOBS_PER_TOKEN` opeten, door
+   `cleanup_old_jobs` gesloopt worden en een lege `/result/<id>` opleveren —
+   het staat in `pending-<hash>.json` (`set_pending`/`list_pending`/
+   `clear_pending`, read-modify-write onder een `threading.Lock`). Een
+   `collecting`-entry verloopt na `COLLECT_PENDING_TTL_MINUTES` (45), een
+   `failed`-entry pas na `JOB_RETENTION_HOURS`; een geslaagde upload wist de
+   entry (`clear_pending` in `api_diagnostics`), net als "Delete all". De
+   inbox verbergt een pending-entry zodra het device een upload heeft die
+   nieuwer is dan de **start** van die run (collector die uploadde maar de
+   response-read timeout kreeg meldt alsnog `failed`). De `reason` is
+   token-houder-gestuurde tekst: gecapt op 200 tekens, control chars eruit,
+   nooit gelogd, `html_escape` bij rendering. De pagina hersubmit elke 30 s de
+   POST-form (géén `location.reload()` — resubmit-dialog) zolang er iets
+   `collecting` is, nooit bij alleen een `failed`-rij. Weesbestanden ruimt
+   `cleanup_pending_files()` in de retentie-loop op.
 
 **Dashboard-extra's:** de renderer is gesplitst in `render_dashboard_cards`
 (device-header met chips, verdict-banner, kaarten) en
@@ -179,7 +200,16 @@ schijf (fallback bij ontbreken), zodat de twee nooit kunnen driften.
 download het als SYSTEM zonder credentials). De collector-`Write-Host`/
 `Write-Warning`-regels stromen niet door een PowerShell-pipe; automatisering
 (de remediation-wrapper) leest daarom een aparte `Write-Output
-"SHERLOG_RESULT=…"`/`"SHERLOG_ERROR=…"`-slotregel. Het upload-token wordt
+"SHERLOG_RESULT=…"`/`"SHERLOG_ERROR=…"`-slotregel. **v1.3** voegt
+`Send-SherlogPing` toe (`/api/collect-status`, zie boven): start-ping vóór de
+eerste collectiestap, failed-ping naast élke `SHERLOG_ERROR=`-regel plus een
+script-scope `trap` voor een onverwachte crash — bewust in de collector en niet
+in de wrapper, want die kent het geanonimiseerde `$deviceLabel` niet en zou in
+`anon`-modus de echte hostname lekken. De ping is best-effort (10 s timeout,
+geen retries, alles in `try/catch`) en redigeert het token uit z'n reason.
+TLS 1.2 en proxy-detectie zijn daarvoor uit het uploadblok gehoist naar
+`Get-SherlogProxy` (bewust niet gecached: een VPN/proxy-wissel tijdens een
+lange run mag de upload geen stale proxy geven). Het upload-token wordt
 altijd uit alle tekstbestanden geredigeerd (ook zonder `-Anonymize`) omdat
 `Start-Transcript` de volledige commandline vastlegt; `-Anonymize` slaat
 well-known SYSTEM-principals over (anders corrumpeert het `HKEY_LOCAL_

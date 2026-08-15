@@ -1914,6 +1914,181 @@ def test_inbox_anonymize_toggle(upload_client):
     assert "$CollectionMode = 'anon'" in r.text
 
 
+def _ping(client, phase="start", token=_TOK, device="PC01", **body):
+    payload = {"phase": phase}
+    payload.update(body)
+    return client.post("/api/collect-status", json=payload,
+                       headers={"X-Upload-Token": token, "X-Device-Name": device,
+                                "X-Collector-Version": "1.3.0"})
+
+
+def test_collect_status_start_appears_in_inbox(upload_client):
+    """A collection takes minutes; the start ping must make the device visible
+    right away, even though it has no upload at all yet."""
+    assert _ping(upload_client, profile="remote").status_code == 204
+    inbox = upload_client.post("/inbox", data={"token": _TOK})
+    assert inbox.status_code == 200
+    assert "PC01" in inbox.text
+    assert "collecting" in inbox.text
+    assert "no uploads yet" in inbox.text
+    assert "1 device(s) collecting now" in inbox.text
+    # Another token sees nothing of it.
+    other = upload_client.post("/inbox", data={"token": "z" * 36})
+    assert "PC01" not in other.text
+
+
+def test_collect_status_disabled_by_default(client):
+    assert _ping(client).status_code == 404
+
+
+def test_collect_status_requires_token_and_phase(upload_client):
+    # Too short / missing token.
+    assert _ping(upload_client, token="short").status_code == 401
+    assert upload_client.post("/api/collect-status", json={"phase": "start"}
+                              ).status_code == 401
+    # Unknown phase.
+    assert _ping(upload_client, phase="bogus").status_code == 400
+    # Oversized body.
+    big = upload_client.post("/api/collect-status",
+                             content=b'{"phase":"start","reason":"' + b"x" * 5000 + b'"}',
+                             headers={"X-Upload-Token": _TOK,
+                                      "Content-Type": "application/json"})
+    assert big.status_code == 413
+
+
+def test_collect_status_failed_reason_is_escaped_and_capped(upload_client):
+    """The reason is written by anyone holding the token, so it is capped and
+    HTML-escaped where the inbox renders it."""
+    import app as app_module
+    _ping(upload_client, "start")
+    evil = "<img src=x onerror=alert(1)> " + "y" * 500
+    assert _ping(upload_client, "failed", reason=evil).status_code == 204
+    entries = app_module.list_pending(_TOK)
+    assert len(entries) == 1                      # updated, not duplicated
+    assert entries[0]["phase"] == "failed"
+    assert len(entries[0]["reason"]) <= 200
+    inbox = upload_client.post("/inbox", data={"token": _TOK})
+    assert "collection failed" in inbox.text
+    assert "<img src=x" not in inbox.text
+    assert "&lt;img src=x" in inbox.text
+
+
+def test_upload_clears_pending_entry(upload_client):
+    """The package landed, so the device is no longer collecting — and an
+    earlier failure for that device is history too."""
+    import app as app_module
+    _ping(upload_client, "start")
+    _ping(upload_client, "failed", reason="upload failed (413): too big")
+    upload_client.post("/api/diagnostics", content=_diag_zip(),
+                       headers={"X-Upload-Token": _TOK, "X-Device-Name": "PC01",
+                                "Content-Type": "application/zip"})
+    assert app_module.list_pending(_TOK) == []
+    inbox = upload_client.post("/inbox", data={"token": _TOK})
+    assert "collecting" not in inbox.text and "collection failed" not in inbox.text
+
+
+def test_pending_hidden_when_upload_is_newer_than_the_run(upload_client):
+    """Collector uploaded fine but timed out reading the response and reported
+    a failure anyway: the stored package outranks the stale failure ping."""
+    import app as app_module
+    upload_client.post("/api/diagnostics", content=_diag_zip(),
+                       headers={"X-Upload-Token": _TOK, "X-Device-Name": "PC01",
+                                "Content-Type": "application/zip"})
+    # Ping that started before the upload landed (clear_pending already ran, so
+    # write the entry straight to the store).
+    app_module.set_pending(_TOK, "PC01", phase="failed", reason="read timeout",
+                           started=time.time() - 600)
+    inbox = upload_client.post("/inbox", data={"token": _TOK})
+    assert "collection failed" not in inbox.text
+
+
+def test_pending_expires(upload_client, monkeypatch):
+    import app as app_module
+    _ping(upload_client, "start")
+    monkeypatch.setattr(app_module, "COLLECT_PENDING_TTL_MINUTES", -1)
+    assert app_module.list_pending(_TOK) == []
+    # A failure survives longer than a collecting entry (retention window).
+    _ping(upload_client, "failed", reason="boom")
+    assert len(app_module.list_pending(_TOK)) == 1
+
+
+def test_pending_is_not_a_job_and_costs_no_quota(upload_client):
+    """The status file lives at the JOBS_DIR root as a plain file, so it never
+    becomes a job: no upload quota, no retention sweep, no /result page."""
+    import app as app_module
+    _ping(upload_client, "start")
+    p = app_module.pending_path(app_module.token_hash(_TOK))
+    assert p.is_file()
+    assert list(app_module.iter_job_dirs()) == []
+    assert app_module._api_job_counts(_TOK) == (0, 0)
+    app_module.cleanup_old_jobs()
+    assert p.is_file()
+    # Only the hash is on disk, never the token itself.
+    assert _TOK not in p.read_text(encoding="utf-8")
+    assert app_module.token_hash(_TOK) in p.name
+    # Delete-all wipes the pending state too, otherwise ghost rows survive.
+    upload_client.post("/inbox/delete", headers={"X-Upload-Token": _TOK})
+    assert app_module.list_pending(_TOK) == []
+
+
+def test_pending_store_tolerates_a_corrupt_file(upload_client):
+    import app as app_module
+    _ping(upload_client, "start")
+    app_module.pending_path(app_module.token_hash(_TOK)).write_text(
+        "not json", encoding="utf-8")
+    assert app_module.list_pending(_TOK) == []
+    assert _ping(upload_client, "start").status_code == 204
+    assert upload_client.post("/inbox", data={"token": _TOK}).status_code == 200
+
+
+def test_inbox_autorefresh_only_while_collecting(upload_client):
+    """Keep the page live during a run, but a failed entry must not reload it
+    forever. Re-submits the POST form instead of location.reload() (which
+    would pop the browser's resend-form dialog)."""
+    _ping(upload_client, "start")
+    live = upload_client.post("/inbox", data={"token": _TOK})
+    assert 'id="rfrm"' in live.text and "30000" in live.text
+    _ping(upload_client, "failed", reason="boom")
+    done = upload_client.post("/inbox", data={"token": _TOK})
+    assert 'id="rfrm"' not in done.text
+
+
+def test_collect_status_is_exempt_from_basic_auth():
+    """The collector runs as SYSTEM and cannot answer a Basic challenge."""
+    src = (REPO_ROOT / "app.py").read_text(encoding="utf-8")
+    assert '"/api/collect-status"' in src.split("class BasicAuthMiddleware")[1][:800]
+
+
+def test_collector_pings_collection_status():
+    """Contract between the collector and /api/collect-status: the route it
+    posts to, a start ping before the first (slow) collection step, a failed
+    ping on every path that emits SHERLOG_ERROR, and a crash trap."""
+    text = (REPO_ROOT / "Collect-IntuneDiagnostics.ps1").read_text(encoding="utf-8")
+    app_src = (REPO_ROOT / "app.py").read_text(encoding="utf-8")
+    assert '@app.post("/api/collect-status")' in app_src
+    assert '"$base/api/collect-status"' in text          # same path both sides
+    assert "function Send-SherlogPing" in text
+    # Best-effort: short timeout, no retries, silent.
+    helper = text.split("function Send-SherlogPing")[1].split("\ntrap")[0]
+    assert "TimeoutSec = 10" in helper
+    assert "catch {}" in helper
+    assert "Start-Sleep" not in helper
+    assert "if (-not $UploadUrl -or -not $UploadToken) { return }" in helper
+    # The reason is redacted and capped before it leaves the device.
+    assert "[regex]::Escape($UploadToken)" in helper
+    assert "$r.Substring(0, 200)" in helper
+    # Start ping runs before the first collection step, after the device label.
+    assert (text.index("$deviceLabel = $env:COMPUTERNAME")
+            < text.index("Send-SherlogPing -Phase start")
+            < text.index("Invoke-Safe 'MDM diagnostics report"))
+    # Every SHERLOG_ERROR path also tells the inbox, plus a crash trap.
+    assert text.count("SHERLOG_ERROR=") == text.count("Send-SherlogPing -Phase failed") - 1
+    assert "trap { try { Send-SherlogPing -Phase failed" in text
+    # TLS and proxy detection are shared by the ping and the upload.
+    assert text.count("function Get-SherlogProxy") == 1
+    assert text.count("Select-String 'Proxy Server") == 1
+
+
 def test_collector_has_anonymize_option():
     text = (REPO_ROOT / "Collect-IntuneDiagnostics.ps1").read_text(encoding="utf-8")
     assert "[switch]$Anonymize" in text

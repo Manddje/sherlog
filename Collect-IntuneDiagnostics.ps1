@@ -40,6 +40,13 @@
     which PowerShell stamps with the full command line it was invoked with),
     regardless of -Anonymize.
 
+    With -UploadUrl and -UploadToken set, the script also pings
+    <base>/api/collect-status at the start of the run and again if it knows the
+    run failed, so the inbox can show the device as "collecting" instead of
+    staying empty for the minutes the collection takes. The ping carries only
+    the phase, the profile, the collector version and the same (optionally
+    anonymized) device label as the upload - never log content.
+
 .PARAMETER MaxUploadMB
     Client-side size guard matched against the server's MAX_UPLOAD_MB (default
     100). A package over this size is not uploaded (it would be rejected with
@@ -90,7 +97,7 @@ param(
     [switch]$Anonymize
 )
 
-$ScriptVersion = '1.2.0'
+$ScriptVersion = '1.3.0'
 
 # ============================================================
 # 0. Preparation
@@ -144,6 +151,66 @@ if ($Anonymize) {
 }
 $work      = Join-Path $OutputPath "IntuneDiag-$deviceLabel-$timestamp"
 $zipFile   = "$work.zip"
+
+# TLS 1.2 for every outbound call (the status ping below runs long before the
+# upload does; PS 5.1 still defaults to TLS 1.0 on older builds).
+try { [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12 } catch {}
+
+function Get-SherlogProxy {
+    # Auto-detect a configured WinHTTP proxy (SYSTEM has no per-user WinINET
+    # settings, so Invoke-RestMethod would otherwise go direct and fail on any
+    # proxy-only network) unless one was passed explicitly.
+    if ($Proxy) { return $Proxy }
+    try {
+        $proxyShow = netsh winhttp show proxy 2>$null
+        $m = $proxyShow | Select-String 'Proxy Server\(s\)\s*:\s*(\S+)'
+        if ($m -and $m.Matches.Count -gt 0) { return 'http://' + $m.Matches[0].Groups[1].Value }
+    } catch {}
+    return $null
+}
+
+function Send-SherlogPing {
+    # Collection takes minutes; without this the inbox stays empty until the
+    # zip lands and the admin cannot tell "still running" from "never started".
+    # Best-effort by design: short timeout, no retries, every failure swallowed
+    # - a status ping must never break or slow down the collection itself.
+    param([ValidateSet('start','failed')][string]$Phase, [string]$Reason)
+    if (-not $UploadUrl -or -not $UploadToken) { return }
+    if ($UploadToken -eq '<PASTE-YOUR-TOKEN-HERE>') { return }
+    if ($UploadUrl -notmatch '^https://') { return }
+    try {
+        $base = ($UploadUrl -replace '/api/diagnostics/?$', '')
+        $profileName = if ($Remote) { 'remote' } else { 'full' }
+        # The reason is an error string, so treat it as untrusted: never let
+        # the token ride along, keep it ASCII (PS 5.1 mangles non-ASCII in
+        # -Body) and short - the server caps it again anyway.
+        $r = "$Reason" -replace [regex]::Escape($UploadToken), '<redacted>'
+        $r = $r -replace '[^\x20-\x7E]', ' '
+        if ($r.Length -gt 200) { $r = $r.Substring(0, 200) }
+        $body = @{ phase = $Phase; reason = $r; profile = $profileName } |
+                ConvertTo-Json -Compress
+        $pingArgs = @{
+            Uri = "$base/api/collect-status"; Method = 'Post'; Body = $body
+            ContentType = 'application/json'; TimeoutSec = 10
+            Headers = @{
+                'X-Upload-Token'      = $UploadToken
+                'X-Device-Name'       = $deviceLabel
+                'X-Collector-Version' = $ScriptVersion
+            }
+        }
+        $pingProxy = Get-SherlogProxy
+        if ($pingProxy) { $pingArgs['Proxy'] = $pingProxy }
+        Invoke-RestMethod @pingArgs | Out-Null
+    } catch {}
+}
+
+# Any unhandled terminating error still tells Sherlog the run died, so the
+# device shows as failed instead of silently expiring. Lives here and not in
+# the Intune remediation wrapper: the wrapper does not know the anonymized
+# device label and would leak the real hostname in -Anonymize mode.
+trap { try { Send-SherlogPing -Phase failed -Reason "collection aborted: $($_.Exception.Message)" } catch {}; break }
+
+Send-SherlogPing -Phase start
 
 $folders = @('MDM','EventLogs','Registry','Identity','Network','Apps-IME','System','Defender','WindowsUpdate','Autopilot','Management')
 foreach ($f in $folders) {
@@ -891,21 +958,12 @@ if ($UploadUrl) {
         if ($sizeMB -gt $MaxUploadMB) {
             Write-Warning "Package is $sizeMB MB, over the $MaxUploadMB MB limit; skipping upload (would be rejected). Local zip kept: $zipFile"
             Write-Output "SHERLOG_ERROR=package too large ($sizeMB MB > $MaxUploadMB MB), not uploaded"
+            Send-SherlogPing -Phase failed -Reason "package too large ($sizeMB MB > $MaxUploadMB MB), not uploaded"
         } else {
             Write-Step "Uploading to $UploadUrl ($sizeMB MB)..."
-            try { [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12 } catch {}
-
-            # Auto-detect a configured WinHTTP proxy (SYSTEM has no per-user
-            # WinINET settings, so Invoke-RestMethod would otherwise go direct
-            # and fail on any proxy-only network) unless one was passed explicitly.
-            $uploadProxy = $Proxy
-            if (-not $uploadProxy) {
-                try {
-                    $proxyShow = netsh winhttp show proxy 2>$null
-                    $m = $proxyShow | Select-String 'Proxy Server\(s\)\s*:\s*(\S+)'
-                    if ($m -and $m.Matches.Count -gt 0) { $uploadProxy = 'http://' + $m.Matches[0].Groups[1].Value }
-                } catch {}
-            }
+            # Re-detected rather than cached: a VPN or proxy change during a
+            # long collection must not leave the upload with a stale proxy.
+            $uploadProxy = Get-SherlogProxy
 
             $headers = @{
                 'X-Upload-Token'      = $UploadToken
@@ -941,6 +999,7 @@ if ($UploadUrl) {
                     if ($permanent -or $attempt -eq $maxAttempts) {
                         Write-Warning "Upload failed ($status): $reason. Local zip kept: $zipFile"
                         Write-Output "SHERLOG_ERROR=upload failed ($status): $reason"
+                        Send-SherlogPing -Phase failed -Reason "upload failed ($status): $reason"
                     } else {
                         Write-Host "  Attempt $attempt/$maxAttempts failed ($status): $reason - retrying..."
                         Start-Sleep -Seconds (5 * $attempt)
