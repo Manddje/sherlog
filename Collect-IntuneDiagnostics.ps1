@@ -97,7 +97,7 @@ param(
     [switch]$Anonymize
 )
 
-$ScriptVersion = '1.3.0'
+$ScriptVersion = '1.3.1'
 
 # ============================================================
 # 0. Preparation
@@ -819,7 +819,42 @@ function Invoke-TextRedaction {
         $k = $r.Value.ToLowerInvariant()
         if (-not $seen.ContainsKey($k)) { $seen[$k] = $true; $r }
     }
-    $emailRe = [regex]'(?i)[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}'
+    # Compile every literal token once instead of parsing the pattern again for
+    # every file: the map is small but the file set is not.
+    $rxOpts = [Text.RegularExpressions.RegexOptions]::IgnoreCase -bor
+              [Text.RegularExpressions.RegexOptions]::Compiled
+    $rules = foreach ($r in $final) {
+        [pscustomobject]@{ Re = [regex]::new([regex]::Escape($r.Value), $rxOpts); Tag = $r.Tag }
+    }
+
+    # E-mail catch-all, anchored on the literal '@' so the engine can skip
+    # through a multi-MB IME log at native speed. A pattern that starts with
+    # the local part instead ([A-Z0-9._%+-]+@...) tries - and backtracks out
+    # of - every GUID, hash and base64 run in the file; that is what made
+    # -Anonymize run for minutes on log-heavy devices. The local part is
+    # walked backwards from the match, bounded by its own length.
+    $emailRe = [regex]::new('@[A-Z0-9.-]+\.[A-Z]{2,}', $rxOpts)
+    $isLocal = New-Object 'bool[]' 128
+    foreach ($c in [char[]]'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._%+-') {
+        $isLocal[[int]$c] = $true
+    }
+    function Remove-EmailAddresses([string]$t) {
+        if ($t.IndexOf('@') -lt 0) { return $t }
+        $sb = [Text.StringBuilder]::new($t.Length)
+        $pos = 0
+        foreach ($m in $emailRe.Matches($t)) {
+            if ($m.Index -lt $pos) { continue }
+            $s = $m.Index
+            while ($s -gt $pos -and [int]$t[$s - 1] -lt 128 -and $isLocal[[int]$t[$s - 1]]) { $s-- }
+            if ($s -eq $m.Index) { continue }   # bare '@domain' is not an address
+            [void]$sb.Append($t, $pos, $s - $pos).Append('<EMAIL>')
+            $pos = $m.Index + $m.Length
+        }
+        if ($pos -eq 0) { return $t }
+        [void]$sb.Append($t, $pos, $t.Length - $pos)
+        return $sb.ToString()
+    }
+
     $textExt = '.txt', '.log', '.reg', '.xml', '.html', '.htm', '.json', '.csv', '.ini', '.config'
     $count = 0
     Get-ChildItem $Root -Recurse -File |
@@ -838,10 +873,13 @@ function Invoke-TextRedaction {
                 $text = $enc.GetString($bytes)
                 if ($text.Length -gt 0 -and $text[0] -eq [char]0xFEFF) { $text = $text.Substring(1) }
                 $orig = $text
-                foreach ($r in $final) {
-                    $text = [regex]::Replace($text, [regex]::Escape($r.Value), $r.Tag, 'IgnoreCase')
+                foreach ($r in $rules) {
+                    # IsMatch first: Replace copies the whole (multi-MB) string
+                    # even when nothing matches, and most tokens appear in only
+                    # a handful of files. Same engine, so same semantics.
+                    if ($r.Re.IsMatch($text)) { $text = $r.Re.Replace($text, $r.Tag) }
                 }
-                if ($AlsoRedactEmails) { $text = $emailRe.Replace($text, '<EMAIL>') }
+                if ($AlsoRedactEmails) { $text = Remove-EmailAddresses $text }
                 if ($text -ne $orig) {
                     [IO.File]::WriteAllBytes($_.FullName, $enc.GetPreamble() + $enc.GetBytes($text))
                     $count++
@@ -851,32 +889,32 @@ function Invoke-TextRedaction {
     return $count
 }
 
-# Always redact the upload secret from every text file (chiefly the
+# The upload secret is always redacted from every text file (chiefly the
 # transcript, which PowerShell stamps with the full command line it was
 # invoked with, including -UploadToken) - independent of -Anonymize.
+# Both jobs share one walk over the package: a separate pass per job reads,
+# decodes, re-encodes and rewrites every text file a second time, and on a
+# log-heavy device that walk is the slow part of -Anonymize. The token entry
+# is added first and outside any step, so a failure while collecting the
+# anonymization tokens can never cost us the secret redaction.
+$redactMap = [System.Collections.Generic.List[object]]::new()
 if ($UploadToken) {
-    Invoke-Safe 'Redacting upload token from collected files...' {
-        $secretMap = [System.Collections.Generic.List[object]]::new()
-        $secretMap.Add([pscustomobject]@{ Value = $UploadToken; Tag = '<UPLOAD-TOKEN>' })
-        $n = Invoke-TextRedaction -Root $work -Map $secretMap
-        Write-Host "  Redacted the upload token from $n file(s)."
-    }
+    $redactMap.Add([pscustomobject]@{ Value = $UploadToken; Tag = '<UPLOAD-TOKEN>' })
 }
 
 if ($Anonymize) {
-    Invoke-Safe 'Anonymizing text files (best-effort)...' {
+    Invoke-Safe 'Collecting anonymization tokens...' {
         # Principals that must never be redacted: they are not identifying and
         # (for SYSTEM/NT AUTHORITY) redacting them corrupts registry paths
         # like HKEY_LOCAL_MACHINE\SYSTEM\... and breaks the server's
         # SYSTEM-context detection for the Entra PRT check.
         $wellKnown = '(?i)^(NT AUTHORITY\\SYSTEM|SYSTEM|NT AUTHORITY|LOCAL SERVICE|NETWORK SERVICE|' +
                      'NT AUTHORITY\\LOCAL SERVICE|NT AUTHORITY\\NETWORK SERVICE|WORKGROUP|Unknown|N/A|None)$'
-        $map = [System.Collections.Generic.List[object]]::new()
         function Add-Redact($val, $tag) {
             if ($null -eq $val) { return }
             $v = "$val".Trim()
             if ($v.Length -ge 4 -and $v -notmatch $wellKnown) {
-                $map.Add([pscustomobject]@{ Value = $v; Tag = $tag })
+                $redactMap.Add([pscustomobject]@{ Value = $v; Tag = $tag })
             }
         }
         $dsreg = dsregcmd /status
@@ -908,13 +946,21 @@ if ($Anonymize) {
         Add-Redact $env:USERDNSDOMAIN '<DOMAIN>'
         Add-Redact $env:USERDOMAIN    '<DOMAIN>'
         # Domain part of any UPN we found.
-        foreach ($u in @($map | Where-Object { $_.Tag -eq '<UPN>' })) {
+        foreach ($u in @($redactMap | Where-Object { $_.Tag -eq '<UPN>' })) {
             if ($u.Value -match '@(.+)$') { Add-Redact $matches[1] '<DOMAIN>' }
         }
-
-        $n = Invoke-TextRedaction -Root $work -Map $map -AlsoRedactEmails
-        Write-Host "  Redacted $n file(s) using $($map.Count) token(s)."
+        Write-Host "  Collected $($redactMap.Count) token(s) to redact."
     }
+}
+
+if ($redactMap.Count -gt 0 -or $Anonymize) {
+    Invoke-Safe 'Redacting text files...' {
+        $n = Invoke-TextRedaction -Root $work -Map $redactMap -AlsoRedactEmails:$Anonymize
+        Write-Host "  Redacted $n file(s) using $($redactMap.Count) token(s)."
+    }
+}
+
+if ($Anonymize) {
     Write-Warning ('ANONYMIZE is best-effort and NOT a guarantee. Only TEXT files were ' +
         'redacted; binary files (event logs .evtx, Defender .cab, the nested ' +
         'mdmdiag .zip) are NOT scrubbed and may still contain tenant/company ' +

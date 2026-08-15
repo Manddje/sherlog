@@ -214,6 +214,18 @@ altijd uit alle tekstbestanden geredigeerd (ook zonder `-Anonymize`) omdat
 `Start-Transcript` de volledige commandline vastlegt; `-Anonymize` slaat
 well-known SYSTEM-principals over (anders corrumpeert het `HKEY_LOCAL_
 MACHINE\SYSTEM\…`-paden en breekt het de PRT-SYSTEM-detectie hierboven).
+De redactie is één pass over het pakket (token + anonymize-tokens delen dezelfde
+`Invoke-TextRedaction`-aanroep; het token-entry wordt buiten elke `Invoke-Safe`
+toegevoegd, dus een falende tokenverzameling kan de secret-redactie nooit
+overslaan). Perf-kaders — de collector draait op **Windows PowerShell 5.1**
+(.NET Framework), waarvan de regex-engine alleen op een *leading* literal
+vooruitspringt: de e-mailregex moet daarom op `@` beginnen
+(`@[A-Z0-9.-]+\.[A-Z]{2,}`) met de local part achteruit gelopen — de
+oorspronkelijke `[A-Z0-9._%+-]+@…` startte een poging op élke GUID/base64-run
+in een IME-log en maakte `-Anonymize` minutenlang. Tokens zijn vooraf
+gecompileerd en gaan door `IsMatch` vóór `Replace` (anders kopieert elke
+token een multi-MB string die niet eens een match bevat).
+`test_email_redaction_pattern_is_anchored_on_the_at_sign` bewaakt beide.
 Firewall-, eventlog- en endpoint-checks prefereren een locale-onafhankelijke
 JSON-sidecar (`parse_firewall_profiles_json`, `count_event_issues_json`,
 `Network/endpoint-connectivity.json`) als die in het pakket zit, met fallback

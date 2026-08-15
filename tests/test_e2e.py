@@ -2170,11 +2170,38 @@ def test_remediation_script_reports_result_line():
 def test_upload_token_redacted_unconditionally():
     """The upload token must be scrubbed from collected text files (chiefly
     the transcript, which records the full invocation command line)
-    regardless of -Anonymize - it is the only credential for the inbox."""
+    regardless of -Anonymize - it is the only credential for the inbox.
+    The token and the anonymize tokens share one pass over the package, so
+    the guarantee is structural: the token entry is added outside any step
+    (a failing anonymize step cannot skip it) and the redaction call itself
+    is gated on the map being non-empty, never on -Anonymize."""
     text = (REPO_ROOT / "Collect-IntuneDiagnostics.ps1").read_text(encoding="utf-8")
-    redact_block = text.split("if ($UploadToken) {", 1)[1].split("if ($Anonymize) {", 1)[0]
-    assert "UPLOAD-TOKEN" in redact_block
+    token_block = text.split("if ($UploadToken) {", 1)[1].split("\n}", 1)[0]
+    assert "UPLOAD-TOKEN" in token_block
+    assert "$redactMap.Add" in token_block
+    redact_block = text.split("if ($redactMap.Count -gt 0 -or $Anonymize) {", 1)[1]
+    redact_block = redact_block.split("\n}", 1)[0]
     assert "Invoke-TextRedaction" in redact_block
+    # The token is collected before the anonymize step runs, so a failure
+    # there leaves the secret redaction intact.
+    assert text.index("$redactMap.Add") < text.index(
+        "Invoke-Safe 'Collecting anonymization tokens...'"
+    )
+
+
+def test_email_redaction_pattern_is_anchored_on_the_at_sign():
+    """Perf contract: the collector runs on Windows PowerShell 5.1 (.NET
+    Framework), whose regex engine only skips ahead on a *leading* literal.
+    An e-mail pattern that starts with the local part ([A-Z0-9._%+-]+@...)
+    therefore starts - and backtracks out of - an attempt at every GUID,
+    hash and base64 run in a multi-MB IME log, which made -Anonymize take
+    minutes. Keep the '@' first and walk the local part backwards."""
+    text = (REPO_ROOT / "Collect-IntuneDiagnostics.ps1").read_text(encoding="utf-8")
+    assert "'@[A-Z0-9.-]+\\.[A-Z]{2,}'" in text
+    assert "[A-Z0-9._%+-]+@[A-Z0-9.-]+" not in text
+    # And the per-token replaces must not copy a multi-MB string when the
+    # token is not in the file at all.
+    assert "$r.Re.IsMatch($text)" in text
 
 
 def test_anonymize_skips_well_known_system_principals():
