@@ -3950,3 +3950,59 @@ def test_single_file_download_for_log_uploads(client):
     for bad in ("../app.py", "b.log", "job.json"):
         assert client.get(f"/result/{job_id}/files/download",
                           params={"file": bad}).status_code == 404
+
+
+# --- GUI phase 5: home + upload pages ---------------------------------------
+
+def _header(html: str) -> str:
+    return html[html.index('<nav class="nav"'):html.index("</nav>", html.index('<nav class="nav"'))]
+
+
+def test_header_nav_is_upload_inbox_errorcodes(upload_client):
+    page = upload_client.get("/").text
+    head = _header(page)
+    links = re.findall(r'<a class="navlink[^"]*" href="([^"]+)"', head)
+    assert links == ["/", "/inbox", "/errorcodes"]
+    assert 'data-also="/diagnostics /cmtrace"' in head   # Upload stays active
+    assert "payloadkit.app" not in head and 'data-act="about"' not in head
+    # About, PayloadKit and the two tool pages moved to the footer.
+    foot = page[page.index("<footer>"):page.index("</footer>")]
+    for bit in ('href="/diagnostics"', 'href="/cmtrace"', 'data-act="about"',
+                'href="https://payloadkit.app"', 'rel="noopener"'):
+        assert bit in foot, bit
+    assert "data-also" in page and "al.indexOf(location.pathname)" in page
+
+
+def test_home_puts_recent_under_the_dropzone_and_drops_tiles(client):
+    page = client.get("/").text
+    assert 'class="tile"' not in page and 'class="tiles"' not in page
+    hero = page[page.index('<section class="home-hero">'):page.index('<section class="gstart">')]
+    assert 'id="drop"' in hero and 'id="recent"' in hero      # recent in the hero
+    assert hero.index('id="drop"') < hero.index('class="route"') < hero.index('id="recent"')
+    cards = page[page.index('<section class="gstart">'):page.index('<section class="explain">')]
+    assert cards.count('<article class="gcard">') == 2        # no inbox card by default
+    # Long recent-file names must not widen the hero past a phone viewport.
+    css = client.get("/assets/app.css").text
+    assert "grid-template-columns:minmax(0,1fr) minmax(0,1fr)" in css
+    assert "Intune&#8209;managed" in page          # title never breaks on the hyphen
+    assert 'href="/collect-script" download' in cards
+    assert 'href="/cmtrace"' in cards and 'href="/diagnostics"' in cards
+
+
+def test_home_shows_inbox_card_when_dropoff_enabled(upload_client):
+    page = upload_client.get("/").text
+    cards = page[page.index('<section class="gstart">'):page.index('<section class="explain">')]
+    assert cards.count('<article class="gcard">') == 3
+    assert "Collect straight from Intune" in cards and 'href="/inbox"' in cards
+
+
+def test_upload_pages_share_the_home_layout(upload_client):
+    diag = upload_client.get("/diagnostics").text
+    assert '<section class="home-hero">' in diag
+    hero = diag[diag.index('<section class="home-hero">'):diag.index('<div class="panels2">')]
+    assert 'id="drop"' in hero and 'id="recent"' in hero
+    panels = diag[diag.index('<div class="panels2">'):]
+    assert "Don't have a package yet?" in panels
+    assert "Collect straight from Intune" in panels     # side by side
+    cm = upload_client.get("/cmtrace").text
+    assert '<section class="home-hero">' in cm and '<p class="eyebrow">CMTrace Viewer</p>' in cm

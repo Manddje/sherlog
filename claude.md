@@ -62,9 +62,13 @@ onzichtbaar voor `iter_job_dirs` (en dus voor de retentie-sweep, de jobcaps en
 `pending-<sha256(token)>.json` — de collectie-status per drop-off-token
 (zie hieronder).
 
-**Homepage** (`GET /`): tegels naar de twee upload-tools (CMTrace,
-Diagnostics) plus — alleen met `ENABLE_UPLOAD_API` — een Inbox-tegel, een
-client-side *recent*-lijst (browser-`localStorage`, geen serverstate) en een
+**Homepage** (`GET /`): split-hero (tekst | dropzone + client-side
+*recent*-lijst uit browser-`localStorage`, geen serverstate), daaronder
+"Get started"-kaarten (Diagnostics Package, CMTrace Viewer en — alleen met
+`ENABLE_UPLOAD_API` — Intune/inbox). `/diagnostics` en `/cmtrace` gebruiken
+dezelfde split-hero (`UPLOAD_PAGE`), hun hulppanelen staan in `.panels2`.
+`NAV` bevat Upload/Inbox/Error codes (Upload ook actief op de uploadpagina's
+via `data-also`); de tools, About en PayloadKit staan in `FOOTER`. Plus een
 all-time upload-teller in de hero (verborgen bij 0; opgehoogd in elk van de drie
 upload-handlers). Géén demo-knop. `static/` (StaticFiles-mount op `/static`)
 serveert de auteursfoto in de footer. `static/` en `testdata/` worden in de

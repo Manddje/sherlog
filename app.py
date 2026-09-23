@@ -4364,7 +4364,7 @@ PAGE_CSS = """
   a{ color:var(--accent); text-decoration:none; }
   a:hover{ text-decoration:underline; }
   .nav{ display:flex; align-items:center; gap:.75rem; position:relative;
-    max-width:880px; margin:0 auto; padding:.9rem 1.25rem; }
+    max-width:1040px; margin:0 auto; padding:.9rem 1.25rem; }
   .brand{ display:flex; align-items:center; gap:.55rem; font-weight:700;
     font-size:1.05rem; color:var(--fg); }
   .brand:hover{ text-decoration:none; }
@@ -4398,7 +4398,7 @@ PAGE_CSS = """
     .navlink.ext{ margin-left:0; }
     .navlink.ext::before{ display:none; }
   }
-  .wrap{ max-width:880px; margin:0 auto; padding:0 1.25rem; }
+  .wrap{ max-width:1040px; margin:0 auto; padding:0 1.25rem; }
   .hero{ text-align:center; padding:3.5rem 0 2rem; }
   .hero h1{ font-size:2.4rem; line-height:1.15; letter-spacing:-.02em; margin:0 0 .9rem; }
   .hero p{ font-size:1.1rem; color:var(--muted); max-width:34rem; margin:0 auto; }
@@ -4434,9 +4434,13 @@ PAGE_CSS = """
     border-top-color:var(--accent); border-radius:50%; animation:spin 1s linear infinite;
     margin:1.5rem auto; }
   @keyframes spin{ to{ transform:rotate(360deg); } }
-  footer{ max-width:880px; margin:3rem auto 2rem; padding:1.5rem 1.25rem 0;
+  footer{ max-width:1040px; margin:3rem auto 2rem; padding:1.5rem 1.25rem 0;
     border-top:1px solid var(--border); color:var(--muted); font-size:.85rem;
-    display:flex; justify-content:space-between; flex-wrap:wrap; gap:.5rem; }
+    display:flex; justify-content:space-between; align-items:center;
+    flex-wrap:wrap; gap:.5rem 1.25rem; }
+  footer .flinks{ display:flex; flex-wrap:wrap; gap:.4rem 1.1rem; }
+  footer .flinks a{ color:var(--muted); }
+  footer .flinks a:hover{ color:var(--fg); }
   .hero .cta{ margin:1.5rem 0 0; }
   .hero .trust{ font-size:.88rem; margin-top:.9rem; }
   .cards{ display:grid; grid-template-columns:repeat(auto-fit,minmax(240px,1fr)); gap:1.25rem; }
@@ -4451,13 +4455,15 @@ PAGE_CSS = """
   .card .shot img{ display:block; width:100%; height:auto; aspect-ratio:8/5;
     object-fit:cover; object-position:top left; }
   .card .when{ color:var(--fg); font-size:.9rem; font-style:italic; margin:0 0 .5rem; }
-  /* --- Home (split hero + icon tiles) --- */
-  .home-hero{ display:grid; grid-template-columns:1.05fr .95fr; gap:2.5rem;
-    align-items:center; padding:3rem 0 2.25rem; }
-  @media (max-width:820px){ .home-hero{ grid-template-columns:1fr; gap:1.5rem;
+  /* --- Home and upload pages: split hero (copy | upload + recent) --- */
+  /* minmax(0,…): a long file name in the recent list must not widen the
+     column past the viewport. */
+  .home-hero{ display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1fr);
+    gap:2.5rem; align-items:start; padding:3rem 0 1.5rem; }
+  @media (max-width:820px){ .home-hero{ grid-template-columns:minmax(0,1fr); gap:1.5rem;
     padding:1.75rem 0 1rem; } }
-  .home-copy h1{ font-size:2.3rem; line-height:1.13; letter-spacing:-.02em;
-    margin:0 0 .9rem; }
+  .home-copy h1{ font-size:2.2rem; line-height:1.13; letter-spacing:-.02em;
+    margin:0 0 .9rem; text-wrap:balance; }
   .home-copy .lead{ font-size:1.1rem; color:var(--muted); margin:0; max-width:34rem; }
   .badges{ display:flex; flex-wrap:wrap; gap:.5rem; margin:1.2rem 0 0; }
   .badges span{ font-size:.78rem; font-weight:600; color:var(--muted);
@@ -4466,6 +4472,9 @@ PAGE_CSS = """
     margin:.9rem 0 0; }
   .home-upload .drop{ padding:2.25rem 1.25rem; line-height:1.6; }
   .home-upload .row{ margin-top:1rem; }
+  .home-upload .route{ color:var(--muted); font-size:.86rem; margin:.7rem 0 0; }
+  .home-upload .recent{ margin-top:1.25rem; padding:1.1rem 1.25rem; }
+  .home-copy .eyebrow{ margin-bottom:.6rem; }
   .home-upload .or{ text-align:center; color:var(--muted); font-size:.9rem;
     margin:.8rem 0 0; }
   .inline{ display:inline; }
@@ -4475,19 +4484,33 @@ PAGE_CSS = """
   .inlineform{ display:inline; }
   .eyebrow{ font-size:.8rem; font-weight:700; letter-spacing:.08em;
     text-transform:uppercase; color:var(--muted); margin:0 0 .9rem; }
-  .tools{ margin-top:2.5rem; }
-  .tiles{ display:grid; grid-template-columns:repeat(auto-fit,minmax(250px,1fr));
+  /* "Get started" cards (PayloadKit card anatomy: title + mono id,
+     description, badges, action footer). */
+  .gstart{ margin-top:2rem; }
+  .gcards{ display:grid; grid-template-columns:repeat(auto-fit,minmax(260px,1fr));
     gap:1rem; }
-  .tile{ display:flex; gap:.85rem; align-items:flex-start; padding:1.1rem;
-    border:1px solid var(--border); border-radius:12px; background:var(--bg);
-    color:var(--fg); transition:border-color .12s, transform .12s; }
-  .tile:hover{ border-color:var(--accent); transform:translateY(-2px); }
-  .tile .ic{ flex:none; width:2.3rem; height:2.3rem; border-radius:9px;
+  .gcard{ display:flex; flex-direction:column; gap:.75rem; padding:1.1rem 1.1rem 0;
+    border:1px solid var(--border); border-radius:14px; background:var(--bg);
+    box-shadow:var(--shadow-sm); transition:box-shadow .15s; overflow:hidden; }
+  .gcard:hover{ box-shadow:var(--shadow-md); }
+  .gcard .gh{ display:flex; gap:.75rem; align-items:flex-start; }
+  .gcard .gh>div{ min-width:0; }
+  .gcard .ic{ flex:none; width:2.3rem; height:2.3rem; border-radius:9px;
     display:flex; align-items:center; justify-content:center;
-    background:var(--surface); color:var(--accent); }
-  .tile .ic svg{ width:1.3rem; height:1.3rem; }
-  .tile h3{ margin:.1rem 0 .25rem; font-size:1.02rem; }
-  .tile p{ margin:0; color:var(--muted); font-size:.88rem; line-height:1.45; }
+    background:var(--accent-soft); color:var(--accent); }
+  .gcard .ic svg{ width:1.25rem; height:1.25rem; }
+  .gcard h3{ margin:.05rem 0 .1rem; font-size:1.02rem; }
+  .gcard .gid{ color:var(--muted); font-size:.75rem; overflow-wrap:anywhere; }
+  .gcard p{ margin:0; color:var(--muted); font-size:.9rem; line-height:1.5; flex:1; }
+  .gcard .gf{ display:flex; align-items:center; gap:.5rem; flex-wrap:wrap;
+    margin:0 -1.1rem; padding:.65rem 1.1rem; border-top:1px solid var(--border);
+    background:var(--surface); }
+  .gcard .gf .sp{ flex:1; }
+  .gcard .gf .btn{ padding:.4rem .85rem; font-size:.86rem; }
+  /* Upload pages: the two helper panels sit side by side under the hero. */
+  .panels2{ display:grid; grid-template-columns:repeat(auto-fit,minmax(300px,1fr));
+    gap:1rem; }
+  .panels2>.card{ margin-top:0; padding:1.4rem; min-width:0; }
   .stepper{ list-style:none; margin:0; padding:0; display:grid;
     grid-template-columns:repeat(3,1fr); gap:1.1rem; }
   @media (max-width:760px){ .stepper{ grid-template-columns:1fr; } }
@@ -4654,15 +4677,9 @@ _THEME_BTN = """<button class="navlink icon theme" type="button" aria-label="Tog
 NAV = ("""<header><nav class="nav" aria-label="Main">
   <a class="brand" href="/">%(logo)s Sherlog</a>
   <span class="navlinks" id="navlinks">
-    <a class="navlink" href="/cmtrace">CMTrace</a>
-    <a class="navlink" href="/diagnostics">Diagnostics</a>
-    <a class="navlink" href="/errorcodes">Error codes</a>
+    <a class="navlink" href="/" data-also="/diagnostics /cmtrace">Upload</a>
     %(inbox_nav)s
-    <a class="navlink ext" href="https://payloadkit.app" target="_blank"
-       rel="noopener" title="PayloadKit &mdash; browse &amp; build Apple
-       Configuration Profiles for macOS, iOS and tvOS, by the maker of
-       Sherlog">PayloadKit&nbsp;&#8599;</a>
-    <a class="navlink" href="#about" data-act="about">About</a>
+    <a class="navlink" href="/errorcodes">Error codes</a>
   </span>
   <span class="navtools">
 %(themebtn)s
@@ -4705,7 +4722,15 @@ NAV = ("""<header><nav class="nav" aria-label="Main">
     '<a class="navlink" href="/inbox">Inbox</a>' if ENABLE_UPLOAD_API else "")})
 
 FOOTER = ("""<footer>
-  <span>Sherlog &middot; sherlog.nl
+  <span>Sherlog &middot; sherlog.nl</span>
+  <span class="flinks">
+    <a href="/diagnostics">Diagnostics package</a>
+    <a href="/cmtrace">CMTrace viewer</a>
+    <a href="#about" data-act="about">About</a>
+    <a href="https://payloadkit.app" target="_blank" rel="noopener"
+       title="PayloadKit &mdash; browse &amp; build Apple Configuration
+       Profiles for macOS, iOS and tvOS, by the maker of
+       Sherlog">PayloadKit&nbsp;&#8599;</a>
   </span>
 </footer>""")
 
@@ -4825,7 +4850,7 @@ def history_record_js(job_id: str, tool: str, state: str, files: List[str]) -> s
 # first paint and keeps sandboxed iframes (no localStorage) in sync via a
 # postMessage handshake. Must contain no literal '%' (pages are %-format
 # templates).
-_THEME_JS = """<script>(function(){var de=document.documentElement;function a(d){de.classList.toggle('dark',d);de.style.colorScheme=d?'dark':'light'}function cur(){return de.classList.contains('dark')}function tell(w){try{w.postMessage({sherlogTheme:cur()?'dark':'light'},'*')}catch(e){}}var t=null;try{t=localStorage.getItem('sherlog.theme')}catch(e){}a(t==='dark'||(t!=='light'&&matchMedia('(prefers-color-scheme: dark)').matches));window.sherlogTheme=function(){a(!cur());try{localStorage.setItem('sherlog.theme',cur()?'dark':'light')}catch(e){}var fs=document.querySelectorAll('iframe');for(var i=0;i<fs.length;i++)tell(fs[i].contentWindow)};try{if(parent&&parent!==window)parent.postMessage({sherlogThemeReq:1},'*')}catch(e){}window.addEventListener('load',function(e){if(e.target&&e.target.tagName==='IFRAME')tell(e.target.contentWindow)},true);window.addEventListener('message',function(e){var d=e.data||{};if(d.sherlogThemeReq&&e.source){tell(e.source);return}var v=d.sherlogTheme;if(v==='dark'||v==='light')a(v==='dark')});function shut(t){var ms=document.querySelectorAll('details.menu[open]');for(var i=0;i<ms.length;i++)if(!t||!ms[i].contains(t))ms[i].open=false;var ns=document.querySelectorAll('.nav.open');for(var j=0;j<ns.length;j++)if(!t||!ns[j].contains(t)){ns[j].classList.remove('open');var b=ns[j].querySelector('[data-act=menu]');if(b)b.setAttribute('aria-expanded','false')}}document.addEventListener('keydown',function(e){if(e.key==='Escape')shut(null)});document.addEventListener('DOMContentLoaded',function(){var ls=document.querySelectorAll('.navlinks a.navlink');for(var i=0;i<ls.length;i++)if(ls[i].getAttribute('href')===location.pathname)ls[i].setAttribute('aria-current','page')});document.addEventListener('click',function(e){shut(e.target);var el=e.target&&e.target.closest?e.target.closest('[data-act]'):null;if(!el)return;var k=el.getAttribute('data-act');if(k==='about'){e.preventDefault();var d=document.getElementById('about');if(d&&d.showModal)d.showModal()}else if(k==='theme'){window.sherlogTheme()}else if(k==='menu'){var n=el.closest('.nav');if(n){var o=n.classList.toggle('open');el.setAttribute('aria-expanded',String(o))}}else if(k==='close-dialog'){var g=el.closest('dialog');if(g)g.close()}})})()</script>"""
+_THEME_JS = """<script>(function(){var de=document.documentElement;function a(d){de.classList.toggle('dark',d);de.style.colorScheme=d?'dark':'light'}function cur(){return de.classList.contains('dark')}function tell(w){try{w.postMessage({sherlogTheme:cur()?'dark':'light'},'*')}catch(e){}}var t=null;try{t=localStorage.getItem('sherlog.theme')}catch(e){}a(t==='dark'||(t!=='light'&&matchMedia('(prefers-color-scheme: dark)').matches));window.sherlogTheme=function(){a(!cur());try{localStorage.setItem('sherlog.theme',cur()?'dark':'light')}catch(e){}var fs=document.querySelectorAll('iframe');for(var i=0;i<fs.length;i++)tell(fs[i].contentWindow)};try{if(parent&&parent!==window)parent.postMessage({sherlogThemeReq:1},'*')}catch(e){}window.addEventListener('load',function(e){if(e.target&&e.target.tagName==='IFRAME')tell(e.target.contentWindow)},true);window.addEventListener('message',function(e){var d=e.data||{};if(d.sherlogThemeReq&&e.source){tell(e.source);return}var v=d.sherlogTheme;if(v==='dark'||v==='light')a(v==='dark')});function shut(t){var ms=document.querySelectorAll('details.menu[open]');for(var i=0;i<ms.length;i++)if(!t||!ms[i].contains(t))ms[i].open=false;var ns=document.querySelectorAll('.nav.open');for(var j=0;j<ns.length;j++)if(!t||!ns[j].contains(t)){ns[j].classList.remove('open');var b=ns[j].querySelector('[data-act=menu]');if(b)b.setAttribute('aria-expanded','false')}}document.addEventListener('keydown',function(e){if(e.key==='Escape')shut(null)});document.addEventListener('DOMContentLoaded',function(){var ls=document.querySelectorAll('.navlinks a.navlink');for(var i=0;i<ls.length;i++){var al=(ls[i].getAttribute('data-also')||'').split(' ');if(ls[i].getAttribute('href')===location.pathname||al.indexOf(location.pathname)>=0)ls[i].setAttribute('aria-current','page')}});document.addEventListener('click',function(e){shut(e.target);var el=e.target&&e.target.closest?e.target.closest('[data-act]'):null;if(!el)return;var k=el.getAttribute('data-act');if(k==='about'){e.preventDefault();var d=document.getElementById('about');if(d&&d.showModal)d.showModal()}else if(k==='theme'){window.sherlogTheme()}else if(k==='menu'){var n=el.closest('.nav');if(n){var o=n.classList.toggle('open');el.setAttribute('aria-expanded',String(o))}}else if(k==='close-dialog'){var g=el.closest('dialog');if(g)g.close()}})})()</script>"""
 
 LANDING_PAGE = """<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
@@ -4837,7 +4862,7 @@ LANDING_PAGE = """<!doctype html>
   <main class="wrap">
     <section class="home-hero">
       <div class="home-copy">
-        <h1>Troubleshoot Intune-managed Windows devices</h1>
+        <h1>Troubleshoot Intune&#8209;managed Windows devices</h1>
         <p class="lead">Upload IME logs or a full diagnostics package and see
           what actually happened &mdash; app installs, scripts, errors, device
           health and applied policies. Runs in your browser; nothing touches
@@ -4864,25 +4889,37 @@ LANDING_PAGE = """<!doctype html>
             <button class="btn go" type="submit" disabled>Open</button>
           </div>
         </form>
+        <p class="route">A single <code>.zip</code> opens the device health
+          dashboard. Loose <code>.log</code> files or a folder open the file
+          viewer; the timeline analysis is one click away there.</p>
+        %(recent)s
       </div>
     </section>
 
-    <section class="tools">
-      <h2 class="eyebrow">Tools</h2>
-      <div class="tiles">
-        <a class="tile" href="/cmtrace">
-          <span class="ic">%(ic_cmtrace)s</span>
-          <span class="tx"><h3>CMTrace Viewer</h3>
-            <p>Read raw logs in a colored, filterable CMTrace table &mdash;
-              warnings yellow, errors red. No analysis.</p></span>
-        </a>
-        <a class="tile" href="/diagnostics">
-          <span class="ic">%(ic_diag)s</span>
-          <span class="tx"><h3>Diagnostics Package</h3>
-            <p>Device health dashboard, Win32 app status, applied policies (RSOP)
-              with Intune names, plus a file viewer.</p></span>
-        </a>
-        %(dropoff_tile)s
+    <section class="gstart">
+      <h2 class="eyebrow">Get started</h2>
+      <div class="gcards">
+        <article class="gcard">
+          <div class="gh"><span class="ic">%(ic_diag)s</span>
+            <div><h3>Diagnostics Package</h3>
+              <code class="gid">Collect-IntuneDiagnostics.ps1</code></div></div>
+          <p>Run the collector in an elevated PowerShell on the device, then
+            upload the zip: 30+ health checks, Win32 app status, applied
+            policies and the timeline, with every file browsable.</p>
+          <div class="gf"><a href="/diagnostics">Details</a><span class="sp"></span>
+            <a class="btn btn-ghost" href="/collect-script" download>Download .ps1</a></div>
+        </article>
+        %(dropoff_card)s
+        <article class="gcard">
+          <div class="gh"><span class="ic">%(ic_cmtrace)s</span>
+            <div><h3>CMTrace Viewer</h3>
+              <code class="gid">%%ProgramData%%\\Microsoft\\IntuneManagementExtension\\Logs</code></div></div>
+          <p>Only have loose IME logs? Read them in a colored, filterable CMTrace
+            table &mdash; warnings yellow, errors red &mdash; and run the timeline
+            analysis when you need it.</p>
+          <div class="gf"><span class="sp"></span>
+            <a class="btn btn-ghost" href="/cmtrace">Open viewer</a></div>
+        </article>
       </div>
     </section>
 
@@ -4901,7 +4938,6 @@ LANDING_PAGE = """<!doctype html>
           log table &mdash; every result links back to the raw evidence.</div></li>
       </ol>
     </section>
-    %(recent)s
   </main>
   %(footer)s
 <script>
@@ -4979,12 +5015,14 @@ UPLOAD_PAGE = """<!doctype html>
 <title>Sherlog &mdash; %(title)s</title><link rel="stylesheet" href="/assets/app.css"><style></style></head>
 <body>
   %(nav)s
-  <section class="hero">
-    <h1>%(heading)s</h1>
-    <p>%(intro)s</p>
-  </section>
   <main class="wrap">
-    <div class="card">
+   <section class="home-hero">
+    <div class="home-copy">
+      <p class="eyebrow">%(title)s</p>
+      <h1>%(heading)s</h1>
+      <p class="lead">%(intro)s</p>
+    </div>
+    <div class="home-upload">
       <form id="form" action="%(action)s" method="post" enctype="multipart/form-data">
         <div class="drop" id="drop">
           %(droptext)s
@@ -5008,9 +5046,10 @@ UPLOAD_PAGE = """<!doctype html>
           <button class="btn go" type="submit" disabled>%(button)s</button>
         </div>
       </form>
+      %(recent)s
     </div>
-    %(extra)s
-    %(recent)s
+   </section>
+    <div class="panels2">%(extra)s</div>
   </main>
   %(footer)s
 <script>
@@ -6986,12 +7025,15 @@ _ICONS = {
 
 @app.get("/", response_class=HTMLResponse)
 async def index() -> HTMLResponse:
-    dropoff_tile = ("""<a class="tile" href="/inbox">
-          <span class="ic">%s</span>
-          <span class="tx"><h3>Inbox</h3>
-            <p>Device drop-off: Intune-deployed collectors upload diagnostics
-              straight to your token-scoped inbox.</p></span>
-        </a>""" % _ICONS["inbox"]) if ENABLE_UPLOAD_API else ""
+    dropoff_card = ("""<article class="gcard">
+          <div class="gh"><span class="ic">%s</span>
+            <div><h3>Collect straight from Intune</h3>
+              <code class="gid">Remediation &rarr; /api/diagnostics</code></div></div>
+          <p>Deploy the collector as an Intune remediation. Devices upload
+            here on their own; review each one in your token-scoped inbox.</p>
+          <div class="gf"><span class="sp"></span>
+            <a class="btn btn-ghost" href="/inbox">Open inbox</a></div>
+        </article>""" % _ICONS["inbox"]) if ENABLE_UPLOAD_API else ""
     n = read_upload_count()
     uploadstat = (f'<p class="count">{n:,} '
                   f'{"upload" if n == 1 else "uploads"} analysed so far</p>'
@@ -7002,7 +7044,7 @@ async def index() -> HTMLResponse:
         "accept": ".log,.zip", "patternjson": js_json(r"\.(log|zip)$"),
         "ic_cmtrace": _ICONS["cmtrace"],
         "ic_diag": _ICONS["diag"],
-        "dropoff_tile": dropoff_tile,
+        "dropoff_card": dropoff_card,
         "uploadstat": uploadstat,
     })
 

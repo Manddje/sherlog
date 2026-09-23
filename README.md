@@ -119,7 +119,10 @@ uploadpagina's; jobs die de server heeft opgeruimd (na `JOB_RETENTION_HOURS`)
 verdwijnen er automatisch uit.
 
 De homepage heeft een drag-&-drop dropzone (een `.zip` → Diagnostics, losse
-`.log`-bestanden → CMTrace-viewer) en icon-tegels naar de tools. De
+`.log`-bestanden → de Files-tab met de CMTrace-viewer) met de recente uploads
+eronder, en "Get started"-kaarten voor de collector, de Intune-inbox en de
+CMTrace-viewer. De kop bevat Upload, Inbox en Error codes; de losse tools,
+About en PayloadKit staan in de footer. De
 geanonimiseerde voorbeeldlogs uit `testdata/` worden door de tests gebruikt.
 
 ## Credits

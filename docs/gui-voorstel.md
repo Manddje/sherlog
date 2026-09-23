@@ -1,6 +1,6 @@
 # Voorstel: een betere GUI voor Sherlog
 
-Status: fase 1 tot en met 4 zijn geïmplementeerd (zie "Fasering"), fase 5 en 6 staan open. Klikbare mockup van de volledige
+Status: fase 1 tot en met 5 zijn geïmplementeerd (zie "Fasering"), fase 6 staat open. Klikbare mockup van de volledige
 GUI (Home, Result met de tabs Overview/Timeline/Files, Inbox, Error codes),
 met Engelse UI-teksten zoals de app zelf: `docs/gui-voorstel-mockup.html`
 (open lokaal in een browser) of online op
@@ -330,7 +330,28 @@ Fase 1 is puur CSS en template-tekst en kan in één PR.
 - Overview heeft geen ingebouwde browser meer; "Download this file" is uit
   het More-menu verhuisd naar de viewerbalk.
 - `/result/<id>/files/download` werkt nu ook voor losse-logs-uploads, met
-  dezelfde lijst als toegangscontrole (`_files_for`). Fase 2 en 3 zijn de
+  dezelfde lijst als toegangscontrole (`_files_for`).
+
+**Fase 5 is uitgevoerd.** Wat er is gebeurd:
+
+- **Kop** (punt A): Upload, Inbox, Error codes, gelijk aan de
+  resultaatpagina's. "Upload" is ook actief op `/diagnostics` en `/cmtrace`.
+  CMTrace, Diagnostics, About en PayloadKit staan in de footer.
+- **Homepage**: split-hero met de dropzone, een regel die de routering
+  uitlegt en **Recent uploads** direct eronder. De Tools-tegels zijn weg.
+  Omdat de twee tools niet meer in de kop staan, zijn ze vervangen door
+  "Get started"-kaarten in PayloadKit-stijl (titel, mono-id, uitleg,
+  actievoet): Diagnostics Package (met Download .ps1), Collect straight
+  from Intune (alleen met de upload-API) en CMTrace Viewer.
+- **Uploadpagina's**: `/diagnostics` en `/cmtrace` gebruiken dezelfde
+  split-hero; de hulppanelen ("Don't have a package yet?" en de inbox)
+  staan naast elkaar.
+- De inhoudsbreedte ging van 880 naar 1040 px voor kop, inhoud en footer.
+- Op 390 px scrolt geen van deze pagina's meer horizontaal (de hero-kolommen
+  zijn `minmax(0,1fr)`, zodat lange bestandsnamen in Recent uploads niet
+  oprekken).
+- Bekend en niet in deze fase: `/errorcodes` is op 390 px 535 px breed. Dat
+  was al zo vóór fase 5 en valt onder fase 6, die die pagina herbouwt. Fase 2 en 3 zijn de
 kern van het voorstel; fase 4 tot 6 kunnen los volgen.
 
 ## Bewust niet in dit voorstel
