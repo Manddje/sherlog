@@ -77,7 +77,11 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
     CMD python3 -c "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8080/health', timeout=4).status==200 else 1)"
 
 ENTRYPOINT ["/app/scripts/docker-entrypoint.sh"]
-# --workers 1 is deliberate (see header). --proxy-headers lets the access log
-# show the client IP behind Traefik; the app itself doesn't trust it for auth.
+# --workers 1 is deliberate (see header). --proxy-headers makes the client IP
+# (per-IP rate limits, access log) come from X-Forwarded-For. uvicorn reads
+# FORWARDED_ALLOW_IPS: "*" suits Coolify/Traefik, where only the proxy can
+# reach the container; narrow it to the proxy's address if the port is also
+# published directly, or clients can spoof their IP to dodge rate limits.
+ENV FORWARDED_ALLOW_IPS="*"
 CMD ["python3", "-m", "uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8080", \
-     "--workers", "1", "--proxy-headers", "--forwarded-allow-ips", "*"]
+     "--workers", "1", "--proxy-headers"]

@@ -19,4 +19,9 @@ services:
       SCRIPT_TIMEOUT_SECONDS: "300"
       JOB_CONCURRENCY: "2"
       LONG_SCRIPT_THRESHOLD_SECONDS: "180"
+      # Published directly (no reverse proxy): don't trust X-Forwarded-For.
+      FORWARDED_ALLOW_IPS: "127.0.0.1"
+    # Matches the README sizing advice; analyses are memory-hungry.
+    cpus: "1.0"
+    mem_limit: 2g
     restart: unless-stopped
