@@ -1,6 +1,6 @@
 # Voorstel: een betere GUI voor Sherlog
 
-Status: fase 1 tot en met 5 zijn geïmplementeerd (zie "Fasering"), fase 6 staat open. Klikbare mockup van de volledige
+Status: alle zes fases zijn geïmplementeerd (zie "Fasering"). Klikbare mockup van de volledige
 GUI (Home, Result met de tabs Overview/Timeline/Files, Inbox, Error codes),
 met Engelse UI-teksten zoals de app zelf: `docs/gui-voorstel-mockup.html`
 (open lokaal in een browser) of online op
@@ -351,7 +351,33 @@ Fase 1 is puur CSS en template-tekst en kan in één PR.
   zijn `minmax(0,1fr)`, zodat lange bestandsnamen in Recent uploads niet
   oprekken).
 - Bekend en niet in deze fase: `/errorcodes` is op 390 px 535 px breed. Dat
-  was al zo vóór fase 5 en valt onder fase 6, die die pagina herbouwt. Fase 2 en 3 zijn de
+  was al zo vóór fase 5 en valt onder fase 6, die die pagina herbouwt.
+
+**Fase 6 is uitgevoerd.** Wat er is gebeurd:
+
+- **Inbox-lijst**: de tabel is vervangen door één rij per device met
+  statusstip, het aantal uploads (een knop die de losse uploads uitklapt,
+  met open/delete), laatste activiteit, de actuele status als pill (verdict
+  van de nieuwste upload, of "collecting…" / "collection failed" met
+  reden), het verschil met de vorige upload en **Open latest**. Devices die
+  alleen een statusping stuurden staan bovenaan met "no uploads yet".
+- **Legacy-token**: een gele banner met de knop "Generate a new key".
+- **Setup**: na "Generate token" drie stapkaarten naast elkaar: 1 sleutel
+  bewaren (met Copy key), 2 script kopiëren of downloaden (upload-token,
+  anonimiseer-schakelaar, script ingeklapt, SHA-256-pin), 3 uitrollen in
+  Intune (met "Open this inbox"). Alle element-id's van het bestaande
+  script zijn gebleven.
+- **Foutcodes**: server-side gegroepeerd per familie (Win32 apps & IME, MDM
+  enrollment, HTTP & service, Delivery Optimization, Network (WinHTTP),
+  Windows, MSI exit codes, Other) met een vaste zoekbalk, familie-chips en
+  een Copy-knop per code. `/errorcodes#<code>` vult het filter nog steeds.
+- **Pakketcontext**: de "Error codes"-link in de resultaatkop opent
+  `/errorcodes?job=<id>`. De pagina toont dan voor welk pakket, zet "Only
+  codes in this package" aan, en geeft per code "In this package",
+  **Open evidence** (bestand en regel uit de dashboardtabel) en **Search
+  package** (Files-tab met `?q=<code>`, dat direct zoekt). Onbekende of
+  ongeldige job-id's worden genegeerd.
+- `/errorcodes` en `/inbox` scrollen op 390 px niet meer horizontaal. Fase 2 en 3 zijn de
 kern van het voorstel; fase 4 tot 6 kunnen los volgen.
 
 ## Bewust niet in dit voorstel

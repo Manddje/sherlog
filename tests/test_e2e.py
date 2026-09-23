@@ -2889,7 +2889,7 @@ def test_inbox_groups_by_device_and_shows_diff(upload_client):
     page = upload_client.post("/inbox", data={"token": _TOK})
     assert page.status_code == 200
     assert 'class="devhdr"' in page.text
-    assert "PC-01" in page.text and "(2 upload(s))" in page.text
+    assert "PC-01" in page.text and ">2 uploads</button>" in page.text
     assert "worse than previous" in page.text
     assert "Entra joined" in page.text
 
@@ -4006,3 +4006,104 @@ def test_upload_pages_share_the_home_layout(upload_client):
     assert "Collect straight from Intune" in panels     # side by side
     cm = upload_client.get("/cmtrace").text
     assert '<section class="home-hero">' in cm and '<p class="eyebrow">CMTrace Viewer</p>' in cm
+
+
+# --- GUI phase 6: inbox fleet view + setup steps, grouped error codes ---------
+
+def test_inbox_fleet_row_per_device_with_foldout(upload_client):
+    for dev in ("PC-A", "PC-A", "PC-B"):
+        upload_client.post("/api/diagnostics", content=_diag_zip(),
+                           headers={"X-Upload-Token": _TOK, "X-Device-Name": dev,
+                                    "Content-Type": "application/zip"})
+    page = upload_client.post("/inbox", data={"token": _TOK}).text
+    assert page.count('<div class="devhdr">') == 2          # one row per device
+    assert "table class=\"inbox\"" not in page
+    a = page[page.index(">PC-A<"):]
+    a = a[:a.index('<div class="dev">') if '<div class="dev">' in a else len(a)]
+    assert ">2 uploads</button>" in a and 'aria-expanded="false"' in a
+    assert "Open latest</a>" in a
+    assert a.count('<li class="up">') == 2 and '<ul class="ups" id="ups-' in a
+    assert " hidden>" in a                                   # folded by default
+    assert "1 upload</button>" in page                       # singular for PC-B
+    assert '2 device(s) &middot; 3 of' in page
+
+
+def test_inbox_pending_only_device_row(upload_client):
+    _ping(upload_client, "start")
+    page = upload_client.post("/inbox", data={"token": _TOK}).text
+    assert 'class="dcount">no uploads yet' in page
+    assert '<span class="pill info">collecting&hellip;' in page
+    assert 'class="hdot run"' in page
+
+
+def test_inbox_setup_is_three_steps_with_every_hook(upload_client):
+    page = upload_client.get("/inbox").text
+    wiz = page[page.index('<section id="result" class="wizard" hidden>'):]
+    assert wiz.count('<article class="step">') == 3
+    for hook in ('id="tokshow"', 'id="upshow"', 'id="legacy-note"', 'id="copykey"',
+                 'id="anon"', 'id="anon-note"', 'id="script"', 'id="copy"',
+                 'id="dl"', 'id="inboxtok"', "Run remediation", "Deploy in Intune"):
+        assert hook in wiz, hook
+    assert '<details class="scriptsrc">' in wiz              # script folded away
+    assert "getElementById('copykey')" in page
+
+
+def test_errorcodes_grouped_by_family(client):
+    import app as app_module
+    page = client.get("/errorcodes").text
+    for key in ("win32", "mdm", "do", "net", "win", "msi"):
+        assert f'<section class="ecg" id="f-{key}">' in page, key
+        assert f'<a href="#f-{key}">' in page, key
+    assert page.count('class="cp"') == len(app_module.ERROR_CODES)
+    win32 = page[page.index('id="f-win32"'):page.index("</section>", page.index('id="f-win32"'))]
+    assert "<code>0x87D1041C</code>" in win32
+    assert 'id="seenonly"' not in page and 'class="ec-ctx"' not in page
+    assert "indexOf('f-') !== 0" in page       # family anchors don't prefill the filter
+    css = page[page.index("<style>"):page.index("</style>")]
+    assert ".ec-tools{position:sticky;top:0" in css
+    assert app_module._code_family("0x80072EE7") == "net"
+    assert app_module._code_family("0x80070005") == "win"
+    assert app_module._code_family("1603") == "msi"
+
+
+def test_errorcodes_with_job_marks_codes_seen_in_the_package(client, monkeypatch):
+    import app as app_module
+    monkeypatch.setattr(app_module, "spawn_job", lambda coro: coro.close())
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr("Identity/dsregcmd-status.txt", "AzureAdJoined : YES\n")
+        zf.writestr("Apps-IME/Logs/IntuneManagementExtension.log",
+                    "app install error 0x87D1041C detected\n")
+    r = client.post("/diagnostics-analyze",
+                    files={"files": ("d.zip", buf.getvalue(), "application/zip")},
+                    follow_redirects=False)
+    job_id = r.headers["location"].rstrip("/").rsplit("/", 1)[-1]
+    # The result shell hands its job to the reference.
+    assert f'href="/errorcodes?job={job_id}"' in client.get(f"/result/{job_id}").text
+    page = client.get("/errorcodes", params={"job": job_id}).text
+    assert 'class="ec-ctx"' in page and "1 found in this package" in page
+    assert 'id="seenonly" checked' in page
+    at = page.index("<code>0x87D1041C</code>")
+    row = page[page.rindex("<tr", 0, at):page.index("</tr>", at)]
+    assert "data-seen" in row and "In this package" in row
+    assert (f'/result/{job_id}/files?file=Apps-IME/Logs/IntuneManagementExtension.log'
+            '&amp;line=') in row
+    assert f'/result/{job_id}/files?q=0x87D1041C' in row
+    # Unknown or malformed job ids are ignored, not echoed.
+    for bad in ("nope", "../x", "<b>"):
+        p = client.get("/errorcodes", params={"job": bad}).text
+        assert 'class="ec-ctx"' not in p and "<b>" not in p
+
+
+def test_files_tab_q_runs_the_package_search(client, monkeypatch):
+    import app as app_module
+    monkeypatch.setattr(app_module, "spawn_job", lambda coro: coro.close())
+    r = client.post("/diagnostics-analyze",
+                    files=[("files", ("d.zip", _zip_of_diag_package(),
+                                      "application/zip"))],
+                    follow_redirects=False)
+    job_id = r.headers["location"].rstrip("/").rsplit("/", 1)[-1]
+    page = client.get(f"/result/{job_id}/files", params={"q": "AzureAdJoined"}).text
+    assert 'const initialQ = "AzureAdJoined";' in page and "runSearch();" in page
+    evil = client.get(f"/result/{job_id}/files", params={"q": "</script><b>x"}).text
+    assert "</script><b>x" not in evil

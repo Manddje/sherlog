@@ -5347,8 +5347,10 @@ FILES_PAGE = """<!doctype html>
   // Package-wide search: one request, results deep-link into the viewer.
   const pkgq = document.getElementById('pkgq');
   const pkgr = document.getElementById('pkgresults');
-  pkgq.addEventListener('keydown', e => {
-    if (e.key !== 'Enter') return;
+  pkgq.addEventListener('keydown', e => { if (e.key === 'Enter') runSearch(); });
+  const initialQ = %(qjson)s;
+  if (initialQ) { pkgq.value = initialQ; runSearch(); }
+  function runSearch() {
     const q = pkgq.value.trim();
     pkgr.hidden = false;
     if (q.length < 3) { pkgr.textContent = 'Type at least 3 characters.'; return; }
@@ -5385,7 +5387,7 @@ FILES_PAGE = """<!doctype html>
         });
       })
       .catch(() => { pkgr.textContent = 'Search failed.'; });
-  });
+  }
 </script>
   %(history)s
 </body></html>"""
@@ -6289,7 +6291,7 @@ def render_result_shell(job_id: str, status: dict, active: str, *,
         f'<a class="brand" href="/">{_LOGO} Sherlog</a>'
         '<nav class="rnav" aria-label="Main">'
         '<a class="navlink" href="/">Upload</a>'
-        f'{inbox_nav}<a class="navlink" href="/errorcodes">Error codes</a></nav>'
+        f'{inbox_nav}<a class="navlink" href="/errorcodes?job={job_id}">Error codes</a></nav>'
         f'{_THEME_BTN}</div>'
         '<div class="ctx"><div>'
         f'<h1>{html_escape(title)} {_verdict_pill(dash) if is_diag else ""}</h1>'
@@ -7177,75 +7179,223 @@ ERRORCODES_PAGE = """<!doctype html>
 """ + _THEME_JS + """
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Sherlog &mdash; Intune error codes</title><link rel="stylesheet" href="/assets/app.css"><style>
-  .ec-tools{display:flex;gap:.6rem;align-items:center;margin:0 0 1rem}
-  .ec-tools input{flex:1;padding:.55rem .8rem;border:1px solid var(--border);
-    border-radius:8px;background:var(--bg);color:var(--fg);font-size:.95rem}
+  .phead{padding:2.25rem 0 1rem}
+  .phead h1{font-size:2rem;letter-spacing:-.02em;margin:0 0 .4rem}
+  .phead .lead{color:var(--muted);margin:0;max-width:44rem}
+  .ec-ctx{display:flex;align-items:center;gap:.6rem 1rem;flex-wrap:wrap;margin:0 0 .8rem;
+    padding:.65rem 1rem;border-radius:12px;border:1px solid var(--info-bd);
+    background:var(--info-bg);font-size:.9rem}
+  .ec-ctx a{margin-left:auto}
+  /* Sticky filter bar: search, "in this package" toggle, count, family chips. */
+  .ec-tools{position:sticky;top:0;z-index:5;background:var(--page);
+    padding:.7rem 0 .6rem;display:flex;flex-wrap:wrap;align-items:center;gap:.5rem .8rem;
+    border-bottom:1px solid var(--border)}
+  .ec-tools input[type=search]{flex:1;min-width:12rem;padding:.55rem .8rem;
+    border:1px solid var(--border);border-radius:10px;background:var(--bg);
+    color:var(--fg);font:inherit;font-size:.95rem;box-shadow:var(--shadow-sm)}
+  .ec-seen{display:inline-flex;align-items:center;gap:.4rem;font-size:.88rem;cursor:pointer}
   .ec-count{color:var(--muted);font-size:.85rem;white-space:nowrap}
-  table.ec{border-collapse:collapse;width:100%%}
-  table.ec th,table.ec td{text-align:left;padding:.5rem .6rem;
-    border-bottom:1px solid var(--border);vertical-align:top}
-  table.ec td.code{font-family:ui-monospace,Menlo,Consolas,monospace;
-    white-space:nowrap;font-weight:600}
-  table.ec tr.hide{display:none}
+  .ec-fams{display:flex;flex-wrap:wrap;gap:.35rem;width:100%%}
+  .ec-fams a{font-size:.78rem;padding:.12rem .6rem;border-radius:999px;
+    border:1px solid var(--border);color:var(--muted);background:var(--bg)}
+  .ec-fams a:hover{color:var(--fg);border-color:var(--accent);text-decoration:none}
+  .ecg{margin-top:1.25rem;border:1px solid var(--border);border-radius:14px;
+    background:var(--bg);box-shadow:var(--shadow-sm);overflow:hidden;scroll-margin-top:7rem}
+  .ecg>h2{margin:0;padding:.7rem 1rem;font-size:1rem;background:var(--surface);
+    border-bottom:1px solid var(--border)}
+  .ecg>h2 span{color:var(--muted);font-weight:400;font-size:.82rem;margin-left:.4rem}
+  table.ec{border-collapse:collapse;width:100%%;table-layout:fixed}
+  table.ec col.c1{width:12rem}
+  table.ec col.c3{width:13rem}
+  table.ec td{text-align:left;padding:.5rem 1rem;border-top:1px solid var(--row-border);
+    vertical-align:top;overflow-wrap:anywhere}
+  table.ec tr:first-child td{border-top:0}
+  table.ec td.code{white-space:nowrap}
+  table.ec td.code code{font-family:ui-monospace,Menlo,Consolas,monospace;font-weight:600;
+    font-size:.88rem}
+  .cp{margin-left:.5rem;font:inherit;font-size:.72rem;padding:.05rem .45rem;cursor:pointer;
+    border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--muted)}
+  .cp:hover{color:var(--fg);border-color:var(--accent)}
+  td.act{font-size:.84rem;display:flex;flex-direction:column;gap:.25rem;align-items:flex-start}
+  table.ec tr.hide,.ecg.hide{display:none}
   .ec-empty{color:var(--muted);padding:1rem 0}
+  @media (max-width:640px){
+    table.ec,table.ec tbody,table.ec tr,table.ec td{display:block;width:auto}
+    table.ec colgroup{display:none}
+    table.ec td{border-top:0;padding:.15rem 1rem}
+    table.ec tr{border-top:1px solid var(--row-border);padding:.45rem 0}
+    table.ec tr:first-child{border-top:0}
+    td.act{flex-direction:row;flex-wrap:wrap;gap:.3rem .8rem}
+  }
 </style></head>
 <body>
   %(nav)s
-  <section class="hero">
-    <h1>Intune &amp; Win32 error codes</h1>
-    <p>Searchable reference of the IME / Win32 app, Windows, network, Delivery
-       Optimization and MSI exit codes Sherlog recognises.</p>
-  </section>
   <main class="wrap">
-    <div class="card">
-      <div class="ec-tools">
-        <input id="q" type="search" autofocus
-          placeholder="Filter by code or text &mdash; e.g. 0x87D1041C, detection, proxy">
-        <span class="ec-count" id="count"></span>
-      </div>
-      <table class="ec"><thead><tr><th>Code</th><th>Meaning</th></tr></thead>
-        <tbody id="body"></tbody></table>
-      <p class="ec-empty" id="empty" hidden>No codes match your filter.</p>
+    <section class="phead">
+      <p class="eyebrow">Reference</p>
+      <h1>Intune &amp; Win32 error codes</h1>
+      <p class="lead">Searchable reference of the IME / Win32 app, Windows, network,
+        Delivery Optimization and MSI exit codes Sherlog recognises.</p>
+    </section>
+    %(context)s
+    <div class="ec-tools">
+      <input id="q" type="search" aria-label="Filter error codes"
+        placeholder="Filter by code or text &mdash; e.g. 0x87D1041C, detection, proxy">
+      %(seentoggle)s
+      <span class="ec-count" id="count"></span>
+      <nav class="ec-fams" aria-label="Code families">%(chips)s</nav>
     </div>
+    %(groups)s
+    <p class="ec-empty" id="empty" hidden>No codes match your filter.</p>
   </main>
   %(footer)s
 <script>
-  const CODES = %(codes)s;
-  const body = document.getElementById('body');
-  const rows = Object.keys(CODES).sort().map(function (code) {
-    const tr = document.createElement('tr');
-    const c = document.createElement('td'); c.className = 'code'; c.textContent = code;
-    const m = document.createElement('td'); m.textContent = CODES[code];
-    tr.appendChild(c); tr.appendChild(m);
-    tr.dataset.hay = (code + ' ' + CODES[code]).toLowerCase();
-    body.appendChild(tr); return tr;
-  });
   const q = document.getElementById('q');
+  const seen = document.getElementById('seenonly');
   const count = document.getElementById('count');
   const empty = document.getElementById('empty');
+  const groups = [...document.querySelectorAll('.ecg')];
+  const rows = [...document.querySelectorAll('table.ec tbody tr')];
   function apply() {
     const t = q.value.trim().toLowerCase();
+    const only = !!(seen && seen.checked);
     let n = 0;
     rows.forEach(function (tr) {
-      const show = !t || tr.dataset.hay.indexOf(t) !== -1;
+      const show = (!t || tr.dataset.hay.indexOf(t) !== -1) &&
+                   (!only || tr.hasAttribute('data-seen'));
       tr.classList.toggle('hide', !show); if (show) n++;
+    });
+    groups.forEach(function (g) {
+      g.classList.toggle('hide', !g.querySelector('tbody tr:not(.hide)'));
     });
     count.textContent = n + ' of ' + rows.length;
     empty.hidden = n !== 0;
   }
   q.addEventListener('input', apply);
-  if (location.hash.length > 1) { q.value = decodeURIComponent(location.hash.slice(1)); }
+  if (seen) seen.addEventListener('change', apply);
+  // /errorcodes#0x87D1041C pre-fills the filter; #f-… are family anchors.
+  const h = decodeURIComponent(location.hash.slice(1));
+  if (h && h.indexOf('f-') !== 0) q.value = h;
+  document.querySelectorAll('.cp').forEach(function (b) {
+    b.addEventListener('click', function () {
+      const done = function (m) { b.textContent = m;
+        setTimeout(function () { b.textContent = 'Copy'; }, 1200); };
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(b.dataset.code).then(function () { done('Copied'); },
+          function () { done('Failed'); });
+      } else { done('Failed'); }
+    });
+  });
   apply();
 </script>
 </body></html>"""
 
 
+# Families for the /errorcodes page, in display order: (key, title, prefix hint).
+_EC_FAMILIES = (
+    ("win32", "Win32 apps & IME", "0x87D…"),
+    ("mdm", "MDM enrollment", "0x8018…"),
+    ("http", "HTTP & service", "0x8019…"),
+    ("do", "Delivery Optimization", "0x80D0…"),
+    ("net", "Network (WinHTTP)", "0x80072…"),
+    ("win", "Windows", "0x8007…"),
+    ("msi", "MSI exit codes", "decimal"),
+    ("other", "Other", ""),
+)
+
+
+def _code_family(code: str) -> str:
+    u = code.upper()
+    if not u.startswith("0X"):
+        return "msi" if u.isdigit() else "other"
+    for prefix, fam in (("0X87D", "win32"), ("0X8018", "mdm"), ("0X8019", "http"),
+                        ("0X80D0", "do"), ("0X80072", "net"), ("0X8007", "win")):
+        if u.startswith(prefix):
+            return fam
+    return "other"
+
+
+def _package_codes(job_id: str) -> "tuple[dict, str]":
+    """({CODE: evidence-cell}, device label) for a result the page was opened
+    from. Evidence is the {text, file, line} cell of the dashboard's
+    known-error-codes table, so a seen code can jump to its log line."""
+    status = read_status(job_id) or {}
+    dash = read_dashboard(job_id) if status.get("kind") == "diag" else None
+    seen: dict = {}
+    for sec in (dash or {}).get("sections", []):
+        if sec.get("key") != "errorcodes":
+            continue
+        for row in sec.get("rows", []):
+            cell = row[0] if row else None
+            text = cell.get("text") if isinstance(cell, dict) else cell
+            if isinstance(text, str) and text:
+                seen.setdefault(text.upper(), cell if isinstance(cell, dict) else {})
+    names = upload_names(status, job_id)
+    label = str((dash or {}).get("device", {}).get("name") or status.get("device")
+                or (names[0] if names else "this upload"))
+    return seen, label
+
+
 @app.get("/errorcodes", response_class=HTMLResponse)
-async def error_codes_page() -> HTMLResponse:
-    """Searchable reference of every error code Sherlog can explain."""
+async def error_codes_page(job: str = "") -> HTMLResponse:
+    """Searchable reference of every error code Sherlog can explain, grouped
+    per family. ?job=<id> (the result the user came from) marks the codes
+    seen in that package and adds per-code links into its Files tab."""
+    job_id = job if job.isalnum() and read_status(job) is not None else ""
+    seen, label = (await asyncio.to_thread(_package_codes, job_id)
+                   if job_id else ({}, ""))
+    fams: "dict[str, list]" = {}
+    for code in sorted(ERROR_CODES, key=str.upper):
+        fams.setdefault(_code_family(code), []).append(code)
+
+    def act_cell(code: str) -> str:
+        if not job_id:
+            return ""
+        ev = seen.get(code.upper())
+        out = []
+        if ev is not None:
+            out.append('<span class="pill warn">In this package</span>')
+            if isinstance(ev.get("file"), str) and ev.get("file"):
+                ln = ev.get("line")
+                out.append(f'<a href="/result/{job_id}/files?file={quote(ev["file"])}'
+                           + (f'&amp;line={int(ln)}' if isinstance(ln, int) else "")
+                           + '">Open evidence &rarr;</a>')
+        out.append(f'<a href="/result/{job_id}/files?q={quote(code)}">Search package</a>')
+        return f'<td class="act">{"".join(out)}</td>'
+
+    groups, chips = [], []
+    for key, title, hint in _EC_FAMILIES:
+        codes = fams.get(key)
+        if not codes:
+            continue
+        rows = "".join(
+            f'<tr data-hay="{attr_escape((code + " " + ERROR_CODES[code]).lower())}"'
+            + (" data-seen" if code.upper() in seen else "") + '>'
+            f'<td class="code"><code>{html_escape(code)}</code>'
+            f'<button class="cp" type="button" data-code="{attr_escape(code)}" '
+            f'aria-label="Copy {attr_escape(code)}">Copy</button></td>'
+            f'<td class="mean">{html_escape(ERROR_CODES[code])}</td>{act_cell(code)}</tr>'
+            for code in codes)
+        cols = ('<colgroup><col class="c1"><col>'
+                + ('<col class="c3">' if job_id else "") + '</colgroup>')
+        meta = f"{hint} &middot; " if hint else ""
+        groups.append(f'<section class="ecg" id="f-{key}"><h2>{html_escape(title)}'
+                      f'<span>{meta}{len(codes)} codes</span></h2>'
+                      f'<table class="ec">{cols}<tbody>{rows}</tbody></table></section>')
+        chips.append(f'<a href="#f-{key}">{html_escape(title)}</a>')
+
+    context = seentoggle = ""
+    if job_id:
+        n = sum(1 for c in ERROR_CODES if c.upper() in seen)
+        context = (f'<div class="ec-ctx"><span>Codes for <strong>{html_escape(label)}'
+                   f'</strong> &middot; {n} found in this package.</span>'
+                   f'<a href="/result/{job_id}">&larr; Back to the result</a></div>')
+        seentoggle = ('<label class="ec-seen"><input type="checkbox" id="seenonly"'
+                      + (" checked" if n else "") + '> Only codes in this package</label>')
     return HTMLResponse(ERRORCODES_PAGE % {
-        "nav": NAV, "footer": FOOTER,
-        "codes": js_json(ERROR_CODES),
+        "nav": NAV, "footer": FOOTER, "context": context,
+        "seentoggle": seentoggle, "chips": "".join(chips),
+        "groups": "".join(groups),
     })
 
 
@@ -7824,52 +7974,118 @@ INBOX_PAGE = """<!doctype html>
 """ + _THEME_JS + """
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Sherlog &mdash; Inbox</title><link rel="stylesheet" href="/assets/app.css"><style>
-  table.inbox{border-collapse:collapse;width:100%%;margin-top:1rem}
-  table.inbox th,table.inbox td{text-align:left;padding:.5rem .6rem;
-    border-bottom:1px solid var(--border);vertical-align:top}
-  table.inbox th{color:var(--muted);font-weight:600}
-  table.inbox tr.devhdr td{font-weight:600;background:var(--surface);
-    border-top:2px solid var(--border)}
-  .delta{font-size:.8rem;margin-top:.2rem}
+  .phead{padding:2.25rem 0 1.25rem}
+  .phead h1{font-size:2rem;letter-spacing:-.02em;margin:0 0 .4rem}
+  .phead .lead{color:var(--muted);margin:0;max-width:44rem}
+  .muted{color:var(--muted);font-size:.9rem}
+  /* Key entry */
+  .keybar{display:flex;gap:.6rem;align-items:center;flex-wrap:wrap;padding:.8rem 1rem;
+    border:1px solid var(--border);border-radius:14px;background:var(--bg);
+    box-shadow:var(--shadow-sm)}
+  .keybar label{font-weight:600;font-size:.9rem;white-space:nowrap}
+  .keybar input[type=text]{flex:1;min-width:14rem;padding:.55rem .8rem;
+    border:1px solid var(--border);border-radius:8px;background:var(--bg);
+    color:var(--fg);font:inherit;font-family:ui-monospace,Menlo,Consolas,monospace;
+    font-size:.85rem}
+  .keyhint{margin:.7rem .2rem 0;max-width:52rem}
+  .banner{display:flex;gap:.75rem;align-items:center;flex-wrap:wrap;margin:0 0 1rem;
+    padding:.7rem 1rem;border-radius:12px;border:1px solid var(--warn-bd);
+    background:var(--warn-bg);font-size:.9rem}
+  .banner>span:not(.hdot){flex:1 1 18rem;min-width:0}
+  .banner .btn{margin-left:auto;padding:.35rem .8rem;font-size:.85rem}
+  .anon-note{margin:.4rem 0 0;color:var(--bad)}
+  /* Fleet list: one row per device, uploads fold out underneath. */
+  .ibar{display:flex;align-items:center;gap:1rem;flex-wrap:wrap;margin:0 0 .6rem}
+  .ibar .muted{flex:1 1 16rem;margin:0}
+  .fleet{border:1px solid var(--border);border-radius:14px;background:var(--bg);
+    box-shadow:var(--shadow-sm);overflow:hidden}
+  .fhead,.devhdr{display:grid;align-items:center;gap:.4rem .9rem;
+    grid-template-columns:.8rem minmax(8rem,1.1fr) 7.5rem 8.5rem minmax(12rem,2fr) auto;
+    padding:.65rem 1rem}
+  .fhead{background:var(--surface);color:var(--muted);font-size:.75rem;font-weight:600;
+    letter-spacing:.05em;text-transform:uppercase}
+  .dev{border-top:1px solid var(--border)}
+  .dname{font-weight:600;overflow-wrap:anywhere}
+  .dcount{font:inherit;font-size:.86rem;color:var(--muted);background:none;border:0;
+    padding:0;text-align:left;cursor:default}
+  button.dcount{cursor:pointer;color:var(--accent)}
+  button.dcount::after{content:" \\25BE"}
+  button.dcount[aria-expanded="true"]::after{content:" \\25B4"}
+  .dlast{color:var(--muted);font-size:.86rem;font-variant-numeric:tabular-nums}
+  .dhealth{display:flex;flex-direction:column;align-items:flex-start;gap:.2rem;min-width:0}
+  .dhealth .why{color:var(--muted);font-size:.8rem;overflow-wrap:anywhere}
+  .dact .btn{padding:.3rem .75rem;font-size:.84rem}
+  .ups{list-style:none;margin:0;padding:.3rem 1rem .6rem 2.7rem;
+    background:var(--surface);border-top:1px solid var(--border)}
+  .up{display:grid;grid-template-columns:8.5rem minmax(0,1fr) auto;gap:.3rem .9rem;
+    align-items:baseline;padding:.4rem 0;font-size:.86rem}
+  .up+.up{border-top:1px dashed var(--border)}
+  .up .utime{color:var(--muted);font-variant-numeric:tabular-nums}
+  .up .uact{display:flex;gap:1rem}
+  .delta{font-size:.8rem}
   .delta.bad{color:var(--bad)}
   .delta.ok{color:var(--ok)}
-  .hdot{display:inline-block;width:.6rem;height:.6rem;border-radius:50%%;
-    margin-right:.35rem;vertical-align:baseline}
+  .hdot{display:inline-block;width:.6rem;height:.6rem;border-radius:50%%}
   .hdot.ok{background:var(--ok)}
   .hdot.warn{background:var(--warn)}
   .hdot.bad{background:var(--bad)}
   .hdot.run{background:var(--info);animation:pulse 1.6s ease-in-out infinite}
+  .hdot.none{background:var(--unk)}
   @keyframes pulse{0%%,100%%{opacity:1}50%%{opacity:.25}}
-  .health.run{color:var(--info)}
-  .health{white-space:nowrap}
-  .health.bad{color:var(--bad)}
-  .health.warn{color:var(--warn)}
-  .health.ok{color:var(--ok)}
-  .tokrow{display:flex;gap:.5rem;flex-wrap:wrap;align-items:center;margin:.5rem 0}
-  .tokrow input[type=text]{flex:1;min-width:16rem;padding:.55rem .8rem;
-    border:1px solid var(--border);border-radius:8px;background:var(--bg);
-    color:var(--fg);font:inherit}
-  .muted{color:var(--muted);font-size:.9rem}
-  .anon{display:inline-flex;align-items:center;gap:.45rem;font-size:.9rem;
-    color:var(--fg);cursor:pointer;margin-left:auto;white-space:nowrap}
-  .anon input{margin:0}
-  .anon-note{margin:.4rem 0 0;max-width:48rem;color:var(--bad)}
+  @media (max-width:760px){
+    .fhead{display:none}
+    .devhdr{grid-template-columns:.8rem minmax(0,1fr) auto}
+    .dcount,.dlast,.dhealth{grid-column:2}
+    .dact{grid-column:3;grid-row:1}
+    .ups{padding-left:1rem}
+    .up{grid-template-columns:minmax(0,1fr) auto}
+    .up .uhealth{grid-column:1/3}
+  }
+  /* Setup: three steps side by side. */
+  .wizard{margin-top:1.75rem}
+  .shead{margin:0 0 .7rem;font-size:.8rem;font-weight:600;letter-spacing:.06em;
+    text-transform:uppercase;color:var(--muted)}
+  .steps{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:1rem;
+    margin:0;padding:0}
+  @media (max-width:900px){.steps{grid-template-columns:minmax(0,1fr)}}
+  .step{display:flex;flex-direction:column;gap:.6rem;padding:1.1rem 1.1rem 0;
+    border:1px solid var(--border);border-radius:14px;background:var(--bg);
+    box-shadow:var(--shadow-sm);min-width:0}
+  .step h3{margin:0;font-size:1.02rem}
+  .step p{margin:0}
+  .step code{overflow-wrap:anywhere;word-break:break-all}
+  .sn{width:1.6rem;height:1.6rem;border-radius:50%%;background:var(--accent);
+    color:var(--accent-fg);font-weight:700;font-size:.82rem;display:inline-flex;
+    align-items:center;justify-content:center}
+  .step .sf{display:flex;gap:.5rem;flex-wrap:wrap;justify-content:flex-end;
+    margin:auto -1.1rem 0;padding:.65rem 1.1rem;border-top:1px solid var(--border);
+    background:var(--surface)}
+  .step .sf .btn{padding:.4rem .85rem;font-size:.86rem}
   .tokval{font-family:ui-monospace,Menlo,Consolas,monospace;word-break:break-all;
-    background:var(--surface);border:1px solid var(--border);border-radius:6px;
-    padding:.4rem .6rem;display:inline-block}
-  pre.scriptbox{max-height:26rem;overflow:auto;white-space:pre;background:var(--surface);
-    border:1px solid var(--border);border-radius:8px;padding:.75rem;font-size:.82rem}
-  ol.guide{line-height:1.65;padding-left:1.2rem}
+    background:var(--surface);border:1px solid var(--border);border-radius:8px;
+    padding:.45rem .6rem;font-size:.8rem;display:block}
+  .anon{display:inline-flex;align-items:center;gap:.45rem;font-size:.9rem;cursor:pointer}
+  .anon input{margin:0}
+  details.scriptsrc summary{cursor:pointer;color:var(--accent);font-size:.9rem}
+  pre.scriptbox{max-height:22rem;overflow:auto;white-space:pre;background:var(--surface);
+    border:1px solid var(--border);border-radius:8px;padding:.75rem;font-size:.78rem;
+    margin:.5rem 0 0}
+  ol.guide{line-height:1.55;padding-left:1.1rem;margin:0;font-size:.9rem;color:var(--muted)}
+  ol.guide li{margin:.2rem 0}
+  ol.guide strong{color:var(--fg)}
   ol.guide code{background:var(--surface);padding:.05rem .3rem;border-radius:4px}
+  .inlineform{display:inline}
 </style></head>
 <body>
   %(nav)s
-  <section class="hero">
-    <h1>Device drop-off inbox</h1>
-    <p>Packages an Intune-deployed collector uploaded with your token.</p>
-  </section>
   <main class="wrap">
-    <div class="card">%(body)s</div>
+    <section class="phead">
+      <p class="eyebrow">Device drop-off</p>
+      <h1>Inbox</h1>
+      <p class="lead">Packages that an Intune-deployed collector uploaded with the
+        upload token of your inbox key.</p>
+    </section>
+    %(body)s
   </main>
   %(footer)s
 </body></html>"""
@@ -7879,75 +8095,83 @@ INBOX_PAGE = """<!doctype html>
 # reveals the ready-to-paste Intune remediation script with the token already
 # filled in, plus a short Intune deployment guide.
 _INBOX_FORM = """
-      <p>Enter your <strong>inbox key</strong> to open this device inbox, or
-         generate a new one. Devices never get the inbox key: the detection
-         script carries a separate <em>upload token</em> derived from it, which
-         can upload but can't read or delete anything.</p>
-      <p class="muted">Each inbox holds up to %(cap)d upload(s) at a time. Once
-         full, new uploads are refused until older ones are removed
-         (<em>Delete all</em>) or expire after the retention window.</p>
       %(error)s
-      <form method="post" action="/inbox" class="tokrow">
-        <input name="token" id="tok" type="text" placeholder="inbox key (shk_&hellip;)"
+      <form method="post" action="/inbox" class="keybar" id="keyform">
+        <label for="tok">Inbox key</label>
+        <input name="token" id="tok" type="text" placeholder="shk_&hellip;"
                autocomplete="off" minlength="%(min)d" maxlength="256" required>
         <button class="btn" type="submit">Open inbox</button>
         <button class="btn btn-ghost" type="button" id="gen">Generate token</button>
       </form>
-      <p class="muted" id="genout" hidden></p>
+      <p class="muted keyhint">Enter your <strong>inbox key</strong> to open this
+         device inbox, or generate a new one. Devices never get the inbox key: the
+         detection script carries a separate <em>upload token</em> derived from it,
+         which can upload but can't read or delete anything. Each inbox holds up to
+         %(cap)d upload(s) at a time; once full, new uploads are refused until older
+         ones are removed (<em>Delete all</em>) or expire.</p>
+      <p class="muted keyhint" id="genout" hidden></p>
 
-      <section id="result" hidden>
-        <h2>Your inbox key</h2>
-        <p><span class="tokval" id="tokshow"></span></p>
-        <p class="muted">Store it safely &mdash; it is shown once and it is the
-           only way to open or clear this inbox. It is sent in the request body,
-           never in the URL, so it can't leak into logs or browser history.
-           Never put it in a script.</p>
-        <p class="muted anon-note" id="legacy-note" hidden>This is a legacy
-           token without the <code>shk_</code> prefix: the same secret uploads
-           <em>and</em> reads the inbox, so anyone who can see the detection
-           script can read every package. Generate a new inbox key and redeploy.</p>
-        <h3>Device upload token</h3>
-        <p><span class="tokval" id="upshow"></span></p>
-
-        <h2>Detection script (upload token filled in)</h2>
-        <div class="tokrow">
-          <button class="btn btn-ghost" type="button" id="copy">Copy script</button>
-          <button class="btn btn-ghost" type="button" id="dl">Download .ps1</button>
-          <label class="anon"><input type="checkbox" id="anon">
-            Anonymize tenant/company</label>
-        </div>
-        <p class="muted anon-note" id="anon-note" hidden>We do our best to redact
-          tenant- and company data (tenant id/name, domain, UPN/e-mail, device
-          and user name) from all TEXT files &mdash; but this is best-effort, not
-          a guarantee. Binaries (event logs, cab) are not scrubbed; review
-          the package before sharing.</p>
-        <pre class="scriptbox" id="script"></pre>
-        <p class="muted">The script pins the SHA-256 of the collector this
-          server currently serves (<code>%(collector_sha)s</code>) and refuses
-          to run anything else. After a Sherlog update that changes the
-          collector, copy the script again.</p>
-
-        <h2>Deploy in Intune</h2>
-        <ol class="guide">
-          <li>Copy or download the script above (the upload token is already in it).</li>
-          <li>Intune admin center &rarr; <strong>Devices</strong> &rarr;
-              <strong>Scripts and remediations</strong> &rarr; <strong>Create</strong>.</li>
-          <li>Paste the script above as the <strong>Detection script</strong>.
-              Intune requires a detection script; this single script does the
-              collection, so <strong>no remediation script is needed</strong>
-              (leave it empty).</li>
-          <li>Settings: <strong>Run script in 64-bit PowerShell</strong> =
-              <code>Yes</code>; <strong>Run using logged-on credentials</strong> =
-              <code>No</code> (runs as SYSTEM); signature check = <code>No</code>.</li>
-          <li>Assign to a device group (the detection script runs on schedule),
-              <em>or</em> run it on-demand: pick a device &rarr;
-              <strong>Run remediation</strong>.</li>
-          <li>After a few minutes the device upload appears in
-              <form method="post" action="/inbox" class="inlineform">
+      <section id="result" class="wizard" hidden>
+        <h2 class="shead">Set up this inbox</h2>
+        <div class="steps">
+          <article class="step">
+            <span class="sn">1</span>
+            <h3>Keep the inbox key</h3>
+            <p class="muted">Shown once, and the only way to open or clear this
+              inbox. It is sent in the request body, never in the URL, so it can't
+              leak into logs or browser history. Never put it in a script.</p>
+            <span class="tokval" id="tokshow"></span>
+            <p class="muted anon-note" id="legacy-note" hidden>This is a legacy
+              token without the <code>shk_</code> prefix: the same secret uploads
+              <em>and</em> reads the inbox, so anyone who can see the detection
+              script can read every package. Generate a new inbox key and redeploy.</p>
+            <div class="sf"><button class="btn btn-ghost" type="button"
+              id="copykey">Copy key</button></div>
+          </article>
+          <article class="step">
+            <span class="sn">2</span>
+            <h3>Copy the detection script</h3>
+            <p class="muted">The device upload token is already filled in. It can
+              upload and report collection status, nothing else.</p>
+            <span class="tokval" id="upshow"></span>
+            <label class="anon"><input type="checkbox" id="anon">
+              Anonymize tenant/company</label>
+            <p class="muted anon-note" id="anon-note" hidden>We do our best to redact
+              tenant- and company data (tenant id/name, domain, UPN/e-mail, device
+              and user name) from all TEXT files &mdash; but this is best-effort, not
+              a guarantee. Binaries (event logs, cab) are not scrubbed; review
+              the package before sharing.</p>
+            <details class="scriptsrc"><summary>Show script</summary>
+              <pre class="scriptbox" id="script"></pre></details>
+            <p class="muted">The script pins the SHA-256 of the collector this
+              server serves (<code>%(collector_sha)s</code>) and refuses to run
+              anything else. After a Sherlog update that changes the collector,
+              copy the script again.</p>
+            <div class="sf">
+              <button class="btn btn-ghost" type="button" id="dl">Download .ps1</button>
+              <button class="btn" type="button" id="copy">Copy script</button></div>
+          </article>
+          <article class="step">
+            <span class="sn">3</span>
+            <h3>Deploy in Intune</h3>
+            <ol class="guide">
+              <li>Intune admin center &rarr; <strong>Devices</strong> &rarr;
+                  <strong>Scripts and remediations</strong> &rarr; <strong>Create</strong>.</li>
+              <li>Paste the script as the <strong>Detection script</strong>. This one
+                  script does the collection, so <strong>no remediation script is
+                  needed</strong> (leave it empty).</li>
+              <li><strong>Run script in 64-bit PowerShell</strong> = <code>Yes</code>;
+                  <strong>Run using logged-on credentials</strong> = <code>No</code>
+                  (runs as SYSTEM); signature check = <code>No</code>.</li>
+              <li>Assign to a device group (the detection script runs on schedule),
+                  <em>or</em> pick a device &rarr; <strong>Run remediation</strong>.</li>
+            </ol>
+            <div class="sf"><form method="post" action="/inbox" class="inlineform">
                 <input type="hidden" name="token" id="inboxtok">
-                <button class="linkbtn" type="submit">this inbox</button>
-              </form> &mdash; refresh it.</li>
-        </ol>
+                <button class="btn btn-ghost" type="submit">Open this inbox</button>
+              </form></div>
+          </article>
+        </div>
       </section>
 
       <script>
@@ -8017,6 +8241,14 @@ _INBOX_FORM = """
             navigator.clipboard.writeText(text).then(function () { done('Copied!'); },
               function () { done('Copy failed \u2014 use Download'); });
           } else { done('Copy not available \u2014 use Download'); }
+        });
+        document.getElementById('copykey').addEventListener('click', function () {
+          var b = this;
+          function done(msg) { b.textContent = msg; setTimeout(function(){ b.textContent = 'Copy key'; }, 1500); }
+          if (navigator.clipboard && navigator.clipboard.writeText) {
+            navigator.clipboard.writeText(lastKey).then(function () { done('Copied!'); },
+              function () { done('Copy failed'); });
+          } else { done('Copy not available'); }
         });
         document.getElementById('dl').addEventListener('click', function () {
           var blob = new Blob([document.getElementById('script').textContent],
@@ -8126,10 +8358,12 @@ async def inbox(request: Request) -> HTMLResponse:
                 bits.append(f'{r["n_warn"]} warning(s)')
             return cls, ", ".join(bits) or "healthy"
 
-        def pending_row(e: dict) -> str:
-            """One 'collecting…' / 'collection failed' row, same 4 columns."""
+        def when(ts: float) -> str:
+            return time.strftime("%Y-%m-%d %H:%M", time.localtime(ts))
+
+        def pending_bits(e: dict) -> tuple:
+            """(dot-class, pill-html, start-or-update stamp) of a status ping."""
             collecting = e.get("phase") == "collecting"
-            cls = "run" if collecting else "bad"
             try:
                 stamp = float(e.get("updated", 0))
                 started = float(e.get("started", stamp))
@@ -8138,84 +8372,99 @@ async def inbox(request: Request) -> HTMLResponse:
             mins = max(0, int((time.time() - (started if collecting else stamp)) / 60))
             ago = "just now" if mins < 1 else (
                 f"{mins} min ago" if mins < 60 else f"{mins // 60}h {mins % 60}m ago")
-            if collecting:
-                text = f"collecting&hellip; ({ago})"
-            else:
-                reason = html_escape(str(e.get("reason") or "no reason reported"))
-                text = f"collection failed ({ago}) &mdash; {reason}"
             meta = " ".join(x for x in (str(e.get("profile") or ""),
                                         str(e.get("version") or "")) if x)
-            note = (f' <span class="muted">{html_escape(meta)}</span>'
-                    if meta else "")
-            return (f'<tr><td class="muted">&#8627;</td>'
-                    f'<td>{time.strftime("%Y-%m-%d %H:%M", time.localtime(started if collecting else stamp))}</td>'
-                    f'<td><span class="health {cls}"><span class="hdot {cls}"></span>'
-                    f'{text}</span>{note}</td><td></td></tr>')
+            note = f'<span class="why">{html_escape(meta)}</span>' if meta else ""
+            if collecting:
+                return ("run", f'<span class="pill info">collecting&hellip; ({ago})</span>'
+                        + note, started)
+            reason = html_escape(str(e.get("reason") or "no reason reported"))
+            return ("bad", f'<span class="pill bad">collection failed ({ago})</span>'
+                    f'<span class="why">{reason}</span>{note}', stamp)
 
-        parts_rows = []
+        def verdict_pill(r: dict) -> tuple:
+            hcls, htext = health_bits(r)
+            if not hcls:
+                return "none", '<span class="pill">no health data</span>'
+            return hcls, f'<span class="pill {hcls}">{html_escape(htext)}</span>'
+
+        devs = []
         for device in order:
             g = groups.get(device, [])
-            # Newest upload's verdict is the device's current health — show
-            # it on the group header so a bad device stands out in the list.
-            hcls, _ = health_bits(g[0]) if g else ("", "")
-            if not g and device in pend:
-                hcls = "run" if pend[device].get("phase") == "collecting" else "bad"
-            hdot = f'<span class="hdot {hcls}"></span>' if hcls else ""
-            count = (f'{len(g)} upload(s)' if g else 'no uploads yet')
-            parts_rows.append(
-                f'<tr class="devhdr"><td colspan="4">{hdot}{html_escape(device)}'
-                f' <span class="muted">({count})</span></td></tr>')
-            if device in pend:
-                parts_rows.append(pending_row(pend[device]))
-            for idx, r in enumerate(g):
-                delta = ""
-                hcls, htext = health_bits(r)
-                health = (f'<span class="health {hcls}">'
-                          f'<span class="hdot {hcls}"></span>'
-                          f'{html_escape(htext)}</span> · ' if hcls else "")
-                if idx == 0 and device in diffs:
-                    d = diffs[device]
-                    if d["worse"]:
-                        delta += ('<div class="delta bad">&#9650; worse than '
-                                  'previous: '
-                                  + html_escape(", ".join(d["worse"][:4]))
-                                  + '</div>')
-                    if d["better"]:
-                        delta += ('<div class="delta ok">&#9660; improved: '
-                                  + html_escape(", ".join(d["better"][:4]))
-                                  + '</div>')
-                parts_rows.append(
-                    f'<tr><td class="muted">&#8627;</td>'
-                    f'<td>{time.strftime("%Y-%m-%d %H:%M", time.localtime(r["mtime"]))}</td>'
-                    f'<td>{health}{html_escape(r["state"])}'
-                    + (f' · analysis {html_escape(r["analysis"])}'
+            pe = pend.get(device)
+            if pe is not None:
+                dot, health, stamp = pending_bits(pe)
+                last = when(stamp)
+            else:
+                dot, health = verdict_pill(g[0])
+                last = when(g[0]["mtime"])
+            # Newest vs previous upload: a regression shows on the device row.
+            if device in diffs:
+                d = diffs[device]
+                if d["worse"]:
+                    health += ('<span class="delta bad">&#9650; worse than previous: '
+                               + html_escape(", ".join(d["worse"][:4])) + '</span>')
+                if d["better"]:
+                    health += ('<span class="delta ok">&#9660; improved: '
+                               + html_escape(", ".join(d["better"][:4])) + '</span>')
+            n = len(g)
+            if n:
+                count = (f'<button type="button" class="dcount" aria-expanded="false" '
+                         f'aria-controls="ups-{g[0]["job_id"]}">'
+                         f'{n} upload{"s" if n != 1 else ""}</button>')
+                act = (f'<a class="btn btn-ghost" href="/result/{g[0]["job_id"]}">'
+                       'Open latest</a>')
+            else:
+                count, act = '<span class="dcount">no uploads yet</span>', ""
+            items = []
+            for r in g:
+                _c, pill = verdict_pill(r)
+                items.append(
+                    f'<li class="up"><span class="utime">{when(r["mtime"])}</span>'
+                    f'<span class="uhealth">{pill} {html_escape(r["state"])}'
+                    + (f' &middot; analysis {html_escape(r["analysis"])}'
                        if r["analysis"] not in ("none", "") else "")
-                    + delta
-                    + f'</td><td><a href="/result/{r["job_id"]}">open</a> '
+                    + f'</span><span class="uact"><a href="/result/{r["job_id"]}">open</a>'
                     f'<button class="linkbtn danger" type="button" '
-                    f'style="margin-left:1rem" '
-                    f'data-job="{r["job_id"]}">delete</button></td></tr>')
-        trs = "".join(parts_rows)
+                    f'data-job="{r["job_id"]}">delete</button></span></li>')
+            ups = (f'<ul class="ups" id="ups-{g[0]["job_id"]}" hidden>{"".join(items)}</ul>'
+                   if g else "")
+            devs.append(
+                '<div class="dev"><div class="devhdr">'
+                f'<span class="hdot {dot}" aria-hidden="true"></span>'
+                f'<span class="dname">{html_escape(device)}</span>{count}'
+                f'<span class="dlast">{last}</span>'
+                f'<span class="dhealth">{health}</span>'
+                f'<span class="dact">{act}</span></div>{ups}</div>')
+
         cap = UPLOAD_API_MAX_JOBS_PER_TOKEN
         full_note = (' &mdash; inbox full, new uploads are refused until you '
                      'delete some or they expire' if len(rows) >= cap else '')
         busy = sum(1 for e in pend.values() if e.get("phase") == "collecting")
         busy_note = f' {busy} device(s) collecting now.' if busy else ''
-        legacy_note = ('<p class="muted anon-note">This inbox uses a legacy '
-                       'token: the same secret uploads and reads. Anyone who can '
-                       'see the detection script can open this inbox. Generate a '
-                       'new inbox key on <a href="/inbox">/inbox</a> and redeploy.'
-                       '</p>' if is_legacy_token(token) else '')
+        legacy_note = ('<div class="banner"><span class="hdot warn"></span><span>'
+                       '<strong>This inbox uses a legacy token.</strong> The same '
+                       'secret uploads and reads, so anyone who can see the detection '
+                       'script can open this inbox.</span>'
+                       '<a class="btn btn-ghost" href="/inbox">Generate a new key</a>'
+                       '</div>' if is_legacy_token(token) else '')
         body = (legacy_note +
-                f'<div class="tokrow"><p class="muted" style="flex:1">'
+                f'<div class="ibar"><p class="muted">{len(devs)} device(s) &middot; '
                 f'{len(rows)} of {cap} upload(s) in this inbox.{full_note}'
                 f'{busy_note}</p>'
+                '<a class="linkbtn" href="/inbox">Use another key</a>'
                 '<button class="linkbtn danger" id="delall" type="button">'
                 'Delete all</button></div>'
-                '<table class="inbox"><thead><tr><th>Device</th><th>Uploaded</th>'
-                '<th>Status</th><th></th></tr></thead><tbody>'
-                f'{trs}</tbody></table>'
+                '<div class="fleet"><div class="fhead" aria-hidden="true"><span></span>'
+                '<span>Device</span><span>Uploads</span><span>Last activity</span>'
+                '<span>Health</span><span></span></div>'
+                + "".join(devs) + '</div>'
                 + _SCRIPT_OPEN +
+                'document.querySelectorAll("button.dcount").forEach(function(b){'
+                'b.addEventListener("click",function(){'
+                'var u=document.getElementById(b.getAttribute("aria-controls"));'
+                'if(!u)return;u.hidden=!u.hidden;'
+                'b.setAttribute("aria-expanded",String(!u.hidden));});});'
                 'document.getElementById("delall").addEventListener("click",function(){'
                 'if(!confirm("Delete all uploads in this inbox from the server? '
                 'This cannot be undone."))return;'
@@ -8245,9 +8494,12 @@ async def inbox(request: Request) -> HTMLResponse:
                      + _SCRIPT_OPEN + 'setTimeout(function(){'
                      'document.getElementById("rfrm").submit();},30000);</script>')
     else:
-        body = ('<p>No uploads in this inbox yet. Deploy the detection script '
-                'with this inbox&rsquo;s upload token via Intune, then refresh.</p>'
-                '<p class="muted"><a href="/inbox">&larr; use another inbox key</a></p>')
+        body = ('<div class="fleet" style="padding:1.25rem">'
+                '<p style="margin:0 0 .5rem">No uploads in this inbox yet. Deploy the '
+                'detection script with this inbox&rsquo;s upload token via Intune, '
+                'then refresh.</p>'
+                '<p class="muted" style="margin:0"><a href="/inbox">&larr; use another '
+                'inbox key</a></p></div>')
     return HTMLResponse(INBOX_PAGE % {
         "nav": NAV, "footer": FOOTER, "body": body})
 
@@ -8507,13 +8759,15 @@ def _files_for(job_id: str, status: dict) -> tuple:
 
 @app.get("/result/{job_id}/files", response_class=HTMLResponse)
 @app.get("/result/{job_id}/cmtrace", response_class=HTMLResponse)
-async def files_tab(job_id: str, file: str = "", line: str = "") -> Response:
+async def files_tab(job_id: str, file: str = "", line: str = "",
+                    q: str = "") -> Response:
     """Files tab: folder tree + package search on the left, the sandboxed
     viewer on the full height of the page. /cmtrace is the old name of this
     page (history entries and shared links still use it).
 
     ?file=<path>&line=<n> preselects a file and line: deep-links from the
-    Overview (Open evidence, table cells) and the search land here."""
+    Overview (Open evidence, table cells) and the search land here. ?q= runs
+    the package search on load (the error-code reference links here)."""
     status, err = _job_guard(job_id, missing="Files not available.")
     if err is not None:
         return err
@@ -8561,6 +8815,7 @@ async def files_tab(job_id: str, file: str = "", line: str = "") -> Response:
         "dlhidden": "",
         "jobjson": js_json(job_id), "firstjson": js_json(first),
         "viewbasejson": js_json(view_base),
+        "qjson": js_json(q.strip()[:200]),
         "history": history,
     })
 

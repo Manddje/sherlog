@@ -37,7 +37,12 @@ via de tab **Files** op elke resultaatpagina (`/result/<id>/files`; de oude URL
 een sandboxed iframe geserveerd. Losse logs alsnog analyseren kan met de tab
 **Run timeline analysis**. `/errorcodes` biedt daarnaast een
 doorzoekbare referentie van ~110 Intune/IME/MSI-foutcodes met uitleg — dezelfde
-tabel die de viewers en het dashboard gebruiken voor hun verklaringen.
+tabel die de viewers en het dashboard gebruiken voor hun verklaringen —
+gegroepeerd per familie (Win32/IME, MDM, HTTP, Delivery Optimization, netwerk,
+Windows, MSI) met een vaste zoekbalk en een kopieerknop per code. Vanaf een
+resultaat (`/errorcodes?job=<id>`) markeert de pagina welke codes in dat pakket
+voorkomen, met links naar de bewijsregel en naar een zoekopdracht in de
+Files-tab (`/result/<id>/files?q=<code>`).
 Resultaatpagina's tonen een "expires in ~Nh"-hint (retentie) en de hele app
 heeft een dark mode; de homepage toont een cumulatieve uploadteller.
 
@@ -247,7 +252,9 @@ de inbox.
 4. Wijs toe aan een device-groep (de detection draait op schema), of selecteer
    een device → **Run remediation** (on-demand). Draait als SYSTEM, verzamelt
    het slimme `-Remote`-profiel en POST't de zip.
-5. Open `<sherlog>/inbox`, voer je inbox-sleutel in en klik de device-upload open.
+5. Open `<sherlog>/inbox`, voer je inbox-sleutel in. De inbox toont één rij per
+   device (actuele status, verschil met de vorige upload, "Open latest");
+   klik op het aantal uploads om de losse uploads te zien of te verwijderen.
 
 **Integriteit van de collector.** Het detection-script downloadt
 `Collect-IntuneDiagnostics.ps1` van `/collect-script` en draait het als SYSTEM.
