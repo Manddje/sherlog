@@ -44,10 +44,18 @@ def _zip_of_testdata() -> bytes:
     return buf.getvalue()
 
 
+HAS_PWSH = bool(__import__("shutil").which("pwsh"))
+
+
 def test_health_no_auth(client):
     r = client.get("/health")
-    assert r.status_code == 200
-    assert r.json()["status"] == "ok"
+    # /health is 503 by design when the analysis engine is missing.
+    if HAS_PWSH:
+        assert r.status_code == 200
+        assert r.json()["status"] == "ok"
+    else:
+        assert r.status_code == 503
+        assert r.json()["pwsh"] == "missing"
 
 
 def test_landing_shows_tools_and_dropzone(client):
@@ -339,7 +347,7 @@ def test_parse_cmtrace_plain_splits_per_line():
 
 def test_render_log_tree_groups_folders():
     import app as app_module
-    html = app_module.render_log_tree([
+    html = app_module.render_file_tree([
         "IntuneManagementExtension.log",
         "mdmdiagnostics/(29) Command foo output.log",
     ])
@@ -756,6 +764,7 @@ def _wait_for_analysis(client, job_id: str, timeout: float = 300.0) -> str:
     raise AssertionError("diagnostics analysis did not finish within timeout")
 
 
+@pytest.mark.skipif(not HAS_PWSH, reason="pwsh not installed (real analysis run)")
 def test_diag_full_flow(client):
     r = client.post(
         "/diagnostics-analyze",

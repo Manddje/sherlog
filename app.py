@@ -89,6 +89,17 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(mess
 log = logging.getLogger("ime-analyzer")
 
 
+def log_exception_safely(msg: str, *args) -> None:
+    """log.exception without the exception *message*: parser errors quote
+    their input (ValueError: could not convert '<log text>'…), and log
+    content must never reach stdout. Keeps the type and the stack."""
+    import sys
+    import traceback
+    etype, _value, tb = sys.exc_info()
+    stack = "".join(traceback.format_tb(tb)) if tb else ""
+    log.error(msg + " [%s]\n%s", *args, etype.__name__ if etype else "?", stack)
+
+
 class _AccessLogRedactor(logging.Filter):
     """Job ids are capability URLs and search queries can hold log content:
     strip query strings and mask 32-hex ids in uvicorn's access log."""
@@ -344,7 +355,7 @@ def update_status(job_id: str, **fields) -> bool:
     analysis was queued or running must not crash the task or resurrect a
     half-empty job.json.
     """
-    if not job_dir(job_id).is_dir():
+    if job_id in _deleting_jobs or not job_dir(job_id).is_dir():
         return False
     current = read_status(job_id) or {}
     current.update(fields)
@@ -918,7 +929,7 @@ def parse_report_summary(html: str) -> ReportSummary:
                 continue
             summary.downloads.append(dict(zip(_DOWNLOAD_COLS, row)))
     except Exception:
-        log.warning("report summary parse failed", exc_info=True)
+        log_exception_safely("report summary parse failed")
         return ReportSummary(parse_ok=False)
     return summary
 
@@ -1655,7 +1666,15 @@ def count_event_issues_json(text: str) -> Optional[dict]:
     return {"errors": errors, "warnings": warnings}
 
 
-def collect_log_error_codes(input_dir: Path, max_files: int = 200,
+# Row caps for dashboard detail tables (the full data stays in the viewer).
+_TABLE_MAX_ROWS = 200
+_TABLE_MAX_ROWS_SMALL = 100
+_TABLE_MAX_ROWS_LARGE = 500
+# How many log files the dashboard's error-code scan reads per package.
+ERROR_SCAN_MAX_FILES = 200
+
+
+def collect_log_error_codes(input_dir: Path, max_files: int = ERROR_SCAN_MAX_FILES,
                             cap: int = 50) -> List[dict]:
     """Known Intune/Windows error codes found in the package's log files.
 
@@ -2508,7 +2527,7 @@ def build_dashboard(input_dir: Path) -> dict:
                 "columns": ["App", "Compliance", "Enforcement", "Error"],
                 "widths": [30, 16, 18, 36],
                 "open": True,
-                "rows": [_w32_row(a) for a in failed[:100]],
+                "rows": [_w32_row(a) for a in failed[:_TABLE_MAX_ROWS_SMALL]],
             })
         sections.append({
             "title": f"Win32 app deployment status ({len(w32)})",
@@ -2516,7 +2535,7 @@ def build_dashboard(input_dir: Path) -> dict:
             "columns": ["App", "Compliance", "Enforcement", "Error"],
             "widths": [30, 16, 18, 36],
             "searchable": True,
-            "rows": [_w32_row(a) for a in w32[:200]],
+            "rows": [_w32_row(a) for a in w32[:_TABLE_MAX_ROWS]],
         })
     else:
         checks.append({"label": "Win32 apps", "status": "unknown",
@@ -2619,7 +2638,7 @@ def build_dashboard(input_dir: Path) -> dict:
             "rows": [[e["upn"] or "—", e["provider"] or "—", e["state"] or "—",
                       "yes" if e["is_intune"] else "no",
                       _CERT_STATE_TEXT[_enroll_cert_state(e)[1]]]
-                     for e in enrolls[:100]],
+                     for e in enrolls[:_TABLE_MAX_ROWS_SMALL]],
         })
 
     # Intune Sync Debug Tool (call4cloud) drops a Repair.log when run on a
@@ -2702,7 +2721,7 @@ def build_dashboard(input_dir: Path) -> dict:
             "rows": [[r["policy"], r["user"], r["status_raw"] or "—",
                       (f'{r["error_code"]} — {r["error_text"]}'
                        if r["error_text"] else r["error_code"] or "—")]
-                     for r in script_reports[:200]],
+                     for r in script_reports[:_TABLE_MAX_ROWS]],
         })
 
     # Push channel for on-demand remediations / sync: WNS gives no failure
@@ -3180,7 +3199,7 @@ def build_dashboard(input_dir: Path) -> dict:
                 "columns": ["Node", "URI", "Expected value"],
                 "widths": [10, 55, 35],
                 "searchable": True,
-                "rows": nc_rows[:500],
+                "rows": nc_rows[:_TABLE_MAX_ROWS_LARGE],
             })
 
     # TLS-inspection detection: a non-Microsoft/DigiCert issuer on a real
@@ -3256,7 +3275,7 @@ def _write_summary(report: Path, dest: Path) -> None:
         html = report.read_text(encoding="utf-8", errors="replace")
         atomic_write_json(dest, summarize(parse_report_summary(html)))
     except Exception:
-        log.warning("could not write summary for %s", report.name, exc_info=True)
+        log_exception_safely("could not write summary for %s", report.name)
 
 
 def read_summary(job_id: str) -> Optional[dict]:
@@ -3315,15 +3334,37 @@ def _kill_process_group(proc) -> None:
             pass
 
 
-def cancel_job(job_id: str) -> None:
+# Jobs being deleted: status writes for them are dropped, so a cancelled
+# analysis can't write job.json back into a directory rmtree is removing.
+_deleting_jobs: set = set()
+
+
+def cancel_job(job_id: str) -> Optional[asyncio.Task]:
     """Stop a job's analysis: kill the running process tree and cancel the
-    task (which may still be waiting for a concurrency slot). Total."""
+    task (which may still be waiting for a concurrency slot). Returns the
+    task, if any, so callers can wait for it to unwind. Total."""
     proc = _running_procs.pop(job_id, None)
     if proc is not None and proc.returncode is None:
         _kill_process_group(proc)
     task = _job_tasks.pop(job_id, None)
     if task is not None and not task.done():
         task.cancel()
+        return task
+    return None
+
+
+async def remove_job(job_id: str) -> bool:
+    """Delete a job safely while its analysis may still be running: block
+    status writes, stop the analysis and wait for its task to unwind, then
+    remove the directory off the event loop."""
+    _deleting_jobs.add(job_id)
+    try:
+        task = cancel_job(job_id)
+        if task is not None:
+            await asyncio.wait({task}, timeout=10)
+        return await asyncio.to_thread(delete_job, job_id)
+    finally:
+        _deleting_jobs.discard(job_id)
 
 
 async def _read_tail(stream, limit: int = _PROC_OUTPUT_TAIL) -> bytes:
@@ -3424,7 +3465,7 @@ async def _run_job_locked(job_id: str, input_dir: Path, output_dir: Path,
     except Exception as e:  # pragma: no cover - defensive
         set_state(state="failed", exitcode=None, stdout="",
                   stderr=f"Analysis could not run ({type(e).__name__}).")
-        log.exception("job %s crashed", job_id)
+        log_exception_safely("job %s crashed", job_id)
 
 
 # --- Upload handling ---------------------------------------------------------
@@ -5445,13 +5486,14 @@ def js_json(value) -> str:
     element and inject markup into the (non-sandboxed) app-chrome page. Encode
     the breakout characters as \\uXXXX escapes; this is still valid JSON/JS and
     parses back to the original string. Also escape the U+2028/U+2029 line
-    separators, which are literal newlines in a JS string. Use this everywhere
-    JSON is written into a <script> block; the on-disk json.dumps (job.json,
-    dashboards, caches) stays plain json.dumps."""
-    return (json.dumps(value)
+    separators, which are literal newlines in a JS string: ensure_ascii=True
+    (explicit here, it is json.dumps' default) already writes every non-ASCII
+    character, U+2028/U+2029 included, as a \\uXXXX escape. Use this
+    everywhere JSON is written into a <script> block; the on-disk json.dumps
+    (job.json, dashboards, caches) stays plain json.dumps."""
+    return (json.dumps(value, ensure_ascii=True)
             .replace("<", "\\u003c").replace(">", "\\u003e")
-            .replace("&", "\\u0026")
-            .replace("\u2028", "\\u2028").replace("\u2029", "\\u2029"))
+            .replace("&", "\\u0026"))
 
 
 # The upstream script appends an author/branding banner (<footer> with author
@@ -6590,7 +6632,7 @@ async def index() -> HTMLResponse:
                   f'{"upload" if n == 1 else "uploads"} analysed so far</p>'
                   if n > 0 else "")
     return HTMLResponse(LANDING_PAGE % {
-        "css": PAGE_CSS, "nav": NAV, "footer": FOOTER, "recent": HISTORY_SECTION,
+        "nav": NAV, "footer": FOOTER, "recent": HISTORY_SECTION,
         "retention": JOB_RETENTION_HOURS, "max": MAX_UPLOAD_MB,
         "accept": ".log,.zip", "patternjson": js_json(r"\.(log|zip)$"),
         "ic_cmtrace": _ICONS["cmtrace"],
@@ -6614,7 +6656,7 @@ def render_upload_page(*, title: str, heading: str, intro: str,
                        droptext: str = _DEFAULT_DROPTEXT,
                        extra: str = "") -> HTMLResponse:
     return HTMLResponse(UPLOAD_PAGE % {
-        "css": PAGE_CSS, "nav": NAV, "footer": FOOTER, "max": MAX_UPLOAD_MB,
+        "nav": NAV, "footer": FOOTER, "max": MAX_UPLOAD_MB,
         "title": title, "heading": heading, "intro": intro,
         "action": action, "button": button, "recent": HISTORY_SECTION,
         "accept": accept, "patternjson": js_json(pattern),
@@ -6794,7 +6836,7 @@ ERRORCODES_PAGE = """<!doctype html>
 async def error_codes_page() -> HTMLResponse:
     """Searchable reference of every error code Sherlog can explain."""
     return HTMLResponse(ERRORCODES_PAGE % {
-        "css": PAGE_CSS, "nav": NAV, "footer": FOOTER,
+        "nav": NAV, "footer": FOOTER,
         "codes": js_json(ERROR_CODES),
     })
 
@@ -6869,7 +6911,7 @@ def notice_response(message: str, status_code: int,
     """Full app-chrome page for plain error/notice messages, so a 404/413/429
     isn't a bare unstyled string. Viewer-iframe errors stay plain text."""
     return HTMLResponse(NOTICE_PAGE % {
-        "css": PAGE_CSS, "nav": NAV, "footer": FOOTER,
+        "nav": NAV, "footer": FOOTER,
         "title": html_escape(title), "msg": html_escape(message),
     }, status_code=status_code)
 
@@ -7012,10 +7054,12 @@ async def _discard_job(job_id: str) -> None:
     await asyncio.to_thread(shutil.rmtree, job_dir(job_id), True)
 
 
-async def _web_upload_files(request: Request) -> list:
+async def _web_upload_files(request: Request) -> tuple:
+    """(form, files). The caller must `await form.close()` when done: the
+    spooled temp files stay open (and on disk past 1 MB) until then."""
     form = await request.form(max_files=MAX_ZIP_MEMBERS, max_fields=100)
-    return [v for v in form.getlist("files")
-            if isinstance(v, UploadFile) and v.filename]
+    return form, [v for v in form.getlist("files")
+                  if isinstance(v, UploadFile) and v.filename]
 
 
 def _web_upload_gate(request: Request) -> Optional[HTMLResponse]:
@@ -7047,8 +7091,9 @@ async def stage_upload(request: Request):
         return _upload_error_page(e)
     base = job_dir(job_id)
     ok = False
+    form = None
     try:
-        files = await _web_upload_files(request)
+        form, files = await _web_upload_files(request)
         if not files:
             return notice_response("No files uploaded.", 400)
         staged = await save_uploads(files, base / "input")
@@ -7059,9 +7104,11 @@ async def stage_upload(request: Request):
         log.warning("upload rejected (%d): %s", e.status_code, e.message)
         return _upload_error_page(e)
     except Exception:
-        log.exception("upload %s failed", job_id)
+        log_exception_safely("upload %s failed", job_id)
         return notice_response("The upload could not be processed.", 500)
     finally:
+        if form is not None:
+            await form.close()
         await asyncio.to_thread(shutil.rmtree, base / "tmp", True)
         if not ok:
             await _discard_job(job_id)
@@ -7101,7 +7148,7 @@ async def _finalize_diag_job(job_id: str, skipped: list, **status_fields) -> Non
         await asyncio.to_thread(atomic_write_json,
                                 output_dir / "dashboard.json", dashboard)
     except Exception:
-        log.exception("build_dashboard failed for %s; storing job without dashboard", job_id)
+        log_exception_safely("build_dashboard failed for %s; storing job without dashboard", job_id)
     ime_dir = await asyncio.to_thread(find_ime_log_dir, input_dir)
     write_status(job_id, kind="diag", state="ready", created=time.time(),
                  skipped=skipped[:_MAX_SKIPPED_LISTED],
@@ -7126,8 +7173,9 @@ async def diagnostics_analyze(request: Request) -> Response:
         return _upload_error_page(e)
     base = job_dir(job_id)
     ok = False
+    form = None
     try:
-        files = await _web_upload_files(request)
+        form, files = await _web_upload_files(request)
         if not files:
             return notice_response("No files uploaded.", 400)
         _count, skipped = await save_diag_upload(files, base / "input")
@@ -7138,9 +7186,11 @@ async def diagnostics_analyze(request: Request) -> Response:
         log.warning("diag upload rejected (%d): %s", e.status_code, e.message)
         return _upload_error_page(e)
     except Exception:
-        log.exception("diag upload %s failed", job_id)
+        log_exception_safely("diag upload %s failed", job_id)
         return notice_response("The upload could not be processed.", 500)
     finally:
+        if form is not None:
+            await form.close()
         await asyncio.to_thread(shutil.rmtree, base / "tmp", True)
         if not ok:
             await _discard_job(job_id)
@@ -7203,7 +7253,7 @@ async def api_diagnostics(request: Request) -> Response:
         log.warning("api upload rejected (%d): %s", e.status_code, e.message)
         return JSONResponse({"error": e.message}, status_code=e.status_code)
     except Exception:
-        log.exception("api upload %s failed", job_id)
+        log_exception_safely("api upload %s failed", job_id)
         return JSONResponse({"error": "upload could not be processed"},
                             status_code=500)
     finally:
@@ -7604,7 +7654,7 @@ async def inbox(request: Request) -> HTMLResponse:
                               "collector_sha": html_escape(collector_sha256() or "unavailable"),
                               "script": js_json(load_remediation_template())}
         return HTMLResponse(INBOX_PAGE % {
-            "css": PAGE_CSS, "nav": NAV, "footer": FOOTER, "body": body},
+            "nav": NAV, "footer": FOOTER, "body": body},
             status_code=400 if error else 200)
 
     rows = await asyncio.to_thread(list_inbox_jobs, token)
@@ -7778,7 +7828,7 @@ async def inbox(request: Request) -> HTMLResponse:
                 'with this token via Intune, then refresh.</p>'
                 '<p class="muted"><a href="/inbox">&larr; use another token</a></p>')
     return HTMLResponse(INBOX_PAGE % {
-        "css": PAGE_CSS, "nav": NAV, "footer": FOOTER, "body": body})
+        "nav": NAV, "footer": FOOTER, "body": body})
 
 
 def _inbox_key(request: Request) -> str:
@@ -7802,18 +7852,6 @@ async def inbox_upload_token(request: Request) -> JSONResponse:
                          "legacy": is_legacy_token(key)})
 
 
-def _delete_inbox_jobs(inbox_key: str) -> int:
-    want = inbox_namespace(inbox_key)
-    deleted = 0
-    for child in iter_job_dirs():
-        st = read_status(child.name)
-        if (st and st.get("source") == "api"
-                and secrets.compare_digest(str(st.get("upload_token_hash", "")), want)
-                and delete_job(child.name)):
-            deleted += 1
-    return deleted
-
-
 def _inbox_job_ids(inbox_key: str) -> List[str]:
     want = inbox_namespace(inbox_key)
     out = []
@@ -7835,9 +7873,9 @@ async def inbox_delete(request: Request) -> JSONResponse:
     problem = token_problem(key, "inbox")
     if problem:
         return JSONResponse({"error": problem}, status_code=401)
+    deleted = 0
     for job_id in await asyncio.to_thread(_inbox_job_ids, key):
-        cancel_job(job_id)
-    deleted = await asyncio.to_thread(_delete_inbox_jobs, key)
+        deleted += bool(await remove_job(job_id))
     # "Delete all" clears the collection-status pings too, otherwise a wiped
     # inbox would still show devices as collecting.
     await asyncio.to_thread(clear_all_pending, key)
@@ -7863,8 +7901,7 @@ async def inbox_delete_one(request: Request) -> JSONResponse:
     if (not st or st.get("source") != "api"
             or not secrets.compare_digest(str(st.get("upload_token_hash", "")), want)):
         return JSONResponse({"error": "not found"}, status_code=404)
-    cancel_job(job)
-    return JSONResponse({"deleted": bool(await asyncio.to_thread(delete_job, job))})
+    return JSONResponse({"deleted": bool(await remove_job(job))})
 
 
 _JOB_ID_RE = re.compile(r"^[0-9a-f]{32}$")
@@ -7925,7 +7962,7 @@ async def result(job_id: str) -> Response:
         return RedirectResponse(url=f"/result/{job_id}/cmtrace", status_code=303)
     if state in ("running", "queued"):
         return HTMLResponse(BUSY_PAGE % {
-            "css": PAGE_CSS, "nav": NAV, "footer": FOOTER, "job": job_id,
+            "nav": NAV, "footer": FOOTER, "job": job_id,
             "history": history_record_js(job_id, "timeline", "busy",
                                          upload_names(status, job_id)),
         })
@@ -7935,7 +7972,7 @@ async def result(job_id: str) -> Response:
         # report stays available in a sandboxed iframe behind a toggle.
         summary_html = render_summary_panel(read_summary(job_id))
         return HTMLResponse(REPORT_PAGE % {
-            "css": PAGE_CSS, "logo": _LOGO, "job": job_id,
+            "logo": _LOGO, "job": job_id,
             "expiry": expiry_note(status),
             "summary": summary_html,
             "empty": _REPORT_EMPTY_NOTE if not summary_html else "",
@@ -7947,7 +7984,7 @@ async def result(job_id: str) -> Response:
     # failed
     return HTMLResponse(
         ERROR_PAGE % {
-            "css": PAGE_CSS, "nav": NAV, "footer": FOOTER,
+            "nav": NAV, "footer": FOOTER,
             "exit": html_escape(str(status.get("exitcode"))),
             # Cap the raw subprocess output dumped on this (public) page.
             "stderr": html_escape(_clip(status.get("stderr", ""))) or "(empty)",
@@ -7986,9 +8023,6 @@ async def report_raw(job_id: str, request: Request) -> Response:
                         headers=_UNTRUSTED_HTML_HEADERS)
 
 
-_attr = attr_escape  # legacy alias, same helper
-
-
 def render_file_tree(paths: List[str], skipped: List[str] = ()) -> str:
     """Nested <details> folder tree from sorted relative file paths.
 
@@ -8023,20 +8057,16 @@ def render_file_tree(paths: List[str], skipped: List[str] = ()) -> str:
             if disabled:
                 out.append(
                     f'<div class="file disabled" '
-                    f'title="{_attr(full)} (not extracted)">{html_escape(leaf)}</div>'
+                    f'title="{attr_escape(full)} (not extracted)">{html_escape(leaf)}</div>'
                 )
             else:
                 out.append(
-                    f'<div class="file" role="button" tabindex="0" data-file="{_attr(full)}" '
-                    f'title="{_attr(full)}">{html_escape(leaf)}</div>'
+                    f'<div class="file" role="button" tabindex="0" data-file="{attr_escape(full)}" '
+                    f'title="{attr_escape(full)}">{html_escape(leaf)}</div>'
                 )
         return "".join(out)
 
     return render(tree)
-
-
-def render_log_tree(paths: List[str]) -> str:
-    return render_file_tree(paths)
 
 
 @app.get("/result/{job_id}/cmtrace", response_class=HTMLResponse)
@@ -8076,7 +8106,7 @@ async def cmtrace(job_id: str) -> Response:
     else:
         tool = "logs" if job_state == "logs" else "timeline"
     return HTMLResponse(CMTRACE_PAGE % {
-        "css": PAGE_CSS, "logo": _LOGO, "job": job_id, "timeline": timeline,
+        "logo": _LOGO, "job": job_id, "timeline": timeline,
         "expiry": expiry_note(status),
         "tree": render_file_tree(logs), "first": quote(logs[0]),
         "firstjson": js_json(logs[0]), "jobjson": js_json(job_id),
@@ -8126,7 +8156,7 @@ def render_diag_page(job_id: str, status: dict) -> HTMLResponse:
                  if status.get("source") == "api" else "")
     devname = str((dash or {}).get("device", {}).get("name", "") or "")
     return HTMLResponse(DIAG_PAGE % {
-        "css": PAGE_CSS, "logo": _LOGO, "job": job_id,
+        "logo": _LOGO, "job": job_id,
         # Device name in the tab title: two open result tabs were otherwise
         # indistinguishable in history/bookmarks.
         "ptitle": html_escape(devname or "diagnostics package"),
@@ -8295,8 +8325,7 @@ async def delete_result(job_id: str) -> JSONResponse:
         return JSONResponse(
             {"error": "use the token inbox to delete drop-off uploads"},
             status_code=403)
-    cancel_job(job_id)
-    return JSONResponse({"deleted": await asyncio.to_thread(delete_job, job_id)})
+    return JSONResponse({"deleted": await remove_job(job_id)})
 
 
 @app.get("/result/{job_id}/timeline", response_class=HTMLResponse)
@@ -8311,7 +8340,7 @@ async def diag_timeline(job_id: str) -> Response:
 
     summary_html = render_summary_panel(read_summary(job_id))
     return HTMLResponse(REPORT_PAGE % {
-        "css": PAGE_CSS, "logo": _LOGO, "job": job_id,
+        "logo": _LOGO, "job": job_id,
         "expiry": expiry_note(status),
         "summary": summary_html,
         "empty": _REPORT_EMPTY_NOTE if not summary_html else "",
@@ -8478,8 +8507,7 @@ async def diag_file_view(job_id: str, file: str, request: Request) -> Response:
             page = await run_heavy(
                 lambda: render_evtx_view(file, *parse_evtx_file(path)))
         except Exception:
-            log.warning("evtx parse failed for job %s file %s", job_id, file,
-                        exc_info=True)
+            log_exception_safely("evtx parse failed for job %s", job_id)
             return HTMLResponse("Could not parse this .evtx file.",
                                 status_code=422, headers=_SANDBOX_HEADERS)
         return HTMLResponse(page, headers=_SANDBOX_HEADERS)
