@@ -2132,10 +2132,17 @@ def test_remediation_throttle_is_mode_scoped_and_success_only():
     tpl = app_module.load_remediation_template()
     assert '$runValue = "LastRunUtc_$CollectionMode"' in tpl
     assert "-Name $runValue" in tpl
-    # The stamp is guarded by a SHERLOG_RESULT match (only-on-success).
-    guard = tpl.index("if ($resultLine -match '^SHERLOG_RESULT=(.+)$')")
-    stamp = tpl.index("Set-ItemProperty -Path $stateKey -Name $runValue")
+    # LastRunUtc is only written on the success branch of Set-SherlogState...
+    state = tpl.split("function Set-SherlogState")[1].split("\nfunction ")[0]
+    success = state.split("if ($Success) {")[1].split("} else {")[0]
+    assert "Set-ItemProperty -Path $stateKey -Name $runValue" in success
+    failure = state.split("} else {")[1]
+    assert "-Name $runValue" not in failure
+    # ...which is only called after a SHERLOG_RESULT match.
+    guard = tpl.index("if ($resultLine -match '^SHERLOG_RESULT=uploaded id=([0-9a-f]{8})\\s*$')")
+    stamp = tpl.index("Set-SherlogState -Success $true")
     assert guard < stamp
+    assert tpl.count("Set-SherlogState -Success $true") == 1
 
 
 def test_device_scripts_are_ascii_only():
