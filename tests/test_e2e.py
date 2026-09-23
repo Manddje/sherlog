@@ -2374,7 +2374,8 @@ def test_build_dashboard_zombie_sync(client, tmp_path):
     (pkg / "Identity").mkdir(parents=True)
 
     (pkg / "Identity" / "certs-machine-overview.txt").write_text(
-        "Subject : CN=device\nNotAfter : 1-1-2020\n"
+        # The MDM client cert: subject is the bare device-id GUID.
+        "Subject : CN=5f1c2d3e-4b5a-6978-8a9b-0c1d2e3f4a5b\nNotAfter : 1-1-2020\n"
         "Thumbprint : ABC123\nExpired : True\n",
         encoding="utf-8",
     )

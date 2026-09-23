@@ -427,3 +427,150 @@ def test_basic_auth_handles_non_ascii_and_throttles_failures(mk):
     assert c.get("/", headers={"Authorization": "Basic !!notb64"}).status_code == 401
     codes = [c.get("/", headers=hdr("x", "y")).status_code for _ in range(25)]
     assert codes[-1] == 429
+
+
+# --- Dashboard correctness -----------------------------------------------------
+
+_OMADM = ("Windows Registry Editor Version 5.00\n\n"
+          r"[HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Provisioning\OMADM\Accounts\{12345678-1234-1234-1234-123456789012}]"
+          "\n" '"LastSessionResult"=dword:00000000\n'
+          '"ServerLastAccessTime"="2026-06-14T10:00:00Z"\n')
+
+
+def _mdm_pkg(tmp_path, cert_block: str, enrollments: str = "") -> Path:
+    pkg = tmp_path / "pkg"
+    (pkg / "Registry").mkdir(parents=True)
+    (pkg / "Identity").mkdir(parents=True)
+    (pkg / "Identity" / "certs-machine-overview.txt").write_text(cert_block)
+    (pkg / "Registry" / "OMADM-Accounts.reg").write_text(_OMADM)
+    if enrollments:
+        (pkg / "Registry" / "Enrollments.reg").write_text(enrollments)
+    return pkg
+
+
+def test_unrelated_expired_cert_is_not_a_zombie_device(monkeypatch, tmp_path):
+    mod = _load_app(monkeypatch, tmp_path)
+    pkg = _mdm_pkg(tmp_path, "Subject : CN=corp-wifi\nNotAfter : 1-1-2020\n"
+                             "Thumbprint : DEF456\nExpired : True\n")
+    checks = {c["label"]: c for c in mod.build_dashboard(pkg)["checks"]}
+    assert checks["MDM sync health"]["status"] == "ok"
+
+
+def test_mdm_cert_found_via_enrollment_reference(monkeypatch, tmp_path):
+    mod = _load_app(monkeypatch, tmp_path)
+    certs = mod.parse_cert_overview(
+        "Subject : CN=whatever\nNotAfter : 1-1-2020\nThumbprint : AB CD 12\nExpired : True\n\n"
+        "Subject : CN=other\nNotAfter : 1-1-2020\nThumbprint : FF00\nExpired : True\n")
+    import types
+    monkeypatch.setattr(mod, "parse_enrollments", lambda reg: [
+        {"is_intune": True, "cert_thumbprint": "ABCD12"}])
+    picked = mod._mdm_client_certs(certs, "x")
+    assert [c["subject"] for c in picked] == ["CN=whatever"]
+
+
+def test_read_text_tolerant_encodings(monkeypatch, tmp_path):
+    mod = _load_app(monkeypatch, tmp_path)
+    f = tmp_path / "t.txt"
+    f.write_bytes("Hello Wörld".encode("utf-16-be"))
+    assert mod.read_text_tolerant(f) == "Hello Wörld"
+    f.write_bytes("Hello Wörld".encode("utf-16-le"))
+    assert mod.read_text_tolerant(f) == "Hello Wörld"
+    f.write_bytes("Café €5".encode("cp1252"))
+    assert mod.read_text_tolerant(f) == "Café €5"
+    f.write_bytes("Café".encode("utf-8"))
+    assert mod.read_text_tolerant(f) == "Café"
+
+
+def test_event_issue_json_accepts_single_object(monkeypatch, tmp_path):
+    mod = _load_app(monkeypatch, tmp_path)
+    assert mod.count_event_issues_json('{"Level": 2}') == {"errors": 1, "warnings": 0}
+
+
+def test_html_escape_covers_attribute_quotes(monkeypatch, tmp_path):
+    mod = _load_app(monkeypatch, tmp_path)
+    page = mod.render_evtx_view("x.evtx", [{
+        "time": "", "event_id": "1", "level": "2", "level_name": "Error",
+        "provider": 'x" autofocus onfocus="alert(1)', "msg": "m"}], False)
+    assert 'onfocus="alert(1)' not in page
+    assert "&quot;" in page
+
+
+def test_untrusted_html_is_never_top_level(mk):
+    mod, c = mk()
+    pkg = _zip({"Identity/dsregcmd-status.txt": "AzureAdJoined : YES\n",
+                "Reports/evil.html": "<script>location='https://evil'</script>"})
+    r = c.post("/diagnostics-analyze", files={"files": ("p.zip", pkg, "application/zip")},
+               follow_redirects=False)
+    job = r.headers["location"].rsplit("/", 1)[-1]
+    url = f"/result/{job}/files/view?file=Reports/evil.html"
+    top = c.get(url, headers={"Sec-Fetch-Dest": "document"}, follow_redirects=False)
+    assert top.status_code == 303 and top.headers["location"] == f"/result/{job}"
+    framed = c.get(url, headers={"Sec-Fetch-Dest": "iframe"})
+    assert framed.status_code == 200
+    csp = framed.headers["content-security-policy"]
+    assert csp.startswith("sandbox") and "allow-popups" not in csp
+    assert "default-src 'none'" in csp
+
+
+def test_search_reports_hits_beyond_viewer_limit(mk):
+    mod, c = mk(CMTRACE_MAX_LINES=10)
+    body = "".join(f"line {i}\n" for i in range(50)) + "needle here\n"
+    r = c.post("/cmtrace-view", files={"files": ("a.log", body.encode(), "text/plain")},
+               follow_redirects=False)
+    job = r.headers["location"].split("/")[2]
+    res = c.get(f"/result/{job}/search", params={"q": "needle"}).json()
+    assert res["hits"][0]["line"] == 51 and res["hits"][0]["beyond_view"] is True
+
+
+def test_health_does_not_leak_paths(mk):
+    mod, c = mk()
+    body = c.get("/health").json()
+    assert body["pwsh"] in ("available", "missing")
+
+
+def test_graph_partial_fetch_is_not_cached(monkeypatch, tmp_path):
+    mod = _load_app(monkeypatch, tmp_path)
+    calls = {"n": 0}
+
+    class R:
+        def __init__(self, payload):
+            self.payload = payload
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def read(self):
+            return json.dumps(self.payload).encode()
+
+    def fake_open(req, timeout=0):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return R({"value": [{"id": "a"}],
+                      "@odata.nextLink": "https://graph.microsoft.com/next"})
+        raise OSError("boom")
+
+    monkeypatch.setattr(mod.urllib.request, "urlopen", fake_open)
+    assert mod._graph_fetch_all("https://graph.microsoft.com/x", "t", "t") is None
+
+
+def test_access_log_redacts_ids_and_queries(monkeypatch, tmp_path):
+    import logging
+    mod = _load_app(monkeypatch, tmp_path)
+    rec = logging.LogRecord("uvicorn.access", logging.INFO, "", 0,
+                            '%s - "%s %s HTTP/%s" %d',
+                            ("1.2.3.4", "GET", "/result/" + "a" * 32 + "/search?q=secret",
+                             "1.1", 200), None)
+    mod._AccessLogRedactor().filter(rec)
+    line = rec.getMessage()
+    assert "secret" not in line and "a" * 32 not in line
+
+
+def test_html_is_gzipped_but_downloads_are_not(mk):
+    mod, c = mk()
+    r = c.get("/", headers={"Accept-Encoding": "gzip"})
+    assert r.headers.get("content-encoding") == "gzip"
+    # The nonce survives compression (replaced before gzip).
+    assert mod._CSP_NONCE_SENTINEL not in r.text

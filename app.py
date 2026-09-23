@@ -88,6 +88,25 @@ except ImportError:  # pragma: no cover
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("ime-analyzer")
 
+
+class _AccessLogRedactor(logging.Filter):
+    """Job ids are capability URLs and search queries can hold log content:
+    strip query strings and mask 32-hex ids in uvicorn's access log."""
+
+    _ID = re.compile(r"[0-9a-f]{32}")
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        args = record.args
+        if isinstance(args, tuple) and len(args) >= 3 and isinstance(args[2], str):
+            path = args[2].split("?", 1)[0]
+            record.args = args[:2] + (self._ID.sub(lambda m: m.group(0)[:6] + "…", path),) + args[3:]
+        return True
+
+
+_access_log = logging.getLogger("uvicorn.access")
+if not any(isinstance(f, _AccessLogRedactor) for f in _access_log.filters):
+    _access_log.addFilter(_AccessLogRedactor())
+
 # --- Configuration -----------------------------------------------------------
 
 # CSP nonces. Every inline <script> the app itself writes carries
@@ -582,12 +601,26 @@ def read_text_tolerant(path: Path, max_bytes: int = MAX_UPLOAD_BYTES) -> str:
         return data.decode("utf-16", errors="replace")  # BOM picks endianness
     if data.startswith(b"\xef\xbb\xbf"):
         return data.decode("utf-8-sig", errors="replace")
-    # BOM-less UTF-16LE: ASCII text shows as `c\x00h\x00…` — many NULs in
-    # the sample is a strong signal (UTF-8/ANSI text contains none).
+    # BOM-less UTF-16: ASCII text shows as `c\x00h\x00…` (LE) or
+    # `\x00c\x00h…` (BE) — many NULs in the sample is a strong signal
+    # (UTF-8/ANSI text contains none); their position picks the endianness.
     sample = data[:4096]
     if sample and sample.count(b"\x00") > len(sample) // 4:
-        return data.decode("utf-16-le", errors="replace")
-    return data.decode("utf-8", errors="replace")
+        even = sample[0::2].count(b"\x00")
+        odd = sample[1::2].count(b"\x00")
+        return data.decode("utf-16-be" if even > odd else "utf-16-le",
+                           errors="replace")
+    try:
+        return data.decode("utf-8")
+    except UnicodeDecodeError as e:
+        # A multi-byte char cut by the max_bytes cap is still UTF-8.
+        if e.start >= len(data) - 3:
+            return data.decode("utf-8", errors="replace")
+    # Not UTF-8: Windows "ANSI" exports are cp1252 on western systems.
+    try:
+        return data.decode("cp1252")
+    except UnicodeDecodeError:
+        return data.decode("utf-8", errors="replace")
 
 
 # --- CMTrace log parsing -----------------------------------------------------
@@ -750,26 +783,40 @@ def evtx_xml_to_record(xml_text: str) -> dict:
             "msg": msg}
 
 
-def parse_evtx_file(path: Path, limit: int = EVTX_MAX_EVENTS) -> tuple[List[dict], bool]:
-    """Parse up to `limit` records from an .evtx file.
+# Newest-mode scans walk the whole file to keep the last N records; bound it.
+EVTX_MAX_SCAN = 100_000
+
+
+def parse_evtx_file(path: Path, limit: int = EVTX_MAX_EVENTS,
+                    newest: bool = False) -> tuple[List[dict], bool]:
+    """Parse up to `limit` records from an .evtx file (the oldest, or with
+    `newest=True` the most recent — what a health check wants).
 
     Corrupt chunks/records are common in exported logs; per-record failures
-    are skipped so one bad record never kills the view.
+    are skipped so one bad record never kills the view — but they count
+    towards the work cap, so a file of garbage records isn't walked in full.
     """
     if Evtx is None:
         raise RuntimeError("python-evtx is not installed")
-    records: List[dict] = []
+    from collections import deque
+    records = deque(maxlen=limit) if newest else []
     truncated = False
+    attempts = 0
+    max_attempts = EVTX_MAX_SCAN if newest else limit * 4
     with Evtx(str(path)) as ev:
         for rec in ev.records():
-            if len(records) >= limit:
+            attempts += 1
+            if attempts > max_attempts or (not newest and len(records) >= limit):
                 truncated = True
                 break
             try:
-                records.append(evtx_xml_to_record(rec.xml()))
+                parsed = evtx_xml_to_record(rec.xml())
             except Exception:
                 continue
-    return records, truncated
+            if newest and len(records) == limit:
+                truncated = True
+            records.append(parsed)
+    return list(records), truncated
 
 
 def _evtx_row_class(level: str) -> str:
@@ -1060,6 +1107,25 @@ def parse_disk_space(text: str) -> List[dict]:
         except (TypeError, ValueError):
             continue
     return out
+
+
+_GUID_CN_RE = re.compile(r"^CN=\{?[0-9a-fA-F]{8}(-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}\}?$")
+
+
+def _mdm_client_certs(certs: List[dict], enrollments_reg_text: str) -> List[dict]:
+    """The machine certs that are the Intune MDM client certificate.
+
+    Primary: the thumbprint(s) the Intune enrollment's SslClientCertReference
+    points at. Fallback when no reference is exported: certs whose subject is
+    a bare device-id GUID (`CN=<guid>`, how the Intune MDM Device CA issues
+    them). Never "any expired cert" — that flagged healthy devices red."""
+    enrolls = parse_enrollments(parse_reg(enrollments_reg_text)) if enrollments_reg_text else []
+    thumbs = {re.sub(r"\s+", "", e["cert_thumbprint"]).upper()
+              for e in enrolls if e.get("is_intune") and e.get("cert_thumbprint")}
+    if thumbs:
+        return [c for c in certs
+                if re.sub(r"\s+", "", c.get("thumbprint", "")).upper() in thumbs]
+    return [c for c in certs if _GUID_CN_RE.match(c.get("subject", "").strip())]
 
 
 def parse_cert_overview(text: str) -> List[dict]:
@@ -1580,11 +1646,9 @@ def count_event_issues_json(text: str) -> Optional[dict]:
     Level survives non-English Windows, where LevelDisplayName breaks the
     text-based count). None when unusable, so callers fall back to the text
     parser. Level 1 (Critical) counts as an error alongside 2 (Error)."""
-    try:
-        records = json.loads(text)
-    except ValueError:
-        return None
-    if not isinstance(records, list):
+    # _json_rows also accepts PS 5.1's single-object (non-array) output.
+    records = _json_rows(text)
+    if records is None:
         return None
     errors = sum(1 for r in records if isinstance(r, dict) and r.get("Level") in (1, 2))
     warnings = sum(1 for r in records if isinstance(r, dict) and r.get("Level") == 3)
@@ -1605,8 +1669,16 @@ def collect_log_error_codes(input_dir: Path, max_files: int = 200,
     Returns `[{code, explanation, count, src, line}]` sorted by count desc then
     code, capped at `cap` entries.
     """
+    def priority(p: Path):
+        # When a package has more than max_files logs, scan the ones that
+        # matter first (IME logs and the event summaries), then the rest by
+        # path — instead of silently taking whatever sorts first.
+        rel = p.relative_to(input_dir).as_posix().lower()
+        ime = "intunemanagementextension" in rel or "/apps-ime/" in f"/{rel}"
+        return (0 if ime else 1 if rel.endswith("-errorswarnings.txt") else 2, rel)
+
     files = sorted(set(input_dir.rglob("*.log"))
-                   | set(input_dir.rglob("*-ErrorsWarnings.txt")))[:max_files]
+                   | set(input_dir.rglob("*-ErrorsWarnings.txt")), key=priority)[:max_files]
     agg: "dict[str, dict]" = {}
     for p in files:
         rel = p.relative_to(input_dir).as_posix()
@@ -1664,24 +1736,54 @@ def _graph_token() -> Optional[str]:
         return None
 
 
-def _graph_fetch_settings(token: str) -> List[dict]:
-    """Page through the configuration-settings catalog; [] on any failure."""
+def _graph_fetch_all(url: str, token: str, what: str,
+                     max_pages: int = 200) -> Optional[List[dict]]:
+    """Follow @odata.nextLink pages. None on ANY failure (or a runaway page
+    count): a partial catalog must never be cached as complete for the TTL."""
     items: List[dict] = []
-    url: Optional[str] = _GRAPH_SETTINGS_URL
     headers = {"Authorization": f"Bearer {token}"}
+    next_url: Optional[str] = url
     pages = 0
-    while url and pages < 200:
+    while next_url:
         pages += 1
+        if pages > max_pages:
+            log.warning("Graph %s fetch exceeded %d pages; not caching", what, max_pages)
+            return None
+        # Only ever follow Graph's own nextLinks.
+        if not next_url.startswith("https://graph.microsoft.com/"):
+            log.warning("Graph %s fetch: unexpected nextLink host; not caching", what)
+            return None
         try:
             with urllib.request.urlopen(
-                    urllib.request.Request(url, headers=headers), timeout=60) as r:
+                    urllib.request.Request(next_url, headers=headers), timeout=60) as r:
                 payload = json.loads(r.read())
         except (urllib.error.URLError, ValueError, OSError) as e:
-            log.warning("Graph settings fetch failed: %s", e)
-            break
+            log.warning("Graph %s fetch failed: %s", what, e)
+            return None
         items.extend(payload.get("value", []))
-        url = payload.get("@odata.nextLink")
+        next_url = payload.get("@odata.nextLink")
     return items
+
+
+def _graph_fetch_settings(token: str) -> List[dict]:
+    """The configuration-settings catalog; [] on any failure."""
+    return _graph_fetch_all(_GRAPH_SETTINGS_URL, token, "settings") or []
+
+
+def _cache_is_fresh(path: Path) -> bool:
+    try:
+        return (path.is_file()
+                and (time.time() - path.stat().st_mtime) < CSP_NAMES_TTL_HOURS * 3600)
+    except OSError:
+        return False
+
+
+def _write_name_cache(path: Path, mapping: dict) -> None:
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        atomic_write_json(path, {"generated": time.time(), "map": mapping})
+    except OSError as e:
+        log.warning("Could not write %s: %s", path.name, e)
 
 
 def build_csp_name_map(items: List[dict]) -> dict:
@@ -1724,13 +1826,7 @@ def refresh_csp_names(force: bool = False) -> dict:
     global _CSP_NAMES
     if not GRAPH_ENABLED:
         return load_csp_names()
-    try:
-        fresh = (CSP_NAMES_CACHE.is_file()
-                 and (time.time() - CSP_NAMES_CACHE.stat().st_mtime)
-                 < CSP_NAMES_TTL_HOURS * 3600)
-    except OSError:
-        fresh = False
-    if fresh and not force:
+    if _cache_is_fresh(CSP_NAMES_CACHE) and not force:
         return load_csp_names()
     token = _graph_token()
     if not token:
@@ -1739,13 +1835,7 @@ def refresh_csp_names(force: bool = False) -> dict:
     if not items:
         return load_csp_names()
     mapping = build_csp_name_map(items)
-    try:
-        CSP_NAMES_CACHE.parent.mkdir(parents=True, exist_ok=True)
-        CSP_NAMES_CACHE.write_text(
-            json.dumps({"generated": time.time(), "map": mapping}),
-            encoding="utf-8")
-    except OSError as e:
-        log.warning("Could not write CSP names cache: %s", e)
+    _write_name_cache(CSP_NAMES_CACHE, mapping)
     _CSP_NAMES = mapping
     log.info("Loaded %d Intune setting display names from Graph", len(mapping))
     return mapping
@@ -1775,23 +1865,8 @@ _APP_NAMES: Optional[dict] = None
 
 
 def _graph_fetch_apps(token: str) -> List[dict]:
-    """Page through the tenant's mobileApps; [] on any failure."""
-    items: List[dict] = []
-    url: Optional[str] = _GRAPH_APPS_URL
-    headers = {"Authorization": f"Bearer {token}"}
-    pages = 0
-    while url and pages < 100:
-        pages += 1
-        try:
-            with urllib.request.urlopen(
-                    urllib.request.Request(url, headers=headers), timeout=60) as r:
-                payload = json.loads(r.read())
-        except (urllib.error.URLError, ValueError, OSError) as e:
-            log.warning("Graph apps fetch failed: %s", e)
-            break
-        items.extend(payload.get("value", []))
-        url = payload.get("@odata.nextLink")
-    return items
+    """The tenant's mobileApps; [] on any failure."""
+    return _graph_fetch_all(_GRAPH_APPS_URL, token, "apps", max_pages=100) or []
 
 
 def load_app_names() -> dict:
@@ -1814,13 +1889,7 @@ def refresh_app_names(force: bool = False) -> dict:
     global _APP_NAMES
     if not GRAPH_ENABLED:
         return load_app_names()
-    try:
-        fresh = (APP_NAMES_CACHE.is_file()
-                 and (time.time() - APP_NAMES_CACHE.stat().st_mtime)
-                 < CSP_NAMES_TTL_HOURS * 3600)
-    except OSError:
-        fresh = False
-    if fresh and not force:
+    if _cache_is_fresh(APP_NAMES_CACHE) and not force:
         return load_app_names()
     token = _graph_token()
     if not token:
@@ -1830,13 +1899,7 @@ def refresh_app_names(force: bool = False) -> dict:
                if it.get("id") and (it.get("displayName") or "").strip()}
     if not mapping:
         return load_app_names()
-    try:
-        APP_NAMES_CACHE.parent.mkdir(parents=True, exist_ok=True)
-        APP_NAMES_CACHE.write_text(
-            json.dumps({"generated": time.time(), "map": mapping}),
-            encoding="utf-8")
-    except OSError as e:
-        log.warning("Could not write app names cache: %s", e)
+    _write_name_cache(APP_NAMES_CACHE, mapping)
     _APP_NAMES = mapping
     log.info("Loaded %d Intune app display names from Graph", len(mapping))
     return mapping
@@ -2356,7 +2419,10 @@ def build_dashboard(input_dir: Path) -> dict:
     if omadm:
         lsr = omadm.get("last_session_result")
         session_failed = lsr not in (None, "", 0, "0")
-        expired = [c for c in (certs or []) if c["expired"]]
+        # Only the MDM client certificate matters here — an unrelated expired
+        # Wi-Fi/SCEP/old cert in the store must not flag a zombie device.
+        mdm_certs = _mdm_client_certs(certs or [], read("enrollments"))
+        expired = [c for c in mdm_certs if c["expired"]]
         if expired and (session_failed or omadm.get("server_last_access")):
             status = "bad"
             detail = "checks in but management may be dead — expired MDM certificate"
@@ -2560,7 +2626,8 @@ def build_dashboard(input_dir: Path) -> dict:
     # device. If the operator included it in the upload, surface it — the .log
     # is already viewable in the file browser (CMTrace layout). Detect + link
     # only; total (no card when absent).
-    repair_log = next(iter(input_dir.rglob("Repair.log")), None)
+    repair_log = next((p for p in sorted(input_dir.rglob("*.log"))
+                       if p.name.lower() == "repair.log"), None)
     if repair_log is not None:
         checks.append({
             "label": "Intune Sync Debug Tool",
@@ -2647,7 +2714,9 @@ def build_dashboard(input_dir: Path) -> dict:
                 for s in (_json_rows(read("services")) or [])}
     push_evtx = next(iter(input_dir.rglob("PushNotification-Platform.evtx")), None)
     if push_evtx is not None:
-        recs, _ = parse_evtx_file(push_evtx)
+        # Newest events: the verdict must reflect the current state of the
+        # channel, not the oldest EVTX_MAX_EVENTS records in the file.
+        recs, _ = parse_evtx_file(push_evtx, newest=True)
         pc = count_push_events(recs)
         n = pc["ev1010"] + pc["ev1225"]
         seen = pc["ev1010"] and pc["ev1225"]
@@ -3415,7 +3484,7 @@ async def save_uploads(files: List[UploadFile], input_dir: Path) -> int:
         if ext == ".zip":
             # Extraction can stream gigabytes; keep it off the event loop.
             try:
-                log_count += await asyncio.to_thread(
+                log_count += await run_heavy(
                     extract_zip_logs, dest, input_dir, budget)
             except zipfile.BadZipFile:
                 raise UploadError(400, f"{Path(name).name!r} is not a valid zip archive.")
@@ -3472,12 +3541,12 @@ async def _extract_diag_zip(dest_zip: Path, input_dir: Path) -> tuple[int, list]
     budget = new_budget()
     try:
         # Extraction can stream gigabytes; keep it off the event loop.
-        count, skipped = await asyncio.to_thread(
+        count, skipped = await run_heavy(
             extract_zip_members, dest_zip, input_dir, keep_exts, 0, budget)
     except zipfile.BadZipFile:
         raise UploadError(400, "The uploaded file is not a valid zip archive.")
     if CABEXTRACT:
-        cab_kept, cab_count, cab_skipped = await asyncio.to_thread(
+        cab_kept, cab_count, cab_skipped = await run_heavy(
             expand_cab_files, input_dir, DIAG_KEEP_EXTS, budget)
         count += cab_kept - cab_count  # cabs are replaced by their contents
         skipped.extend(cab_skipped)
@@ -3812,6 +3881,19 @@ class SecurityHeadersMiddleware:
         await self.app(scope, receive, send_wrapper)
 
 
+class SelectiveGZipMiddleware:
+    def __init__(self, app):
+        from starlette.middleware.gzip import GZipMiddleware
+        self.app = app
+        self.gzip = GZipMiddleware(app, minimum_size=2048)
+
+    async def __call__(self, scope, receive, send):
+        path = scope.get("path", "") if scope["type"] == "http" else ""
+        if scope["type"] != "http" or path.endswith("/download"):
+            return await self.app(scope, receive, send)
+        return await self.gzip(scope, receive, send)
+
+
 class RequestTooLarge(UploadError):
     """Raised from the wrapped `receive` once a body passes its cap. It is an
     UploadError(413), so routes that catch UploadError clean up their job dir
@@ -4046,6 +4128,31 @@ async def cleanup_loop() -> None:
 _bg_tasks: set = set()
 
 
+# CPU-heavy request work (log parsing/rendering, evtx, search, extraction,
+# dashboards, zip builds) runs in its own bounded pool, so a burst of big
+# viewer/search requests can't starve the default pool that small file I/O
+# and /health use (the 5 s container healthcheck used to time out).
+HEAVY_WORKERS = max(1, int(os.environ.get("HEAVY_WORKERS", str(min(4, (os.cpu_count() or 1) + 1)))))
+_heavy_pool = None
+
+
+def _get_heavy_pool():
+    global _heavy_pool
+    if _heavy_pool is None:
+        from concurrent.futures import ThreadPoolExecutor
+        _heavy_pool = ThreadPoolExecutor(max_workers=HEAVY_WORKERS,
+                                         thread_name_prefix="sherlog-heavy")
+    return _heavy_pool
+
+
+async def run_heavy(fn, *args):
+    import contextvars
+    import functools
+    ctx = contextvars.copy_context()
+    return await asyncio.get_running_loop().run_in_executor(
+        _get_heavy_pool(), functools.partial(ctx.run, fn, *args))
+
+
 def spawn_background(coro) -> asyncio.Task:
     task = asyncio.create_task(coro)
     _bg_tasks.add(task)
@@ -4139,6 +4246,10 @@ app = FastAPI(title="Sherlog", lifespan=lifespan)
 # and security headers should be applied to every response (incl. 401s).
 app.add_middleware(BasicAuthMiddleware)
 app.add_middleware(SecurityHeadersMiddleware)
+# Compress HTML/JSON/CSS (a 50k-row viewer page is ~13 MB of HTML). Outside
+# SecurityHeadersMiddleware, which must see the uncompressed body to fill in
+# the CSP nonce; zip/file downloads are skipped (already compressed).
+app.add_middleware(SelectiveGZipMiddleware)
 # Outermost: the body cap must wrap the raw `receive` before anything reads it.
 app.add_middleware(BodyLimitMiddleware)
 
@@ -4906,6 +5017,7 @@ CMTRACE_PAGE = """<!doctype html>
   <div class="topbar">
     <a class="brand" href="/">%(logo)s Sherlog</a>
     <span>
+      %(expiry)s
       %(timeline)s
       <a class="btn btn-ghost" href="/cmtrace">New analysis</a>
     </span>
@@ -5136,7 +5248,8 @@ DIAG_PAGE = """<!doctype html>
           el.className = 'pkghit';
           const loc = document.createElement('div');
           loc.className = 'pkgloc';
-          loc.textContent = h.file.split('/').pop() + ':' + h.line;
+          loc.textContent = h.file.split('/').pop() + ':' + h.line
+            + (h.beyond_view ? ' (beyond viewer limit; download the file)' : '');
           const tx = document.createElement('div');
           tx.className = 'pkgtext';
           tx.textContent = h.text;
@@ -5310,13 +5423,18 @@ ERROR_PAGE = """<!doctype html>
 
 
 def html_escape(s: str) -> str:
-    return (s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;"))
+    """Escape for HTML text AND quoted attribute values. Quotes are escaped
+    too: the same helper ends up inside value="…"/data-…="…" attributes
+    (e.g. an EVTX provider name, where &quot; in the XML decodes to a quote),
+    and an unescaped quote there is an attribute breakout."""
+    return (s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+            .replace('"', "&quot;").replace("'", "&#x27;"))
 
 
 def attr_escape(s: str) -> str:
     """Escape for double-quoted HTML attribute values (filenames from
     untrusted zips can contain quotes)."""
-    return html_escape(s).replace('"', "&quot;")
+    return html_escape(s)
 
 
 def js_json(value) -> str:
@@ -5743,7 +5861,7 @@ def render_analysis_card(job_id: str, analysis: dict) -> str:
                 'Running the timeline analysis on the IME logs in this package&hellip; '
                 'this page updates automatically.</div>')
     if state == "failed":
-        stderr = html_escape(analysis.get("stderr", "") or "(empty)")
+        stderr = html_escape(_clip(analysis.get("stderr", "") or "(empty)"))
         return ('<div class="acard"><strong>Timeline analysis failed.</strong> '
                 'The package files below are still browsable.'
                 f'<pre>{stderr}</pre></div>')
@@ -6723,8 +6841,10 @@ async def app_css() -> Response:
 async def health() -> JSONResponse:
     pwsh = shutil.which("pwsh")
     jobs_ok = await asyncio.to_thread(_jobs_dir_writable)
+    # Report presence only — the install path is nobody's business.
     body = {"status": "ok" if (pwsh and jobs_ok) else "degraded",
-            "pwsh": pwsh, "jobs_dir": "writable" if jobs_ok else "unwritable"}
+            "pwsh": "available" if pwsh else "missing",
+            "jobs_dir": "writable" if jobs_ok else "unwritable"}
     return JSONResponse(body, status_code=200 if (pwsh and jobs_ok) else 503)
 
 
@@ -6977,7 +7097,7 @@ async def _finalize_diag_job(job_id: str, skipped: list, **status_fields) -> Non
     base = job_dir(job_id)
     input_dir, output_dir = base / "input", base / "output"
     try:
-        dashboard = await asyncio.to_thread(build_dashboard, input_dir)
+        dashboard = await run_heavy(build_dashboard, input_dir)
         await asyncio.to_thread(atomic_write_json,
                                 output_dir / "dashboard.json", dashboard)
     except Exception:
@@ -7798,7 +7918,7 @@ async def result(job_id: str) -> Response:
         return err
 
     if status.get("kind") == "diag":
-        return render_diag_page(job_id, status)
+        return await run_heavy(render_diag_page, job_id, status)
 
     state = status.get("state")
     if state == "logs":  # CMTrace-only job, no timeline report exists
@@ -7840,13 +7960,16 @@ async def result(job_id: str) -> Response:
 
 
 @app.get("/result/{job_id}/report", response_class=HTMLResponse)
-async def report_raw(job_id: str) -> Response:
+async def report_raw(job_id: str, request: Request) -> Response:
     """Serve the raw report. Untrusted (built from log content), so it is only
     ever loaded inside the sandboxed iframe in REPORT_PAGE. A CSP `sandbox`
     directive isolates it from the app origin even if framed elsewhere."""
     status, err = _job_guard(job_id, missing="Report not available.")
     if err is not None:
         return err
+    blocked = _top_level_block(request, f"/result/{job_id}")
+    if blocked is not None:
+        return blocked
     # Diagnostics jobs keep the analysis outcome in a sub-dict.
     rec = status.get("analysis") or {} if status.get("kind") == "diag" else status
     if rec.get("state") != "done":
@@ -7859,7 +7982,7 @@ async def report_raw(job_id: str) -> Response:
     def _read() -> str:  # reports can be tens of MB; keep the loop responsive
         return strip_branding(report.read_text(encoding="utf-8", errors="replace"))
 
-    return HTMLResponse(await asyncio.to_thread(_read),
+    return HTMLResponse(await run_heavy(_read),
                         headers=_UNTRUSTED_HTML_HEADERS)
 
 
@@ -7925,7 +8048,7 @@ async def cmtrace(job_id: str) -> Response:
     if status.get("state") not in ("done", "logs", "ready"):
         return HTMLResponse("Logs not available.", status_code=404)
 
-    logs = list_input_logs(job_id)
+    logs = await asyncio.to_thread(list_input_logs, job_id)
     if not logs:
         return notice_response("No raw logs found for this job.", 404)
 
@@ -7954,7 +8077,8 @@ async def cmtrace(job_id: str) -> Response:
         tool = "logs" if job_state == "logs" else "timeline"
     return HTMLResponse(CMTRACE_PAGE % {
         "css": PAGE_CSS, "logo": _LOGO, "job": job_id, "timeline": timeline,
-        "tree": render_log_tree(logs), "first": quote(logs[0]),
+        "expiry": expiry_note(status),
+        "tree": render_file_tree(logs), "first": quote(logs[0]),
         "firstjson": js_json(logs[0]), "jobjson": js_json(job_id),
         "history": history_record_js(job_id, tool, job_state,
                                      upload_names(status, job_id)),
@@ -7973,15 +8097,13 @@ async def cmtrace_view(job_id: str, file: str) -> Response:
 
     # Membership check: `file` must be exactly one of the staged logs — this
     # rejects any path-traversal attempt without touching the filesystem.
-    if file not in list_input_logs(job_id):
+    if file not in await asyncio.to_thread(list_input_logs, job_id):
         return HTMLResponse("Unknown log file.", status_code=404)
 
-    records, truncated = await asyncio.to_thread(
-        read_and_parse_cmtrace, job_dir(job_id) / "input" / file)
-    return HTMLResponse(
-        render_cmtrace_view(file, records, truncated),
-        headers=_SANDBOX_HEADERS,
-    )
+    path = job_dir(job_id) / "input" / file
+    page = await run_heavy(
+        lambda: render_cmtrace_view(file, *read_and_parse_cmtrace(path)))
+    return HTMLResponse(page, headers=_SANDBOX_HEADERS)
 
 
 # --- Diagnostics package routes ------------------------------------------------
@@ -8029,40 +8151,62 @@ def render_diag_page(job_id: str, status: dict) -> HTMLResponse:
 
 _SEARCH_MAX_HITS = 300
 _SEARCH_MAX_PER_FILE = 40
+# Work budget per search request: a query with no hits used to re-read and
+# re-parse every file of the package (up to MAX_UNCOMPRESSED_BYTES) each time.
+_SEARCH_MAX_BYTES = 256 * 1024 * 1024
+_SEARCH_MAX_SECONDS = 15.0
 
 
-def search_package(job_id: str, query: str, files: List[str]) -> List[dict]:
+def search_package(job_id: str, query: str, files: List[str]) -> dict:
     """Case-insensitive substring search across the text-ish package files.
 
-    Line numbers match the file viewer's numbering (same parser), so every
-    hit deep-links to its evidence row. Bounded per file and in total so a
-    hostile/huge package cannot stall the request thread."""
+    Line numbers match the file viewer's numbering (same record scanner), so
+    every hit deep-links to its evidence row; hits past the viewer's
+    CMTRACE_MAX_LINES are still reported (flagged `beyond_view`) instead of
+    being silently missed. Bounded per file, in total hits, in bytes read and
+    in time, so a hostile/huge package cannot stall a worker. Returns
+    {"hits", "truncated", "capped_files"}."""
     q = query.lower()
     base = job_dir(job_id) / "input"
     searchable = {".log"} | DIAG_TEXT_EXTS
     hits: List[dict] = []
+    capped_files: List[str] = []
+    budget = _SEARCH_MAX_BYTES
+    deadline = time.monotonic() + _SEARCH_MAX_SECONDS
+    truncated = False
     for rel in files:
         if Path(rel).suffix.lower() not in searchable:
             continue
+        if budget <= 0 or time.monotonic() > deadline:
+            truncated = True
+            break
         try:
-            text = read_text_tolerant(base / rel)
+            text = read_text_tolerant(base / rel, max_bytes=min(MAX_UPLOAD_BYTES, budget))
         except OSError:
             continue
-        records, _ = parse_cmtrace(text)
+        budget -= len(text)
+        if q not in text.lower():
+            continue  # cheap reject before the record scan
         per_file = 0
-        for i, rec in enumerate(records, 1):
+        for i, rec in enumerate(iter_cmtrace(text), 1):
             if q in rec["msg"].lower():
                 snippet = rec["msg"].strip()
                 if len(snippet) > 220:
                     snippet = snippet[:220] + "…"
-                hits.append({"file": rel, "line": i, "text": snippet})
+                hit = {"file": rel, "line": i, "text": snippet}
+                if i > CMTRACE_MAX_LINES:
+                    hit["beyond_view"] = True
+                hits.append(hit)
                 per_file += 1
                 if per_file >= _SEARCH_MAX_PER_FILE:
+                    capped_files.append(rel)
                     break
         if len(hits) >= _SEARCH_MAX_HITS:
             del hits[_SEARCH_MAX_HITS:]
+            truncated = True
             break
-    return hits
+    return {"hits": hits, "truncated": truncated or bool(capped_files),
+            "capped_files": capped_files}
 
 
 @app.get("/result/{job_id}/search")
@@ -8075,11 +8219,12 @@ async def package_search(job_id: str, q: str = "") -> JSONResponse:
     if len(q) < 3:
         return JSONResponse({"error": "query too short (min 3 characters)"},
                             status_code=400)
+    if len(q) > 200:
+        return JSONResponse({"error": "query too long"}, status_code=400)
     exts = DIAG_KEEP_EXTS if status.get("kind") == "diag" else {".log"}
-    files = list_input_files(job_id, exts=exts)
-    hits = await asyncio.to_thread(search_package, job_id, q, files)
-    return JSONResponse({"query": q, "hits": hits,
-                         "truncated": len(hits) >= _SEARCH_MAX_HITS})
+    files = await asyncio.to_thread(list_input_files, job_id, exts)
+    res = await run_heavy(search_package, job_id, q, files)
+    return JSONResponse({"query": q, **res})
 
 
 @app.get("/result/{job_id}/dashboard.json")
@@ -8203,6 +8348,30 @@ _UNTRUSTED_HTML_HEADERS = {
 }
 
 
+# .html shipped inside a package is arbitrary third-party markup: same as the
+# report but without allow-popups (the report needs it for its doc links).
+_PACKAGE_HTML_HEADERS = {
+    "Content-Security-Policy": (
+        "sandbox allow-scripts; default-src 'none'; "
+        "script-src 'unsafe-inline'; style-src 'unsafe-inline'; "
+        "img-src data:; font-src data:"
+    )
+}
+
+
+def _top_level_block(request: Request, back: str) -> Optional[Response]:
+    """Refuse to render attacker-influenced HTML as a top-level page.
+
+    The CSP sandbox isolates it from the app, but opened directly it would
+    still be a page on this domain that can navigate/redirect (phishing, open
+    redirect). Browsers send Sec-Fetch-Dest; only iframe loads get the
+    content. (No header = old client/tooling: allowed, still sandboxed.)"""
+    dest = request.headers.get("sec-fetch-dest")
+    if dest and dest not in ("iframe", "frame"):
+        return RedirectResponse(back, status_code=303)
+    return None
+
+
 def _safe_filename(name: str, default: str) -> str:
     """A download filename without path/odd chars."""
     name = re.sub(r"[^A-Za-z0-9._-]+", "_", name).strip("._") or default
@@ -8217,11 +8386,14 @@ async def diag_file_download(job_id: str, file: str) -> Response:
         return err
     if status.get("kind") != "diag":
         return HTMLResponse("Files not available.", status_code=404)
-    if file not in list_input_files(job_id, exts=DIAG_KEEP_EXTS):
+    if file not in await asyncio.to_thread(list_input_files, job_id, DIAG_KEEP_EXTS):
         return HTMLResponse("Unknown file.", status_code=404)
     path = job_dir(job_id) / "input" / file
     return FileResponse(path, filename=_safe_filename(Path(file).name, "file"),
                         media_type="application/octet-stream")
+
+
+_package_locks: "dict[str, asyncio.Lock]" = {}
 
 
 @app.get("/result/{job_id}/download")
@@ -8240,25 +8412,35 @@ async def diag_package_download(job_id: str) -> Response:
 
     def build() -> None:
         # Input is immutable after upload, so an existing zip is reusable;
-        # build to a tmp name + atomic replace so a concurrent request never
-        # sees a partial file.
+        # build to a unique tmp name + atomic replace so a concurrent request
+        # never sees (or co-writes) a partial file.
         if dest.is_file():
             return
-        tmp = dest.with_suffix(".zip.tmp")
-        with zipfile.ZipFile(tmp, "w", zipfile.ZIP_DEFLATED) as zf:
-            for p in sorted(input_dir.rglob("*")):
-                if p.is_file():
-                    zf.write(p, p.relative_to(input_dir).as_posix())
-        os.replace(tmp, dest)
+        tmp = dest.with_name(f".package.{uuid.uuid4().hex}.tmp")
+        try:
+            with zipfile.ZipFile(tmp, "w", zipfile.ZIP_DEFLATED) as zf:
+                for p in sorted(input_dir.rglob("*")):
+                    if p.is_file():
+                        zf.write(p, p.relative_to(input_dir).as_posix())
+            os.replace(tmp, dest)
+        finally:
+            tmp.unlink(missing_ok=True)
 
-    await asyncio.to_thread(build)
+    # One build per job at a time (a double click used to race two writers).
+    lock = _package_locks.setdefault(job_id, asyncio.Lock())
+    try:
+        async with lock:
+            await run_heavy(build)
+    finally:
+        if not lock.locked():
+            _package_locks.pop(job_id, None)
     name = _safe_filename(f"{status.get('device') or 'IntuneDiag'}-{job_id[:8]}",
                           "IntuneDiag") + ".zip"
     return FileResponse(dest, media_type="application/zip", filename=name)
 
 
 @app.get("/result/{job_id}/files/view", response_class=HTMLResponse)
-async def diag_file_view(job_id: str, file: str) -> Response:
+async def diag_file_view(job_id: str, file: str, request: Request) -> Response:
     """Sandboxed view of one package file, dispatched on its extension.
 
     Untrusted content, so every branch is served with a CSP `sandbox`
@@ -8272,15 +8454,18 @@ async def diag_file_view(job_id: str, file: str) -> Response:
 
     # Membership check, same pattern as the CMTrace viewer: rejects any
     # path-traversal attempt without touching the filesystem.
-    if file not in list_input_files(job_id, exts=DIAG_KEEP_EXTS):
+    if file not in await asyncio.to_thread(list_input_files, job_id, DIAG_KEEP_EXTS):
         return HTMLResponse("Unknown file.", status_code=404)
 
     path = job_dir(job_id) / "input" / file
     ext = Path(file).suffix.lower()
 
     if ext in (".html", ".htm"):
-        return HTMLResponse(await asyncio.to_thread(read_text_tolerant, path),
-                            headers=_UNTRUSTED_HTML_HEADERS)
+        blocked = _top_level_block(request, f"/result/{job_id}")
+        if blocked is not None:
+            return blocked
+        return HTMLResponse(await run_heavy(read_text_tolerant, path),
+                            headers=_PACKAGE_HTML_HEADERS)
 
     if ext == ".evtx":
         if Evtx is None:
@@ -8290,20 +8475,21 @@ async def diag_file_view(job_id: str, file: str) -> Response:
         try:
             # python-evtx is pure Python and slow on big logs; keep the event
             # loop responsive.
-            records, truncated = await asyncio.to_thread(parse_evtx_file, path)
+            page = await run_heavy(
+                lambda: render_evtx_view(file, *parse_evtx_file(path)))
         except Exception:
             log.warning("evtx parse failed for job %s file %s", job_id, file,
                         exc_info=True)
             return HTMLResponse("Could not parse this .evtx file.",
                                 status_code=422, headers=_SANDBOX_HEADERS)
-        return HTMLResponse(render_evtx_view(file, records, truncated),
-                            headers=_SANDBOX_HEADERS)
+        return HTMLResponse(page, headers=_SANDBOX_HEADERS)
 
     # .log gets the CMTrace layout; other text files fall back to the plain
-    # line-numbered layout inside the same renderer.
-    records, truncated = await asyncio.to_thread(read_and_parse_cmtrace, path)
-    return HTMLResponse(render_cmtrace_view(file, records, truncated),
-                        headers=_SANDBOX_HEADERS)
+    # line-numbered layout inside the same renderer. Parse + render both run
+    # off the event loop (a 50k-row page is ~13 MB of HTML).
+    page = await run_heavy(
+        lambda: render_cmtrace_view(file, *read_and_parse_cmtrace(path)))
+    return HTMLResponse(page, headers=_SANDBOX_HEADERS)
 
 
 # --- CSP nonce wiring ----------------------------------------------------------
