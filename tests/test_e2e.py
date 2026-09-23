@@ -2093,24 +2093,33 @@ def test_collector_pings_collection_status():
     assert '"$base/api/collect-status"' in text          # same path both sides
     assert "function Send-SherlogPing" in text
     # Best-effort: short timeout, no retries, silent.
-    helper = text.split("function Send-SherlogPing")[1].split("\ntrap")[0]
+    helper = text.split("function Send-SherlogPing")[1].split("\nfunction ")[0]
     assert "TimeoutSec = 10" in helper
     assert "catch {}" in helper
     assert "Start-Sleep" not in helper
-    assert "if (-not $UploadUrl -or -not $UploadToken) { return }" in helper
+    # Same gate as the upload (placeholder, shk_ inbox key, non-https).
+    assert "if (Get-SherlogUploadProblem -Url $UploadUrl -Token $UploadToken) { return }" in helper
     # The reason is redacted and capped before it leaves the device.
-    assert "[regex]::Escape($UploadToken)" in helper
-    assert "$r.Substring(0, 200)" in helper
+    assert "Protect-SherlogText -Text $Reason -Secret $UploadToken -Max 200" in helper
+    protect = text.split("function Protect-SherlogText")[1].split("\nfunction ")[0]
+    assert "[regex]::Escape($Secret)" in protect
+    assert "$t.Substring(0, $Max)" in protect
     # Start ping runs before the first collection step, after the device label.
     assert (text.index("$deviceLabel = $env:COMPUTERNAME")
             < text.index("Send-SherlogPing -Phase start")
             < text.index("Invoke-Safe 'MDM diagnostics report"))
-    # Every SHERLOG_ERROR path also tells the inbox, plus a crash trap.
-    assert text.count("SHERLOG_ERROR=") == text.count("Send-SherlogPing -Phase failed") - 1
+    # Every SHERLOG_ERROR path goes through one helper that also tells the
+    # inbox, plus a crash trap.
+    assert text.count("SHERLOG_ERROR=") == 1
+    failure = text.split("function Write-SherlogFailure")[1].split("\nfunction ")[0]
+    assert 'Write-Output "SHERLOG_ERROR=' in failure
+    assert "Send-SherlogPing -Phase failed" in failure
+    assert text.count("Write-SherlogFailure ") >= 8
     assert "trap { try { Send-SherlogPing -Phase failed" in text
     # TLS and proxy detection are shared by the ping and the upload.
     assert text.count("function Get-SherlogProxy") == 1
-    assert text.count("Select-String 'Proxy Server") == 1
+    assert text.count("function Get-SherlogNetshProxy") == 1
+    assert "WinHttpSettings" in text
 
 
 def test_collector_has_anonymize_option():
@@ -2156,10 +2165,17 @@ def test_remediation_throttle_is_mode_scoped_and_success_only():
     tpl = app_module.load_remediation_template()
     assert '$runValue = "LastRunUtc_$CollectionMode"' in tpl
     assert "-Name $runValue" in tpl
-    # The stamp is guarded by a SHERLOG_RESULT match (only-on-success).
-    guard = tpl.index("if ($resultLine -match '^SHERLOG_RESULT=(.+)$')")
-    stamp = tpl.index("Set-ItemProperty -Path $stateKey -Name $runValue")
+    # LastRunUtc is only written on the success branch of Set-SherlogState...
+    state = tpl.split("function Set-SherlogState")[1].split("\nfunction ")[0]
+    success = state.split("if ($Success) {")[1].split("} else {")[0]
+    assert "Set-ItemProperty -Path $stateKey -Name $runValue" in success
+    failure = state.split("} else {")[1]
+    assert "-Name $runValue" not in failure
+    # ...which is only called after a SHERLOG_RESULT match.
+    guard = tpl.index("if ($resultLine -match '^SHERLOG_RESULT=uploaded id=([0-9a-f]{8})\\s*$')")
+    stamp = tpl.index("Set-SherlogState -Success $true")
     assert guard < stamp
+    assert tpl.count("Set-SherlogState -Success $true") == 1
 
 
 def test_device_scripts_are_ascii_only():
