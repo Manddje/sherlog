@@ -1,6 +1,6 @@
 # Voorstel: een betere GUI voor Sherlog
 
-Status: voorstel, nog niets geïmplementeerd. Klikbare mockup van de volledige
+Status: fase 1 is geïmplementeerd (zie "Fasering"), fase 2 tot 6 staan open. Klikbare mockup van de volledige
 GUI (Home, Result met de tabs Overview/Timeline/Files, Inbox, Error codes),
 met Engelse UI-teksten zoals de app zelf: `docs/gui-voorstel-mockup.html`
 (open lokaal in een browser) of online op
