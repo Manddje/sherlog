@@ -2069,24 +2069,33 @@ def test_collector_pings_collection_status():
     assert '"$base/api/collect-status"' in text          # same path both sides
     assert "function Send-SherlogPing" in text
     # Best-effort: short timeout, no retries, silent.
-    helper = text.split("function Send-SherlogPing")[1].split("\ntrap")[0]
+    helper = text.split("function Send-SherlogPing")[1].split("\nfunction ")[0]
     assert "TimeoutSec = 10" in helper
     assert "catch {}" in helper
     assert "Start-Sleep" not in helper
-    assert "if (-not $UploadUrl -or -not $UploadToken) { return }" in helper
+    # Same gate as the upload (placeholder, shk_ inbox key, non-https).
+    assert "if (Get-SherlogUploadProblem -Url $UploadUrl -Token $UploadToken) { return }" in helper
     # The reason is redacted and capped before it leaves the device.
-    assert "[regex]::Escape($UploadToken)" in helper
-    assert "$r.Substring(0, 200)" in helper
+    assert "Protect-SherlogText -Text $Reason -Secret $UploadToken -Max 200" in helper
+    protect = text.split("function Protect-SherlogText")[1].split("\nfunction ")[0]
+    assert "[regex]::Escape($Secret)" in protect
+    assert "$t.Substring(0, $Max)" in protect
     # Start ping runs before the first collection step, after the device label.
     assert (text.index("$deviceLabel = $env:COMPUTERNAME")
             < text.index("Send-SherlogPing -Phase start")
             < text.index("Invoke-Safe 'MDM diagnostics report"))
-    # Every SHERLOG_ERROR path also tells the inbox, plus a crash trap.
-    assert text.count("SHERLOG_ERROR=") == text.count("Send-SherlogPing -Phase failed") - 1
+    # Every SHERLOG_ERROR path goes through one helper that also tells the
+    # inbox, plus a crash trap.
+    assert text.count("SHERLOG_ERROR=") == 1
+    failure = text.split("function Write-SherlogFailure")[1].split("\nfunction ")[0]
+    assert 'Write-Output "SHERLOG_ERROR=' in failure
+    assert "Send-SherlogPing -Phase failed" in failure
+    assert text.count("Write-SherlogFailure ") >= 8
     assert "trap { try { Send-SherlogPing -Phase failed" in text
     # TLS and proxy detection are shared by the ping and the upload.
     assert text.count("function Get-SherlogProxy") == 1
-    assert text.count("Select-String 'Proxy Server") == 1
+    assert text.count("function Get-SherlogNetshProxy") == 1
+    assert "WinHttpSettings" in text
 
 
 def test_collector_has_anonymize_option():
