@@ -783,11 +783,12 @@ def test_diag_full_flow(client):
     assert "Entra joined" in page.text
     assert "graph.microsoft.com" in page.text       # unreachable endpoint named
     assert "1 of 2 expired" in page.text            # expired machine cert
-    assert "Enrollments.reg" in page.text           # UTF-16 file in the tree
-    assert "info.txt" in page.text                  # nested-zip member extracted
-    assert "MpSupportFiles.cab" in page.text        # listed …
-    assert 'class="file disabled"' in page.text     # … but not clickable
     assert '"tool": "diag"' in page.text            # history entry
+    tree = client.get(f"/result/{job_id}/files").text  # Files tab
+    assert "Enrollments.reg" in tree                # UTF-16 file in the tree
+    assert "info.txt" in tree                       # nested-zip member extracted
+    assert "MpSupportFiles.cab" in tree             # listed …
+    assert 'class="file disabled"' in tree          # … but not clickable
     assert '"IntuneDiag-TESTPC-01.zip"' in page.text  # original upload name
 
     # Dashboard model on disk: ok/bad/warn statuses derived from the package.
@@ -890,7 +891,7 @@ def test_diag_cab_expanded(client):
     })
     job_id = _upload_diag(client, _zip_with_cab(cab))
 
-    page = client.get(f"/result/{job_id}")
+    page = client.get(f"/result/{job_id}/files")   # Files tab
     # Cab replaced by a folder with its viewable contents …
     assert "MPLog-1.log" in page.text
     assert 'data-file="Defender/MpSupportFiles.cab"' not in page.text
@@ -908,7 +909,7 @@ def test_diag_cab_expanded(client):
 
 def test_diag_corrupt_cab_skipped_not_fatal(client):
     job_id = _upload_diag(client, _zip_with_cab(b"\x00not a cab\x00"))
-    page = client.get(f"/result/{job_id}")
+    page = client.get(f"/result/{job_id}/files")
     assert page.status_code == 200
     assert "MpSupportFiles.cab" in page.text        # listed …
     assert 'class="file disabled"' in page.text     # … but not clickable
@@ -922,7 +923,7 @@ def test_diag_cab_without_cabextract_skipped(client, monkeypatch):
     monkeypatch.setattr(app_module, "CABEXTRACT", None)
     cab = _make_cab({"MPLog-1.log": b"hello"})
     job_id = _upload_diag(client, _zip_with_cab(cab))
-    page = client.get(f"/result/{job_id}")
+    page = client.get(f"/result/{job_id}/files")
     assert "MpSupportFiles.cab" in page.text
     assert "MPLog-1.log" not in page.text           # nothing expanded
     status = app_module.read_status(job_id)
@@ -2284,8 +2285,9 @@ def test_diag_downloads(client):
     job_id = r.headers["location"].rstrip("/").rsplit("/", 1)[-1]
 
     page = client.get(f"/result/{job_id}").text
-    assert 'id="dlfile"' in page                      # download-open-file button
-    assert f'href="/result/{job_id}/download"' in page  # download-package button
+    assert f'href="/result/{job_id}/download"' in page  # More: download package
+    files_page = client.get(f"/result/{job_id}/files").text
+    assert 'id="dlfile"' in files_page                # viewer bar: this file
 
     # Single file download.
     fd = client.get(f"/result/{job_id}/files/download",
@@ -2837,7 +2839,7 @@ def test_package_search_hits_and_bounds(client, monkeypatch):
     assert hit["file"] and isinstance(hit["line"], int) and hit["text"]
 
     # Search box present in the page
-    page = client.get(f"/result/{job_id}")
+    page = client.get(f"/result/{job_id}/files")
     assert 'id="pkgq"' in page.text
 
 
@@ -3743,7 +3745,7 @@ def test_diag_actions_live_in_more_menu(client):
     bar = page[page.index('<header class="rshell">'):page.index('<div class="panels">')]
     assert 'details class="menu"' in bar
     pop = bar[bar.index('class="menu-pop"'):]
-    assert 'id="dlfile"' in pop
+    assert 'id="dlfile"' not in pop             # per-file download: Files tab
     assert f'href="/result/{job_id}/download"' in pop
     assert f'href="/result/{job_id}/dashboard.json"' in pop
     assert 'id="deljob"' in pop                 # web uploads can be deleted here
@@ -3752,7 +3754,7 @@ def test_diag_actions_live_in_more_menu(client):
     visible = bar[bar.index('class="ctx"'):bar.index('details class="menu"')]
     assert "Copy findings" in visible
     assert "Download package" not in visible
-    assert f'href="/result/{job_id}/cmtrace">Raw logs' in bar
+    assert f'href="/result/{job_id}/files">Files' in bar
 
 
 def test_dropoff_diag_menu_links_inbox_and_has_no_delete(upload_client):
@@ -3778,8 +3780,8 @@ def test_result_shell_is_shared_by_all_three_tabs(client, monkeypatch):
     job_id = r.headers["location"].rstrip("/").rsplit("/", 1)[-1]
     pages = {"overview": f"/result/{job_id}",
              "timeline": f"/result/{job_id}/timeline",
-             "logs": f"/result/{job_id}/cmtrace"}
-    labels = {"overview": "Overview", "timeline": "Timeline", "logs": "Raw logs"}
+             "files": f"/result/{job_id}/files"}
+    labels = {"overview": "Overview", "timeline": "Timeline", "files": "Files"}
     for key, url in pages.items():
         page = client.get(url).text
         assert page.count('<header class="rshell">') == 1, url
@@ -3802,7 +3804,7 @@ def test_logs_only_job_tabs_offer_the_analysis(client):
     tabs = page[page.index('class="rtabs"'):page.index("</nav>", page.index('class="rtabs"'))]
     assert "Overview" not in tabs                       # no dashboard for loose logs
     assert f'action="/result/{job_id}/analyze"' in tabs
-    assert 'aria-current="page">Raw logs' in tabs
+    assert 'aria-current="page">Files' in tabs
     assert "<h1>a.log " in page
     assert 'href="/cmtrace">New upload' in page
 
@@ -3880,3 +3882,71 @@ def test_detail_tables_scroll_sideways_not_in_a_box(client, monkeypatch):
     sec = css[css.index("  details.section{"):css.index("}", css.index("  details.section{"))]
     assert "max-height" not in sec and "overflow:auto" not in sec
     assert "details.section .tw{overflow-x:auto}" in css
+
+
+# --- GUI phase 4: Files tab --------------------------------------------------
+
+def _diag_job(client, monkeypatch) -> str:
+    import app as app_module
+    monkeypatch.setattr(app_module, "spawn_job", lambda coro: coro.close())
+    r = client.post("/diagnostics-analyze",
+                    files=[("files", ("d.zip", _zip_of_diag_package(),
+                                      "application/zip"))],
+                    follow_redirects=False)
+    return r.headers["location"].rstrip("/").rsplit("/", 1)[-1]
+
+
+def test_files_tab_lists_the_whole_package_on_full_height(client, monkeypatch):
+    job_id = _diag_job(client, monkeypatch)
+    page = client.get(f"/result/{job_id}/files").text
+    assert 'aria-current="page">Files' in page
+    for name in ("dsregcmd-status.txt", "Enrollments.reg", "battery-report.html",
+                 "IntuneManagementExtension.log"):
+        assert name in page, name                   # every viewable type
+    assert 'class="file disabled"' in page          # skipped .cab stays visible
+    assert 'id="pkgq"' in page and 'id="crumb"' in page and 'id="dlfile"' in page
+    assert f'"/result/{job_id}/files/view"' in page  # package viewer
+    # The overview no longer embeds the browser.
+    ov = client.get(f"/result/{job_id}").text
+    assert 'id="pkgq"' not in ov and 'id="view"' not in ov
+
+
+def test_files_tab_deeplink_preselects_file_and_line(client, monkeypatch):
+    job_id = _diag_job(client, monkeypatch)
+    page = client.get(f"/result/{job_id}/files",
+                      params={"file": "Identity/certs-machine-overview.txt",
+                              "line": "8"}).text
+    assert (f'src="/result/{job_id}/files/view?file=Identity/'
+            f'certs-machine-overview.txt#L8"') in page
+    assert "Identity / <b>certs-machine-overview.txt</b>" in page
+    # Unknown files and junk lines fall back safely.
+    page = client.get(f"/result/{job_id}/files",
+                      params={"file": "../app.py", "line": "x<script>"}).text
+    assert "../app.py" not in page and "x<script>" not in page
+    # The overview sends deep-links to this tab.
+    ov = client.get(f"/result/{job_id}").text
+    assert "'/result/' + job + '/files?file='" in ov
+
+
+def test_old_cmtrace_url_serves_the_files_tab(client):
+    r = client.post("/cmtrace-view",
+                    files=[("files", ("a.log", b"<![LOG[hi]LOG]!>", "text/plain"))],
+                    follow_redirects=False)
+    assert r.headers["location"].endswith("/files")
+    job_id = r.headers["location"].split("/")[2]
+    old = client.get(f"/result/{job_id}/cmtrace")
+    assert old.status_code == 200 and 'aria-current="page">Files' in old.text
+    assert f'"/result/{job_id}/cmtrace/view"' in old.text   # log viewer for logs jobs
+
+
+def test_single_file_download_for_log_uploads(client):
+    r = client.post("/cmtrace-view",
+                    files=[("files", ("a.log", b"<![LOG[hi]LOG]!>", "text/plain"))],
+                    follow_redirects=False)
+    job_id = r.headers["location"].split("/")[2]
+    ok = client.get(f"/result/{job_id}/files/download", params={"file": "a.log"})
+    assert ok.status_code == 200 and "attachment" in ok.headers["content-disposition"]
+    assert b"hi" in ok.content
+    for bad in ("../app.py", "b.log", "job.json"):
+        assert client.get(f"/result/{job_id}/files/download",
+                          params={"file": bad}).status_code == 404

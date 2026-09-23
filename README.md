@@ -32,9 +32,10 @@ Naast het timeline-rapport biedt de app een **CMTrace-logviewer**: bekijk de ruw
 geüploade `.log`-bestanden in een gekleurde tabel (warnings geel, errors rood) met
 tekst- en componentfilter — een web-equivalent van het Windows-only CMTrace.exe.
 Bereikbaar als eigen tool via de uploadpagina `/cmtrace` (geen analyse nodig) én
-via "Raw logs (CMTrace)" op de rapportpagina. De (untrusted) loginhoud wordt in
-een sandboxed iframe geserveerd. Losse logs alsnog analyseren kan met de knop
-**Run timeline analysis** op de viewerpagina. `/errorcodes` biedt daarnaast een
+via de tab **Files** op elke resultaatpagina (`/result/<id>/files`; de oude URL
+`/result/<id>/cmtrace` toont dezelfde tab). De (untrusted) loginhoud wordt in
+een sandboxed iframe geserveerd. Losse logs alsnog analyseren kan met de tab
+**Run timeline analysis**. `/errorcodes` biedt daarnaast een
 doorzoekbare referentie van ~110 Intune/IME/MSI-foutcodes met uitleg — dezelfde
 tabel die de viewers en het dashboard gebruiken voor hun verklaringen.
 Resultaatpagina's tonen een "expires in ~Nh"-hint (retentie) en de hele app
@@ -97,7 +98,11 @@ beveiligde map `%ProgramData%\Sherlog\Collect` (SYSTEM/Administrators).
 2. **Automatische timeline-analyse** — op de IME-logs in het pakket
    (`Apps-IME\Logs`) draait de timeline-analyse (alleen hier beschikbaar); het
    rapport en het samenvattingspaneel verschijnen zodra de analyse klaar is.
-3. **File browser** — alle bestanden in het pakket zijn direct te bekijken:
+3. **File browser** (tab **Files**, `/result/<id>/files`, op volle hoogte) —
+   alle bestanden in het pakket zijn direct te bekijken, met een breadcrumb
+   en een Download-knop voor het geopende bestand. `?file=<pad>&line=<n>`
+   opent direct een bestand op een regel; zo linken de bevindingen op het
+   overzicht ("Open evidence") naar hun bewijs:
    `.log` in de CMTrace-viewer, tekstbestanden (`.txt`, `.reg`, `.xml`, …)
    met UTF-16-detectie, `.html` in een sandboxed frame en `.evtx` in een
    eventviewer (tijd, event-ID, level, provider; gecapt op

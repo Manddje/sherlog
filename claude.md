@@ -75,8 +75,14 @@ timeline-analyse is géén losse tool/route meer — ze is de analyse-substap va
 een diagnostics-job:
 
 1. **CMTrace** (`/cmtrace` → `POST /cmtrace-view`) — alleen raw logviewer,
-   geen analyse; job krijgt `state="logs"`. Op de viewerpagina kan de
-   timeline-analyse alsnog on-demand gestart worden
+   geen analyse; job krijgt `state="logs"`. De viewer is de Files-tab
+   (`/result/{id}/files`, alias `/result/{id}/cmtrace`, route `files_tab`),
+   voor diag-jobs met alle pakketbestanden via `/files/view`, anders alleen
+   `.log` via `/cmtrace/view`; `_files_for()` levert die lijst en is ook de
+   membership-check van `/files/download`. Resultaatpagina's delen één kop
+   (`render_result_shell`, tabs Overview/Timeline/Files). Vanaf de Files-tab
+   (tab "Run timeline analysis") kan de timeline-analyse alsnog on-demand
+   gestart worden
    (`POST /result/{id}/analyze` → job wordt een gewone timeline-job).
 2. **Diagnostics package** (`/diagnostics` → `POST /diagnostics-analyze`) — zip
    van `Collect-IntuneDiagnostics.ps1`: uitpakken, dashboard bouwen, én de

@@ -1,6 +1,6 @@
 # Voorstel: een betere GUI voor Sherlog
 
-Status: fase 1 tot en met 3 zijn geïmplementeerd (zie "Fasering"), fase 4 tot 6 staan open. Klikbare mockup van de volledige
+Status: fase 1 tot en met 4 zijn geïmplementeerd (zie "Fasering"), fase 5 en 6 staan open. Klikbare mockup van de volledige
 GUI (Home, Result met de tabs Overview/Timeline/Files, Inbox, Error codes),
 met Engelse UI-teksten zoals de app zelf: `docs/gui-voorstel-mockup.html`
 (open lokaal in een browser) of online op
@@ -308,7 +308,29 @@ Fase 1 is puur CSS en template-tekst en kan in één PR.
   draaien erbij.
 - **Detailtabellen**: geen `max-height`-scrollbox meer; de tabel scrollt
   alleen horizontaal in een eigen container, de pagina doet het verticale
-  scrollen. Fase 2 en 3 zijn de
+  scrollen.
+
+**Fase 4 is uitgevoerd.** Wat er is gebeurd:
+
+- Nieuwe tab **Files** op `/result/<id>/files` (route `files_tab`) voor
+  elke soort upload; `/result/<id>/cmtrace` is een alias, zodat oude links
+  en de "Recent uploads"-lijsten in browsers blijven werken. Uploads van
+  losse logs landen direct op `/files`. De tab "Raw logs" is vervangen.
+- De pagina vult de hoogte onder de kop: links de pakketzoekfunctie en de
+  bestandsboom (overgeslagen `.cab`/`.etl` grijs zichtbaar), rechts een
+  viewerbalk met breadcrumb en **Download**, daaronder de sandboxed viewer.
+  Diagnostics-pakketten tonen alle bekijkbare bestanden, losse uploads hun
+  `.log`-bestanden.
+- `?file=<pad>&line=<n>` selecteert direct bestand en regel; "Open evidence",
+  klikbare gezonde checks en bronlinks in tabellen op Overview gaan daarheen.
+  Klikken in de boom of op een zoektreffer werkt de URL bij, zodat de plek
+  deelbaar is. Onbekende bestanden en ongeldige regels vallen terug op het
+  eerste bestand.
+- De tabteller toont het aantal bestanden.
+- Overview heeft geen ingebouwde browser meer; "Download this file" is uit
+  het More-menu verhuisd naar de viewerbalk.
+- `/result/<id>/files/download` werkt nu ook voor losse-logs-uploads, met
+  dezelfde lijst als toegangscontrole (`_files_for`). Fase 2 en 3 zijn de
 kern van het voorstel; fase 4 tot 6 kunnen los volgen.
 
 ## Bewust niet in dit voorstel

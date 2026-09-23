@@ -4751,7 +4751,7 @@ HISTORY_SECTION = """<section class="card recent" id="recent" hidden>
                        : e.state === 'failed' ? ' failed' : '');
     const a = document.createElement('a');
     a.className = 'files';
-    a.href = e.tool === 'logs' ? '/result/' + e.id + '/cmtrace'
+    a.href = e.tool === 'logs' ? '/result/' + e.id + '/files'
                                : '/result/' + e.id;
     // File names come from uploads (untrusted) — textContent only, never HTML.
     a.textContent = (e.files && e.files.length)
@@ -5176,64 +5176,177 @@ def render_report_content(job_id: str, summary: Optional[dict]) -> str:
 _REPORT_EMPTY_NOTE = ('<p class="note">This report couldn\'t be summarized '
                       'automatically &mdash; open the original report below.</p>')
 
-CMTRACE_PAGE = """<!doctype html>
+FILES_PAGE = """<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
 """ + _THEME_JS + """
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Sherlog &mdash; %(ptitle)s &middot; raw logs</title>
+<title>Sherlog &mdash; %(ptitle)s &middot; files</title>
 <link rel="stylesheet" href="/assets/app.css"><style>
+  /* Files tab: the browser gets the whole viewport under the result shell. */
   html,body{height:100%%}
   body{display:flex;flex-direction:column}
-  .body{display:flex;flex:1;min-height:0}
-  .side{width:300px;flex:none;overflow:auto;border-right:1px solid var(--border);
-    background:var(--surface);padding:.5rem .35rem;font-size:.86rem}
-  .side details{margin:0}
-  .side summary{cursor:pointer;padding:.25rem .4rem;color:var(--fg);font-weight:600;
+  .fbody{display:flex;flex:1;min-height:0}
+  .side{width:320px;flex:none;display:flex;flex-direction:column;min-height:0;
+    border-right:1px solid var(--border);background:var(--surface);font-size:.86rem}
+  .pkgsearch{padding:.6rem .6rem .5rem;border-bottom:1px solid var(--border)}
+  .pkgsearch input{width:100%%;box-sizing:border-box;padding:.42rem .6rem;
+    border:1px solid var(--border);border-radius:8px;background:var(--bg);
+    color:var(--fg);font:inherit;font-size:.85rem}
+  #pkgresults{margin-top:.45rem;max-height:16rem;overflow:auto;
+    border:1px solid var(--border);border-radius:8px;padding:.3rem;background:var(--bg)}
+  .pkgcount{color:var(--muted);font-size:.75rem;padding:.15rem .3rem}
+  .pkghit{padding:.3rem .35rem;border-radius:6px;cursor:pointer}
+  .pkghit:hover,.pkghit:focus-visible{background:var(--surface)}
+  .pkgloc{font-weight:600;font-size:.75rem;font-family:ui-monospace,Menlo,Consolas,monospace}
+  .pkgtext{color:var(--muted);font-size:.75rem;word-break:break-word}
+  .tree{flex:1;overflow:auto;padding:.45rem .35rem}
+  .tree details{margin:0}
+  .tree summary{cursor:pointer;padding:.25rem .4rem;color:var(--fg);font-weight:600;
     border-radius:6px;list-style:none;display:flex;align-items:center;gap:.35rem}
-  .side summary::before{content:'▸';color:var(--muted);font-size:.7rem;transition:.1s}
-  .side details[open]>summary::before{transform:rotate(90deg)}
-  .side .grp{padding-left:.6rem;border-left:1px solid var(--border);margin-left:.55rem}
-  .side .file{padding:.3rem .5rem;border-radius:6px;color:var(--muted);cursor:pointer;
+  .tree summary::before{content:'▸';color:var(--muted);font-size:.7rem;transition:.1s}
+  .tree details[open]>summary::before{transform:rotate(90deg)}
+  .tree .grp{padding-left:.6rem;border-left:1px solid var(--border);margin-left:.55rem}
+  .tree .file{padding:.3rem .5rem;border-radius:6px;color:var(--muted);cursor:pointer;
     white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-  .side .file:hover{background:var(--bg);color:var(--fg)}
-  .side .file.active{background:var(--accent);color:var(--accent-fg)}
-  iframe{border:0;flex:1;height:100%%;display:block}
+  .tree .file:hover{background:var(--bg);color:var(--fg)}
+  .tree .file.active{background:var(--accent);color:var(--accent-fg)}
+  .tree .file.disabled{opacity:.45;cursor:default}
+  .tree .file.disabled:hover{background:none;color:var(--muted)}
+  .viewer{flex:1;min-width:0;display:flex;flex-direction:column}
+  .vbar{display:flex;align-items:center;gap:.6rem;padding:.45rem .9rem;
+    border-bottom:1px solid var(--border);background:var(--bg)}
+  .crumb{flex:1;min-width:0;font-family:ui-monospace,Menlo,Consolas,monospace;
+    font-size:.8rem;color:var(--muted);overflow-wrap:anywhere}
+  .crumb b{color:var(--fg);font-weight:600}
+  .vbar .btn{padding:.3rem .75rem;font-size:.84rem}
+  .viewer iframe{border:0;flex:1;width:100%%;display:block;background:var(--bg)}
   @media (max-width:700px){
     html,body{height:auto}
     body{display:block}
-    .body{flex-direction:column;height:auto}
-    .side{width:auto;max-height:15rem;border-right:0;
-      border-bottom:1px solid var(--border)}
-    iframe{height:70vh;flex:none}
+    .fbody{flex-direction:column}
+    .side{width:auto;border-right:0;border-bottom:1px solid var(--border)}
+    .tree{max-height:14rem}
+    .viewer iframe{height:70vh;flex:none}
   }
 </style></head><body>
   %(shell)s
-  <div class="body">
-    <nav class="side" id="side">%(tree)s</nav>
-    <iframe id="view" src="/result/%(job)s/cmtrace/view?file=%(first)s"></iframe>
+  <div class="fbody">
+    <nav class="side" id="side" aria-label="Files in this upload">
+      <div class="pkgsearch">
+        <input id="pkgq" type="search" autocomplete="off" aria-label="Search all files"
+               placeholder="Search all files&hellip; (Enter)">
+        <div id="pkgresults" hidden></div>
+      </div>
+      <div class="tree" id="tree">%(tree)s</div>
+    </nav>
+    <section class="viewer">
+      <div class="vbar">
+        <div class="crumb" id="crumb">%(crumb)s</div>
+        <a class="btn btn-ghost" id="dlfile" href="%(dlhref)s"%(dlhidden)s>Download</a>
+      </div>
+      <iframe id="view" title="File viewer" src="%(firstsrc)s"></iframe>
+    </section>
   </div>
 <script>
   const job = %(jobjson)s;
   const first = %(firstjson)s;
-  const side = document.getElementById('side');
+  const viewBase = %(viewbasejson)s;
+  const tree = document.getElementById('tree');
   const view = document.getElementById('view');
-  const files = [...side.querySelectorAll('.file')];
-  function select(el) {
-    files.forEach(f => f.classList.toggle('active', f === el));
-    view.src = '/result/' + job + '/cmtrace/view?file=' +
-               encodeURIComponent(el.dataset.file);
+  const crumb = document.getElementById('crumb');
+  const dlfile = document.getElementById('dlfile');
+  const files = [...tree.querySelectorAll('.file[data-file]')];
+  function setCrumb(name) {
+    crumb.textContent = '';
+    const parts = name.split('/');
+    const leaf = parts.pop();
+    if (parts.length) crumb.append(parts.join(' / ') + ' / ');
+    const b = document.createElement('b');
+    b.textContent = leaf;
+    crumb.append(b);
   }
-  side.addEventListener('click', ev => {
+  function reveal(el) {
+    for (let d = el.closest('details'); d;
+         d = d.parentElement && d.parentElement.closest('details')) d.open = true;
+    el.scrollIntoView({block: 'nearest'});
+  }
+  // The viewer iframe is sandboxed without allow-same-origin, so the parent
+  // cannot drive its contentWindow — only set src. A fragment-only change
+  // (#L<n>) on an already-loaded file does not reliably re-scroll, so bump a
+  // nonce on every deep-link: the URL always changes and the browser does a
+  // fresh load that honours the #L anchor every time.
+  let navSeq = 0;
+  function select(el, line) {
+    files.forEach(f => f.classList.toggle('active', f === el));
+    const name = el.dataset.file;
+    let url = viewBase + '?file=' + encodeURIComponent(name);
+    if (line) url += '&n=' + (++navSeq) + '#L' + encodeURIComponent(line);
+    view.src = url;
+    setCrumb(name);
+    dlfile.href = '/result/' + job + '/files/download?file=' + encodeURIComponent(name);
+    dlfile.hidden = false;
+    // Keep the address shareable: /files?file=..&line=.. reopens this spot.
+    try {
+      const u = new URL(location.href);
+      u.searchParams.set('file', name);
+      if (line) u.searchParams.set('line', line); else u.searchParams.delete('line');
+      history.replaceState(null, '', u);
+    } catch (e) {}
+  }
+  tree.addEventListener('click', ev => {
     const f = ev.target.closest('.file');
     if (f && f.dataset.file) select(f);
   });
-  side.addEventListener('keydown', ev => {
+  tree.addEventListener('keydown', ev => {
     if (ev.key !== 'Enter' && ev.key !== ' ') return;
     const f = ev.target.closest('.file');
     if (f && f.dataset.file) { ev.preventDefault(); select(f); }
   });
-  // Highlight the file the iframe already loaded (server's first/default).
-  (files.find(f => f.dataset.file === first) || files[0])?.classList.add('active');
+  const cur = files.find(f => f.dataset.file === first);
+  if (cur) { cur.classList.add('active'); reveal(cur); }
+
+  // Package-wide search: one request, results deep-link into the viewer.
+  const pkgq = document.getElementById('pkgq');
+  const pkgr = document.getElementById('pkgresults');
+  pkgq.addEventListener('keydown', e => {
+    if (e.key !== 'Enter') return;
+    const q = pkgq.value.trim();
+    pkgr.hidden = false;
+    if (q.length < 3) { pkgr.textContent = 'Type at least 3 characters.'; return; }
+    pkgr.textContent = 'Searching…';
+    fetch('/result/' + job + '/search?q=' + encodeURIComponent(q))
+      .then(r => r.json())
+      .then(d => {
+        pkgr.innerHTML = '';
+        const hits = d.hits || [];
+        if (!hits.length) { pkgr.textContent = 'No matches.'; return; }
+        const head = document.createElement('div');
+        head.className = 'pkgcount';
+        head.textContent = hits.length + (d.truncated ? '+' : '') + ' match(es)';
+        pkgr.appendChild(head);
+        hits.forEach(h => {
+          const el = document.createElement('div');
+          el.className = 'pkghit';
+          el.tabIndex = 0;
+          const loc = document.createElement('div');
+          loc.className = 'pkgloc';
+          loc.textContent = h.file.split('/').pop() + ':' + h.line
+            + (h.beyond_view ? ' (beyond viewer limit; download the file)' : '');
+          const tx = document.createElement('div');
+          tx.className = 'pkgtext';
+          tx.textContent = h.text;
+          el.append(loc, tx);
+          const go = () => {
+            const f = files.find(x => x.dataset.file === h.file);
+            if (f) { reveal(f); select(f, h.line); }
+          };
+          el.addEventListener('click', go);
+          el.addEventListener('keydown', ev => { if (ev.key === 'Enter') go(); });
+          pkgr.appendChild(el);
+        });
+      })
+      .catch(() => { pkgr.textContent = 'Search failed.'; });
+  });
 </script>
   %(history)s
 </body></html>"""
@@ -5343,104 +5456,17 @@ DIAG_PAGE = """<!doctype html>
     border-bottom:1px solid var(--row-border);vertical-align:top;
     overflow-wrap:anywhere;font-family:ui-monospace,Menlo,Consolas,monospace}
   details.section th{color:var(--muted);font-weight:600;background:var(--surface)}
-  .browser{display:flex;height:75vh;border-top:1px solid var(--border)}
-  .side{width:300px;flex:none;overflow:auto;border-right:1px solid var(--border);
-    background:var(--surface);padding:.5rem .35rem;font-size:.86rem}
-  .side details{margin:0}
-  .side summary{cursor:pointer;padding:.25rem .4rem;color:var(--fg);font-weight:600;
-    border-radius:6px;list-style:none;display:flex;align-items:center;gap:.35rem}
-  .side summary::before{content:'▸';color:var(--muted);font-size:.7rem;transition:.1s}
-  .side details[open]>summary::before{transform:rotate(90deg)}
-  .side .grp{padding-left:.6rem;border-left:1px solid var(--border);margin-left:.55rem}
-  .side .file{padding:.3rem .5rem;border-radius:6px;color:var(--muted);cursor:pointer;
-    white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-  .side .file:hover{background:var(--bg);color:var(--fg)}
-  .side .file.active{background:var(--accent);color:var(--accent-fg)}
-  .side .file.disabled{opacity:.45;cursor:default}
-  .side .file.disabled:hover{background:none;color:var(--muted)}
-  .pkgsearch{position:sticky;top:0;background:var(--surface);padding:.35rem 0 .5rem;z-index:2}
-  .pkgsearch input{width:100%%;box-sizing:border-box;padding:.4rem .6rem;
-    border:1px solid var(--border);border-radius:8px;background:var(--bg);
-    color:var(--fg);font:inherit;font-size:.85rem}
-  #pkgresults{margin-top:.4rem;max-height:14rem;overflow:auto;
-    border:1px solid var(--border);border-radius:8px;padding:.3rem}
-  .pkgcount{color:var(--muted);font-size:.75rem;padding:.15rem .3rem}
-  .pkghit{padding:.3rem .35rem;border-radius:6px;cursor:pointer}
-  .pkghit:hover{background:var(--bg)}
-  .pkgloc{font-weight:600;font-size:.75rem}
-  .pkgtext{color:var(--muted);font-size:.75rem;word-break:break-word}
-  .browser iframe{border:0;flex:1;height:100%%;display:block}
   .sr{position:absolute;width:1px;height:1px;margin:-1px;overflow:hidden;
     clip:rect(0 0 0 0);white-space:nowrap}
-  @media (max-width:700px){
-    .browser{flex-direction:column;height:auto}
-    .side{width:auto;max-height:16rem;border-right:0;
-      border-bottom:1px solid var(--border)}
-    .browser iframe{height:60vh;flex:none}
-  }
 </style></head><body>
   %(shell)s
   <div class="panels">
     %(dashboard)s
     %(sections)s
   </div>
-  <div class="browser">
-    <nav class="side" id="side">
-      <div class="pkgsearch">
-        <input id="pkgq" type="search" autocomplete="off"
-               placeholder="Search all files&hellip; (Enter)">
-        <div id="pkgresults" hidden></div>
-      </div>
-      %(tree)s</nav>
-    <iframe id="view" src="%(firstsrc)s"></iframe>
-  </div>
 <script>
   const job = %(jobjson)s;
-  const first = %(firstjson)s;
-  const side = document.getElementById('side');
-  const view = document.getElementById('view');
-  const files = [...side.querySelectorAll('.file')];
-  const dlfile = document.getElementById('dlfile');
   const dash = %(dashjson)s;
-  // Package-wide search: one request, results deep-link into the viewer.
-  const pkgq = document.getElementById('pkgq');
-  const pkgr = document.getElementById('pkgresults');
-  if (pkgq) pkgq.addEventListener('keydown', e => {
-    if (e.key !== 'Enter') return;
-    const q = pkgq.value.trim();
-    pkgr.hidden = false;
-    if (q.length < 3) { pkgr.textContent = 'Type at least 3 characters.'; return; }
-    pkgr.textContent = 'Searching…';
-    fetch('/result/' + job + '/search?q=' + encodeURIComponent(q))
-      .then(r => r.json())
-      .then(d => {
-        pkgr.innerHTML = '';
-        const hits = d.hits || [];
-        if (!hits.length) { pkgr.textContent = 'No matches.'; return; }
-        const head = document.createElement('div');
-        head.className = 'pkgcount';
-        head.textContent = hits.length + (d.truncated ? '+' : '') + ' match(es)';
-        pkgr.appendChild(head);
-        hits.forEach(h => {
-          const el = document.createElement('div');
-          el.className = 'pkghit';
-          const loc = document.createElement('div');
-          loc.className = 'pkgloc';
-          loc.textContent = h.file.split('/').pop() + ':' + h.line
-            + (h.beyond_view ? ' (beyond viewer limit; download the file)' : '');
-          const tx = document.createElement('div');
-          tx.className = 'pkgtext';
-          tx.textContent = h.text;
-          el.append(loc, tx);
-          el.addEventListener('click', () => {
-            const f = files.find(x => x.dataset.file === h.file);
-            if (f) select(f, h.line);
-          });
-          pkgr.appendChild(el);
-        });
-      })
-      .catch(() => { pkgr.textContent = 'Search failed.'; });
-  });
   // "Copy findings": dashboard as paste-ready markdown for a ticket/chat.
   const cf = document.getElementById('copyfindings');
   if (cf) cf.addEventListener('click', e => {
@@ -5471,55 +5497,17 @@ DIAG_PAGE = """<!doctype html>
       setTimeout(() => { cf.textContent = t; }, 1500);
     });
   });
-  function setDownload(name) {
-    if (!dlfile) return;
-    if (name) { dlfile.href = '/result/' + job + '/files/download?file=' +
-                              encodeURIComponent(name); dlfile.hidden = false; }
-    else { dlfile.hidden = true; }
+  // Findings ("Open evidence"), healthy rows and table cells open the
+  // evidence line in the Files tab.
+  function openSource(el) {
+    let url = '/result/' + job + '/files?file=' + encodeURIComponent(el.dataset.file);
+    if (el.dataset.line) url += '&line=' + encodeURIComponent(el.dataset.line);
+    location.href = url;
   }
-  // The viewer iframe is sandboxed without allow-same-origin, so the parent
-  // cannot drive its contentWindow — only set src. A fragment-only change
-  // (#L<n>) on an already-loaded file does not reliably re-scroll, so a
-  // deep-link into the log currently shown would land in the wrong place (or
-  // not move). Bump a nonce on every deep-link so the URL always changes and
-  // the browser does a fresh load that honours the #L anchor every time.
-  let navSeq = 0;
-  function select(el, line) {
-    files.forEach(f => f.classList.toggle('active', f === el));
-    let url = '/result/' + job + '/files/view?file=' +
-              encodeURIComponent(el.dataset.file);
-    if (line) url += '&n=' + (++navSeq) + '#L' + encodeURIComponent(line);
-    view.src = url;
-    setDownload(el.dataset.file);
-  }
-  side.addEventListener('click', ev => {
-    const f = ev.target.closest('.file');
-    if (f && f.dataset.file) select(f);
-  });
-  side.addEventListener('keydown', ev => {
-    if (ev.key !== 'Enter' && ev.key !== ' ') return;
-    const f = ev.target.closest('.file');
-    if (f && f.dataset.file) { ev.preventDefault(); select(f); }
-  });
-  (files.find(f => f.dataset.file === first) || null)?.classList.add('active');
-  setDownload(first);
-
-  // Findings ("Open evidence") and healthy rows deep-link to the evidence
-  // line in their source file.
-  function openSource(card) {
-    const f = files.find(x => x.dataset.file === card.dataset.file);
-    if (!f) return;
-    // Unfold the tree groups so the highlighted file is visible.
-    for (let d = f.closest('details'); d;
-         d = d.parentElement && d.parentElement.closest('details')) d.open = true;
-    select(f, card.dataset.line);
-    f.scrollIntoView({block: 'nearest'});
-    view.scrollIntoView({behavior: 'smooth', block: 'nearest'});
-  }
-  document.querySelectorAll('.jump[data-file],.seclink[data-file]').forEach(card => {
-    card.addEventListener('click', () => openSource(card));
-    card.addEventListener('keydown', ev => {
-      if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); openSource(card); }
+  document.querySelectorAll('.jump[data-file],.seclink[data-file]').forEach(el => {
+    el.addEventListener('click', () => openSource(el));
+    el.addEventListener('keydown', ev => {
+      if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); openSource(el); }
     });
   });
   // Cards that open a detail section instead of a file (e.g. Known error codes).
@@ -6175,10 +6163,11 @@ def _timeline_badge(state: str, summary: Optional[dict]) -> str:
 def render_result_shell(job_id: str, status: dict, active: str, *,
                         dash: Optional[dict] = None,
                         summary: Optional[dict] = None,
-                        actions: str = "", menu_extra: str = "") -> str:
+                        actions: str = "", menu_extra: str = "",
+                        files_count: Optional[int] = None) -> str:
     """Shared header of the result pages: top bar, context bar and the tab
-    strip (Overview / Timeline / Raw logs). Each tab is its own server-rendered
-    route; this only unifies the chrome. `active` is overview|timeline|logs.
+    strip (Overview / Timeline / Files). Each tab is its own server-rendered
+    route; this only unifies the chrome. `active` is overview|timeline|files.
     Every value from the package or upload is escaped here."""
     is_diag = status.get("kind") == "diag"
     from_inbox = status.get("source") == "api"
@@ -6229,7 +6218,9 @@ def render_result_shell(job_id: str, status: dict, active: str, *,
     else:
         tabs.append(tab("timeline", "Timeline", f"/result/{job_id}",
                         _timeline_badge(analysis_state, summary)))
-    tabs.append(tab("logs", "Raw logs", f"/result/{job_id}/cmtrace"))
+    tabs.append(tab("files", "Files", f"/result/{job_id}/files",
+                    f'<span class="pill">{files_count}</span>'
+                    if files_count else ""))
 
     # --- "More" menu -----------------------------------------------------
     items = [menu_extra] if menu_extra else []
@@ -7513,7 +7504,7 @@ async def cmtrace_view_upload(request: Request) -> Response:
     # No subprocess; mark the job as logs-only so the cmtrace routes serve it.
     write_status(job_id, state="logs", uploads=names[:5], created=time.time())
     bump_upload_count()
-    return RedirectResponse(url=f"/result/{job_id}/cmtrace", status_code=303)
+    return RedirectResponse(url=f"/result/{job_id}/files", status_code=303)
 
 
 # Cap the skipped-members list persisted in job.json (a hostile zip could
@@ -8346,7 +8337,7 @@ async def result(job_id: str) -> Response:
 
     state = status.get("state")
     if state == "logs":  # CMTrace-only job, no timeline report exists
-        return RedirectResponse(url=f"/result/{job_id}/cmtrace", status_code=303)
+        return RedirectResponse(url=f"/result/{job_id}/files", status_code=303)
     if state in ("running", "queued"):
         return HTMLResponse(BUSY_PAGE % {
             "nav": NAV, "footer": FOOTER, "job": job_id,
@@ -8359,11 +8350,13 @@ async def result(job_id: str) -> Response:
         # report stays available in a sandboxed iframe behind a toggle.
         summary = read_summary(job_id)
         names = upload_names(status, job_id)
+        files, _skipped, _base = await asyncio.to_thread(_files_for, job_id, status)
         return HTMLResponse(REPORT_PAGE % {
             "job": job_id, "jobjson": js_json(job_id),
             "ptitle": html_escape(names[0] if names else "logs"),
             "shell": render_result_shell(job_id, status, "timeline",
-                                         summary=summary),
+                                         summary=summary,
+                                         files_count=len(files)),
             "content": render_report_content(job_id, summary),
             "analysisjson": js_json("done"),
             "history": history_record_js(job_id, "timeline", "done", names),
@@ -8457,23 +8450,48 @@ def render_file_tree(paths: List[str], skipped: List[str] = ()) -> str:
     return render(tree)
 
 
+def _files_for(job_id: str, status: dict) -> tuple:
+    """(files, skipped, view_base) of the Files tab. Diagnostics packages
+    list every viewable file (logs, text, html, evtx) through the package
+    viewer; plain log uploads list their .log files through the CMTrace
+    viewer. Both views re-check membership, so the list is also the ACL."""
+    if status.get("kind") == "diag":
+        files = list_input_files(job_id, exts=DIAG_KEEP_EXTS)
+        skipped = [x.get("name", "") for x in status.get("skipped", [])
+                   if isinstance(x, dict) and x.get("name")]
+        return files, skipped, f"/result/{job_id}/files/view"
+    return list_input_logs(job_id), [], f"/result/{job_id}/cmtrace/view"
+
+
+@app.get("/result/{job_id}/files", response_class=HTMLResponse)
 @app.get("/result/{job_id}/cmtrace", response_class=HTMLResponse)
-async def cmtrace(job_id: str) -> Response:
-    """App-chrome page: a folder tree of raw logs + a sandboxed viewer iframe."""
-    status, err = _job_guard(job_id, missing="Logs not available.")
+async def files_tab(job_id: str, file: str = "", line: str = "") -> Response:
+    """Files tab: folder tree + package search on the left, the sandboxed
+    viewer on the full height of the page. /cmtrace is the old name of this
+    page (history entries and shared links still use it).
+
+    ?file=<path>&line=<n> preselects a file and line: deep-links from the
+    Overview (Open evidence, table cells) and the search land here."""
+    status, err = _job_guard(job_id, missing="Files not available.")
     if err is not None:
         return err
-    if status.get("state") not in ("done", "logs", "ready"):
+    is_diag = status.get("kind") == "diag"
+    if not is_diag and status.get("state") not in ("done", "logs"):
         return HTMLResponse("Logs not available.", status_code=404)
 
-    logs = await asyncio.to_thread(list_input_logs, job_id)
-    if not logs:
-        return notice_response("No raw logs found for this job.", 404)
+    files, skipped, view_base = await asyncio.to_thread(_files_for, job_id, status)
+    if not files:
+        return notice_response("No files found for this upload.", 404)
 
-    # Diagnostics jobs show device + verdict in the shell; timeline jobs the
-    # timeline counter. Logs-only jobs get a "Run timeline analysis" tab.
+    first = file if file in files else files[0]
+    ln = int(line) if line.isdigit() and 0 < int(line) < 10_000_000 else 0
+    firstsrc = (f"{view_base}?file={quote(first)}" + (f"#L{ln}" if ln else ""))
+    *dirs, leaf = first.split("/")
+    crumb = ((html_escape(" / ".join(dirs)) + " / " if dirs else "")
+             + f"<b>{html_escape(leaf)}</b>")
+
     dash = summary = None
-    if status.get("kind") == "diag":
+    if is_diag:
         dash = await asyncio.to_thread(read_dashboard, job_id)
         if (status.get("analysis") or {}).get("state") == "done":
             summary = await asyncio.to_thread(read_summary, job_id)
@@ -8485,18 +8503,23 @@ async def cmtrace(job_id: str) -> Response:
     # A logs-only job is its own history entry; a finished timeline or
     # diagnostics job viewed here keeps its existing entry (same id, update).
     job_state = status.get("state", "logs")
-    if status.get("kind") == "diag":
+    if is_diag:
         tool, job_state = "diag", "done"
     else:
         tool = "logs" if job_state == "logs" else "timeline"
-    return HTMLResponse(CMTRACE_PAGE % {
-        "job": job_id,
+    history = ("" if status.get("source") == "api"
+               else history_record_js(job_id, tool, job_state, names))
+    return HTMLResponse(FILES_PAGE % {
         "ptitle": html_escape(devname or (names[0] if names else "logs")),
-        "shell": render_result_shell(job_id, status, "logs",
-                                     dash=dash, summary=summary),
-        "tree": render_file_tree(logs), "first": quote(logs[0]),
-        "firstjson": js_json(logs[0]), "jobjson": js_json(job_id),
-        "history": history_record_js(job_id, tool, job_state, names),
+        "shell": render_result_shell(job_id, status, "files", dash=dash,
+                                     summary=summary, files_count=len(files)),
+        "tree": render_file_tree(files, skipped),
+        "crumb": crumb, "firstsrc": firstsrc,
+        "dlhref": f"/result/{job_id}/files/download?file={quote(first)}",
+        "dlhidden": "",
+        "jobjson": js_json(job_id), "firstjson": js_json(first),
+        "viewbasejson": js_json(view_base),
+        "history": history,
     })
 
 
@@ -8524,16 +8547,11 @@ async def cmtrace_view(job_id: str, file: str) -> Response:
 # --- Diagnostics package routes ------------------------------------------------
 
 def render_diag_page(job_id: str, status: dict) -> HTMLResponse:
-    """Overview tab of a diagnostics job: health cards, detail tables and (until
-    phase 4 of the GUI plan) the file browser. The timeline state is a counter
-    on the Timeline tab; its summary lives on that tab."""
+    """Overview tab of a diagnostics job: verdict, findings, healthy and
+    not-collected checks, detail tables. The timeline state is a counter on
+    the Timeline tab; the files live on the Files tab."""
     analysis = status.get("analysis") or {}
-    files = list_input_files(job_id, exts=DIAG_KEEP_EXTS)
-    skipped = [s.get("name", "") for s in status.get("skipped", [])
-               if isinstance(s, dict) and s.get("name")]
-    first = files[0] if files else ""
-    firstsrc = (f"/result/{job_id}/files/view?file={quote(first)}"
-                if first else "about:blank")
+    files, _skipped, _base = _files_for(job_id, status)
     summary = read_summary(job_id) if analysis.get("state") == "done" else None
     hist_state = ("busy" if analysis.get("state") in ("queued", "running")
                   else "done")
@@ -8542,7 +8560,7 @@ def render_diag_page(job_id: str, status: dict) -> HTMLResponse:
     shell = render_result_shell(
         job_id, status, "overview", dash=dash, summary=summary,
         actions='<a class="btn btn-ghost" id="copyfindings" href="#">Copy findings</a>',
-        menu_extra='<a id="dlfile" href="#">Download this file</a>')
+        files_count=len(files))
     return HTMLResponse(DIAG_PAGE % {
         "job": job_id,
         # Device name in the tab title: two open result tabs were otherwise
@@ -8552,9 +8570,7 @@ def render_diag_page(job_id: str, status: dict) -> HTMLResponse:
         "dashboard": render_dashboard_cards(dash, header=False),
         "sections": render_dashboard_sections(dash),
         "dashjson": js_json(dash or {}),
-        "tree": render_file_tree(files, skipped),
-        "firstsrc": firstsrc,
-        "jobjson": js_json(job_id), "firstjson": js_json(first),
+        "jobjson": js_json(job_id),
         "analysisjson": js_json(analysis.get("state", "none")),
         # Device drop-off jobs belong in the token inbox, not in the viewer's
         # personal "Recent uploads" history.
@@ -8728,6 +8744,7 @@ async def diag_timeline(job_id: str) -> Response:
     state = analysis.get("state", "none")
     summary = await asyncio.to_thread(read_summary, job_id) if state == "done" else None
     dash = await asyncio.to_thread(read_dashboard, job_id)
+    files, _skipped, _base = await asyncio.to_thread(_files_for, job_id, status)
     content = (render_report_content(job_id, summary) if state == "done"
                else render_analysis_card(job_id, analysis))
     devname = str((dash or {}).get("device", {}).get("name", "") or "")
@@ -8735,7 +8752,8 @@ async def diag_timeline(job_id: str) -> Response:
         "job": job_id, "jobjson": js_json(job_id),
         "ptitle": html_escape(devname or "diagnostics package"),
         "shell": render_result_shell(job_id, status, "timeline",
-                                     dash=dash, summary=summary),
+                                     dash=dash, summary=summary,
+                                     files_count=len(files)),
         "content": content,
         "analysisjson": js_json(state),
         "history": ("" if status.get("source") == "api"
@@ -8804,13 +8822,15 @@ def _safe_filename(name: str, default: str) -> str:
 
 @app.get("/result/{job_id}/files/download")
 async def diag_file_download(job_id: str, file: str) -> Response:
-    """Download one package file (the currently open file in the viewer)."""
+    """Download one file (the one open in the Files tab). Same membership
+    check as the viewers: only files the Files tab lists are served."""
     status, err = _job_guard(job_id, missing="Files not available.")
     if err is not None:
         return err
-    if status.get("kind") != "diag":
+    if status.get("kind") != "diag" and status.get("state") not in ("done", "logs"):
         return HTMLResponse("Files not available.", status_code=404)
-    if file not in await asyncio.to_thread(list_input_files, job_id, DIAG_KEEP_EXTS):
+    files, _skipped, _base = await asyncio.to_thread(_files_for, job_id, status)
+    if file not in files:
         return HTMLResponse("Unknown file.", status_code=404)
     path = job_dir(job_id) / "input" / file
     return FileResponse(path, filename=_safe_filename(Path(file).name, "file"),
