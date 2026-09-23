@@ -4583,12 +4583,73 @@ PAGE_CSS = """
   .sum-chip .warn, details.summary .st-warn{ color:var(--warn); font-weight:600; }
   details.summary .st-nd{ color:var(--muted); font-weight:600; }
   .sum-chip.active{ border-color:var(--accent); background:var(--accent-soft); }
+  /* --- Result shell (render_result_shell): one header for every result
+     page: top bar, context bar (what am I looking at) and the tab strip. --- */
+  .rshell{ background:var(--bg); border-bottom:1px solid var(--border); }
+  .rshell .topbar{ border-bottom:0; }
+  .rnav{ display:flex; align-items:center; gap:.15rem; margin-left:.5rem; margin-right:auto; }
+  .ctx{ display:flex; align-items:flex-start; flex-wrap:wrap; gap:.5rem 1rem;
+    padding:.2rem 1.25rem .7rem; }
+  .ctx h1{ margin:0; font-size:1.35rem; line-height:1.25; letter-spacing:-.01em;
+    display:flex; align-items:center; flex-wrap:wrap; gap:.55rem; overflow-wrap:anywhere; }
+  .ctx .meta{ display:flex; flex-wrap:wrap; gap:.3rem; margin-top:.4rem; }
+  .ctx .meta span{ border:1px solid var(--border); border-radius:999px; padding:.05rem .6rem;
+    font-size:.76rem; color:var(--muted); background:var(--surface); }
+  .ctx .acts{ margin-left:auto; display:flex; align-items:center; flex-wrap:wrap;
+    justify-content:flex-end; gap:.4rem; }
+  .ctx .btn{ padding:.45rem .9rem; font-size:.88rem; }
+  .pill{ display:inline-flex; align-items:center; gap:.35rem; border-radius:999px;
+    padding:.08rem .6rem; font-size:.76rem; font-weight:600; letter-spacing:0;
+    border:1px solid var(--unk-bd); background:var(--unk-bg); color:var(--muted);
+    white-space:nowrap; }
+  .pill.ok{ border-color:var(--ok-bd); background:var(--ok-bg); color:var(--ok); }
+  .pill.warn{ border-color:var(--warn-bd); background:var(--warn-bg); color:var(--warn); }
+  .pill.bad{ border-color:var(--bad-bd); background:var(--bad-bg); color:var(--bad); }
+  .pill.info{ border-color:var(--info-bd); background:var(--info-bg); color:var(--info); }
+  .rtabs{ display:flex; align-items:center; gap:.25rem; padding:0 1.25rem .6rem;
+    overflow-x:auto; scrollbar-width:none; }
+  .rtabs form{ display:inline; margin:0; }
+  .rtab{ display:inline-flex; align-items:center; gap:.45rem; padding:.38rem .85rem;
+    border:0; border-radius:999px; background:none; color:var(--muted); font:inherit;
+    font-size:.9rem; font-weight:500; white-space:nowrap; cursor:pointer; }
+  .rtab:hover{ background:var(--surface-2); color:var(--fg); text-decoration:none; }
+  .rtab[aria-current="page"]{ background:var(--surface-2); color:var(--fg); font-weight:600; }
+  .rtab.off{ opacity:.5; cursor:default; }
+  .rtab.off:hover{ background:none; color:var(--muted); }
+  .rtab.run{ border:1px dashed var(--border2); }
+  @media (max-width:700px){
+    .rnav{ display:none; }
+    .rtabs{ gap:.1rem; }
+    .rtab{ padding:.35rem .6rem; font-size:.86rem; gap:.3rem; }
+    .ctx .acts{ margin-left:0; justify-content:flex-start; width:100%; }
+  }
+  /* Timeline sub-task state card (Timeline tab of a diagnostics job). */
+  .acard{ border:1px solid var(--border); border-radius:12px; padding:.9rem 1.1rem;
+    background:var(--bg); box-shadow:var(--shadow-sm); display:flex; align-items:center;
+    gap:.8rem; flex-wrap:wrap; }
+  .acard.failed{ border-color:var(--bad-bd); background:var(--bad-bg); }
+  .acard .amuted{ color:var(--muted); font-size:.88rem; flex:1; min-width:12rem; }
+  .acard pre{ margin:.4rem 0 0; width:100%; max-height:14rem; }
+  .spin-sm{ width:1.1rem; height:1.1rem; border:2px solid var(--border);
+    border-top-color:var(--accent); border-radius:50%; flex:none;
+    animation:spin 1s linear infinite; }
 """
 
 _LOGO = ('<span class="dot"><svg width="15" height="15" viewBox="0 0 24 24" '
          'fill="none" stroke="#fff" stroke-width="2.5" stroke-linecap="round">'
          '<circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.5" y2="16.5"/>'
          '</svg></span>')
+
+_THEME_BTN = """<button class="navlink icon theme" type="button" aria-label="Toggle dark mode"
+            data-act="theme"><svg class="moon" width="14" height="14"
+        viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+        stroke-linecap="round" stroke-linejoin="round"><path
+        d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg><svg
+        class="sun" width="14" height="14" viewBox="0 0 24 24" fill="none"
+        stroke="currentColor" stroke-width="2" stroke-linecap="round"
+        stroke-linejoin="round"><circle cx="12" cy="12" r="4"/><path
+        d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20
+        12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"/></svg></button>"""
 
 NAV = ("""<header><nav class="nav" aria-label="Main">
   <a class="brand" href="/">%(logo)s Sherlog</a>
@@ -4604,16 +4665,7 @@ NAV = ("""<header><nav class="nav" aria-label="Main">
     <a class="navlink" href="#about" data-act="about">About</a>
   </span>
   <span class="navtools">
-    <button class="navlink icon theme" type="button" aria-label="Toggle dark mode"
-            data-act="theme"><svg class="moon" width="14" height="14"
-        viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
-        stroke-linecap="round" stroke-linejoin="round"><path
-        d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg><svg
-        class="sun" width="14" height="14" viewBox="0 0 24 24" fill="none"
-        stroke="currentColor" stroke-width="2" stroke-linecap="round"
-        stroke-linejoin="round"><circle cx="12" cy="12" r="4"/><path
-        d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20
-        12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"/></svg></button>
+%(themebtn)s
     <button class="navlink icon menu-btn" type="button" aria-label="Menu"
             aria-expanded="false" aria-controls="navlinks" data-act="menu"><svg
         width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor"
@@ -4649,7 +4701,7 @@ NAV = ("""<header><nav class="nav" aria-label="Main">
   d.addEventListener('click', function (e) { if (e.target === d) d.close(); });
 })();
 </script>
-</header>""" % {"logo": _LOGO, "inbox_nav": (
+</header>""" % {"logo": _LOGO, "themebtn": _THEME_BTN, "inbox_nav": (
     '<a class="navlink" href="/inbox">Inbox</a>' if ENABLE_UPLOAD_API else "")})
 
 FOOTER = ("""<footer>
@@ -5050,7 +5102,7 @@ REPORT_PAGE = """<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
 """ + _THEME_JS + """
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Sherlog &mdash; timeline report</title>
+<title>Sherlog &mdash; %(ptitle)s &middot; timeline</title>
 <link rel="stylesheet" href="/assets/app.css"><style>
   .report-wrap{max-width:1100px;margin:0 auto;padding:1.25rem;display:flex;
     flex-direction:column;gap:1rem}
@@ -5077,24 +5129,9 @@ REPORT_PAGE = """<!doctype html>
   details.report-orig iframe{border:1px solid var(--border);border-radius:8px;
     width:100%%;height:75vh;margin-top:.7rem;background:var(--bg)}
 </style></head><body>
-  <div class="topbar">
-    <a class="brand" href="/">%(logo)s Sherlog</a>
-    <span class="acts">
-      %(expiry)s
-      <a class="btn btn-ghost" href="/result/%(job)s">&larr; Device health</a>
-      <a class="btn btn-ghost" href="/result/%(job)s/cmtrace">Raw logs (CMTrace)</a>
-      <a class="btn btn-ghost" href="/diagnostics">New analysis</a>
-    </span>
-  </div>
+  %(shell)s
   <main class="report-wrap">
-    <h1>Timeline analysis</h1>
-    %(summary)s
-    %(empty)s
-    <details class="report-orig"%(reportopen)s>
-      <summary>Original report (as generated by the analysis script)</summary>
-      <iframe data-src="/result/%(job)s/report"
-              sandbox="allow-scripts allow-popups allow-popups-to-escape-sandbox"></iframe>
-    </details>
+    %(content)s
   </main>
   %(history)s
 <script>
@@ -5107,8 +5144,33 @@ REPORT_PAGE = """<!doctype html>
     if (d.open) load();
     d.addEventListener('toggle', () => { if (d.open) load(); });
   });
+  // While the analysis runs, poll and reload once it settles, so the report
+  // (or the failure) appears without user action.
+  const job = %(jobjson)s, analysisState = %(analysisjson)s;
+  if (analysisState === 'queued' || analysisState === 'running') {
+    const timer = setInterval(async () => {
+      try {
+        const r = await fetch('/result/' + job + '/status');
+        if (!r.ok) return;
+        const j = await r.json();
+        const now = j.analysis || j.state;
+        if (now !== 'queued' && now !== 'running') { clearInterval(timer); location.reload(); }
+      } catch (e) {}
+    }, 5000);
+  }
 </script>
 </body></html>"""
+
+
+def render_report_content(job_id: str, summary: Optional[dict]) -> str:
+    """Body of a Timeline tab whose report exists: native summary first, the
+    untrusted upstream report behind a toggle in a sandboxed iframe."""
+    summary_html = render_summary_panel(summary)
+    return (summary_html + ("" if summary_html else _REPORT_EMPTY_NOTE)
+            + f'<details class="report-orig"{"" if summary_html else " open"}>'
+            '<summary>Original report (as generated by the analysis script)</summary>'
+            f'<iframe data-src="/result/{job_id}/report" sandbox="allow-scripts '
+            'allow-popups allow-popups-to-escape-sandbox"></iframe></details>')
 
 # Shown above the original-report toggle when the report couldn't be summarized.
 _REPORT_EMPTY_NOTE = ('<p class="note">This report couldn\'t be summarized '
@@ -5118,10 +5180,11 @@ CMTRACE_PAGE = """<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
 """ + _THEME_JS + """
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Sherlog &mdash; raw logs (CMTrace)</title>
+<title>Sherlog &mdash; %(ptitle)s &middot; raw logs</title>
 <link rel="stylesheet" href="/assets/app.css"><style>
   html,body{height:100%%}
-  .body{display:flex;height:calc(100vh - 3.6rem)}
+  body{display:flex;flex-direction:column}
+  .body{display:flex;flex:1;min-height:0}
   .side{width:300px;flex:none;overflow:auto;border-right:1px solid var(--border);
     background:var(--surface);padding:.5rem .35rem;font-size:.86rem}
   .side details{margin:0}
@@ -5136,20 +5199,15 @@ CMTRACE_PAGE = """<!doctype html>
   .side .file.active{background:var(--accent);color:var(--accent-fg)}
   iframe{border:0;flex:1;height:100%%;display:block}
   @media (max-width:700px){
+    html,body{height:auto}
+    body{display:block}
     .body{flex-direction:column;height:auto}
     .side{width:auto;max-height:15rem;border-right:0;
       border-bottom:1px solid var(--border)}
     iframe{height:70vh;flex:none}
   }
 </style></head><body>
-  <div class="topbar">
-    <a class="brand" href="/">%(logo)s Sherlog</a>
-    <span class="acts">
-      %(expiry)s
-      %(timeline)s
-      <a class="btn btn-ghost" href="/cmtrace">New analysis</a>
-    </span>
-  </div>
+  %(shell)s
   <div class="body">
     <nav class="side" id="side">%(tree)s</nav>
     <iframe id="view" src="/result/%(job)s/cmtrace/view?file=%(first)s"></iframe>
@@ -5251,28 +5309,6 @@ DIAG_PAGE = """<!doctype html>
   /* Header row sticks just below the sticky summary. */
   details.section th{color:var(--muted);font-weight:600;position:sticky;top:2rem;
     z-index:1;background:var(--surface)}
-  .acard{border:1px solid var(--border);border-radius:10px;padding:.75rem 1rem;
-    background:var(--surface);display:flex;align-items:center;gap:.8rem;flex-wrap:wrap}
-  .acard.ready{border-color:var(--accent)}
-  .acard .amuted{color:var(--muted);font-size:.85rem;flex:1;min-width:12rem}
-  .acard pre{margin:.4rem 0 0;width:100%%;max-height:10rem}
-  .spin-sm{width:1.1rem;height:1.1rem;border:2px solid var(--border);
-    border-top-color:var(--accent);border-radius:50%%;flex:none;
-    animation:spin 1s linear infinite}
-  details.summary{background:var(--surface);border:1px solid var(--border);
-    border-radius:10px;padding:.4rem 1rem;font-size:.9rem;max-height:45vh;overflow:auto}
-  details.summary>summary{cursor:pointer;font-weight:600;padding:.25rem 0}
-  .sum-chips{display:flex;flex-wrap:wrap;gap:.4rem;margin:.5rem 0}
-  .sum-chip{border:1px solid var(--border);border-radius:999px;padding:.15rem .7rem;
-    background:var(--bg);white-space:nowrap}
-  details.summary h3{margin:.7rem 0 .3rem;font-size:.95rem}
-  details.summary table{border-collapse:collapse;width:100%%;font-size:.86rem}
-  details.summary th,details.summary td{text-align:left;padding:.25rem .6rem;
-    border-bottom:1px solid var(--border);vertical-align:top}
-  details.summary td.errcell{overflow-wrap:anywhere;min-width:18rem}
-  details.summary .code{margin:.2rem 0}
-  .sum-chip[data-type],.sum-chip[data-status]{cursor:pointer}
-  .sum-chip[data-type]:hover,.sum-chip[data-status]:hover{border-color:var(--accent)}
   .browser{display:flex;height:75vh;border-top:1px solid var(--border)}
   .side{width:300px;flex:none;overflow:auto;border-right:1px solid var(--border);
     background:var(--surface);padding:.5rem .35rem;font-size:.86rem}
@@ -5309,31 +5345,9 @@ DIAG_PAGE = """<!doctype html>
     .browser iframe{height:60vh;flex:none}
   }
 </style></head><body>
-  <div class="topbar">
-    <a class="brand" href="/">%(logo)s Sherlog</a>
-    <span class="acts">
-      %(expiry)s
-      <a class="btn btn-ghost" id="copyfindings" href="#">Copy findings</a>
-      <a class="btn btn-ghost" href="/result/%(job)s/cmtrace">Raw logs (CMTrace)</a>
-      <details class="menu"><summary class="btn btn-ghost">More</summary>
-        <div class="menu-pop">
-          <a id="dlfile" href="#">Download this file</a>
-          <a href="/result/%(job)s/download">Download package <small>.zip</small></a>
-          %(inboxlink)s
-          <a href="/result/%(job)s/dashboard.json" target="_blank"
-             rel="noopener">dashboard.json <small>export</small></a>
-          %(summarylink)s
-          <hr>
-          <a href="/diagnostics">New upload</a>
-          %(deleteitem)s
-        </div>
-      </details>
-    </span>
-  </div>
+  %(shell)s
   <div class="panels">
     %(dashboard)s
-    %(analysis)s
-    %(summary)s
     %(sections)s
   </div>
   <div class="browser">
@@ -5392,15 +5406,6 @@ DIAG_PAGE = """<!doctype html>
         });
       })
       .catch(() => { pkgr.textContent = 'Search failed.'; });
-  });
-  // "Delete from server" (More menu). Drop-off jobs have no such item: they
-  // belong to the token inbox (the route refuses them too).
-  const del = document.getElementById('deljob');
-  if (del) del.addEventListener('click', () => {
-    if (!confirm('Delete this upload from the server? This cannot be undone.')) return;
-    fetch('/result/' + job + '/delete', {method: 'POST'})
-      .then(r => r.json()).then(d => { if (d.deleted) location.href = '/'; })
-      .catch(() => {});
   });
   // "Copy findings": dashboard as paste-ready markdown for a ticket/chat.
   const cf = document.getElementById('copyfindings');
@@ -5821,7 +5826,7 @@ def _render_check_card(c: dict) -> str:
     )
 
 
-def render_dashboard_cards(dash: Optional[dict]) -> str:
+def render_dashboard_cards(dash: Optional[dict], header: bool = True) -> str:
     """Device header, verdict banner and the domain-grouped health cards.
 
     Rendered in the app origin, so every value — all parsed from untrusted
@@ -5831,7 +5836,7 @@ def render_dashboard_cards(dash: Optional[dict]) -> str:
     if not dash:
         return '<p class="devline">No dashboard data for this package.</p>'
     parts = []
-    device = dash.get("device", {})
+    device = dash.get("device", {}) if header else {}
     name = str(device.get("name", "") or "")
     chips = [str(b) for b in (device.get("tenant", ""),
                               device.get("os_build", ""),
@@ -5840,7 +5845,9 @@ def render_dashboard_cards(dash: Optional[dict]) -> str:
     boot = str(device.get("boot", "") or "")
     if boot:
         chips.append("boot " + boot[:16].replace("T", " ") + " UTC")
-    if name or chips:
+    if not header:
+        pass  # the result shell's context bar shows device + chips
+    elif name or chips:
         chip_html = "".join(f'<span class="chip">{html_escape(c)}</span>'
                             for c in chips)
         parts.append(
@@ -5988,25 +5995,181 @@ def render_dashboard_panel(dash: Optional[dict]) -> str:
 
 
 def render_analysis_card(job_id: str, analysis: dict) -> str:
-    """State card for the timeline-analysis sub-task of a diagnostics job."""
+    """State card for the timeline-analysis sub-task of a diagnostics job,
+    shown on the Timeline tab until the report exists (the Overview tab only
+    carries the state as a tab counter)."""
     state = analysis.get("state", "none")
     if state == "done":
-        return (f'<div class="acard ready"><strong>Timeline analysis ready.</strong>'
+        return (f'<div class="acard"><strong>Timeline analysis ready.</strong>'
                 f'<span class="amuted">Every Win32 app, policy and sync event '
                 f'from the IME logs on one timeline.</span>'
                 f'<a class="btn" href="/result/{job_id}/timeline">'
                 f'Open timeline report</a></div>')
     if state in ("queued", "running"):
         return ('<div class="acard"><span class="spin-sm"></span>'
-                'Running the timeline analysis on the IME logs in this package&hellip; '
-                'this page updates automatically.</div>')
+                '<span class="amuted">Running the timeline analysis on the IME logs '
+                'in this package&hellip; this page updates automatically.</span></div>')
     if state == "failed":
         stderr = html_escape(_clip(analysis.get("stderr", "") or "(empty)"))
-        return ('<div class="acard"><strong>Timeline analysis failed.</strong> '
-                'The package files below are still browsable.'
+        return ('<div class="acard failed"><strong>Timeline analysis failed.</strong>'
+                '<span class="amuted">The health checks and every file in the '
+                'package are still available on the other tabs.</span>'
                 f'<pre>{stderr}</pre></div>')
-    return ('<div class="acard">No IME logs found in this package &mdash; '
-            'timeline analysis skipped.</div>')
+    return ('<div class="acard"><span class="amuted">No IME logs found in this '
+            'package &mdash; timeline analysis skipped.</span></div>')
+
+
+# --- Result shell: one header for every result page ---------------------------
+
+def _count_issues(dash: Optional[dict]) -> tuple:
+    checks = (dash or {}).get("checks") or []
+    bad = sum(1 for c in checks if c.get("status") == "bad")
+    warn = sum(1 for c in checks if c.get("status") == "warn")
+    return bad, warn, len(checks)
+
+
+def _verdict_pill(dash: Optional[dict]) -> str:
+    """Short verdict next to the device name ("1 problem", "2 warnings")."""
+    bad, warn, total = _count_issues(dash)
+    if not total:
+        return ""
+    if bad:
+        text = f"{bad} problem{'s' if bad != 1 else ''}"
+        if warn:
+            text += f" &middot; {warn} warning{'s' if warn != 1 else ''}"
+        return f'<span class="pill bad">{text}</span>'
+    if warn:
+        return f'<span class="pill warn">{warn} warning{"s" if warn != 1 else ""}</span>'
+    return '<span class="pill ok">No problems</span>'
+
+
+def _timeline_badge(state: str, summary: Optional[dict]) -> str:
+    """Tab counter for the Timeline tab: the analysis state at a glance."""
+    if state in ("queued", "running"):
+        return '<span class="pill info">running&hellip;</span>'
+    if state == "failed":
+        return '<span class="pill bad">failed</span>'
+    if state == "done":
+        if summary and summary.get("parse_ok"):
+            failed = sum(int(c.get("failed", 0) or 0)
+                         for c in summary.get("counts", []))
+            if failed:
+                return f'<span class="pill bad">{failed} failed</span>'
+            return '<span class="pill ok">ready</span>'
+        return '<span class="pill">ready</span>'
+    return ""
+
+
+def render_result_shell(job_id: str, status: dict, active: str, *,
+                        dash: Optional[dict] = None,
+                        summary: Optional[dict] = None,
+                        actions: str = "", menu_extra: str = "") -> str:
+    """Shared header of the result pages: top bar, context bar and the tab
+    strip (Overview / Timeline / Raw logs). Each tab is its own server-rendered
+    route; this only unifies the chrome. `active` is overview|timeline|logs.
+    Every value from the package or upload is escaped here."""
+    is_diag = status.get("kind") == "diag"
+    from_inbox = status.get("source") == "api"
+    state = status.get("state")
+    analysis_state = ((status.get("analysis") or {}).get("state", "none")
+                      if is_diag else ("done" if state == "done" else state or ""))
+
+    # --- context bar: what am I looking at -------------------------------
+    device = (dash or {}).get("device", {}) if is_diag else {}
+    names = upload_names(status, job_id)
+    if is_diag:
+        title = str(device.get("name") or status.get("device") or "Diagnostics package")
+    elif names:
+        title = names[0] + (f" +{len(names) - 1} more" if len(names) > 1 else "")
+    else:
+        title = "Uploaded logs"
+    meta = [str(m) for m in (device.get("tenant"), device.get("os_build"),
+                             device.get("collected"), device.get("collector")) if m]
+    if is_diag and names:
+        meta.insert(0, names[0])
+    if from_inbox:
+        meta.append("via inbox")
+    meta_html = "".join(f"<span>{html_escape(m)}</span>" for m in meta)
+
+    # --- tabs ------------------------------------------------------------
+    def tab(key: str, label: str, href: str, badge: str = "") -> str:
+        cur = ' aria-current="page"' if key == active else ""
+        return f'<a class="rtab" href="{href}"{cur}>{label}{badge}</a>'
+
+    tabs = []
+    if is_diag:
+        bad, warn, total = _count_issues(dash)
+        n = bad + warn
+        ov_badge = (f'<span class="pill {"bad" if bad else "warn"}">{n}</span>' if n
+                    else ('<span class="pill ok">ok</span>' if total else ""))
+        tabs.append(tab("overview", "Overview", f"/result/{job_id}", ov_badge))
+        if analysis_state == "none":
+            tabs.append('<span class="rtab off" title="No IME logs in this package">'
+                        'Timeline</span>')
+        else:
+            tabs.append(tab("timeline", "Timeline", f"/result/{job_id}/timeline",
+                            _timeline_badge(analysis_state, summary)))
+    elif state == "logs":
+        # Logs-only upload: the timeline doesn't exist yet; the tab starts it.
+        tabs.append(f'<form method="post" action="/result/{job_id}/analyze">'
+                    '<button class="rtab run" type="submit" title="Run the timeline '
+                    'analysis on these logs">Run timeline analysis</button></form>')
+    else:
+        tabs.append(tab("timeline", "Timeline", f"/result/{job_id}",
+                        _timeline_badge(analysis_state, summary)))
+    tabs.append(tab("logs", "Raw logs", f"/result/{job_id}/cmtrace"))
+
+    # --- "More" menu -----------------------------------------------------
+    items = [menu_extra] if menu_extra else []
+    if is_diag:
+        items.append(f'<a href="/result/{job_id}/download">Download package '
+                     '<small>.zip</small></a>')
+    if from_inbox:
+        items.append('<a href="/inbox">Open inbox</a>')
+    if is_diag:
+        items.append(f'<a href="/result/{job_id}/dashboard.json" target="_blank" '
+                     'rel="noopener">dashboard.json <small>export</small></a>')
+    if analysis_state == "done":
+        items.append(f'<a href="/result/{job_id}/summary.json" target="_blank" '
+                     'rel="noopener">summary.json <small>export</small></a>')
+    items.append('<hr>')
+    items.append(f'<a href="{"/diagnostics" if is_diag else "/cmtrace"}">New upload</a>')
+    if not from_inbox:
+        # Drop-off jobs are deleted through the token inbox, never from here.
+        items.append('<button type="button" class="danger" id="deljob">'
+                     'Delete from server</button>')
+
+    inbox_nav = ('<a class="navlink" href="/inbox">Inbox</a>'
+                 if ENABLE_UPLOAD_API else "")
+    return (
+        '<header class="rshell">'
+        '<div class="topbar">'
+        f'<a class="brand" href="/">{_LOGO} Sherlog</a>'
+        '<nav class="rnav" aria-label="Main">'
+        '<a class="navlink" href="/">Upload</a>'
+        f'{inbox_nav}<a class="navlink" href="/errorcodes">Error codes</a></nav>'
+        f'{_THEME_BTN}</div>'
+        '<div class="ctx"><div>'
+        f'<h1>{html_escape(title)} {_verdict_pill(dash) if is_diag else ""}</h1>'
+        + (f'<div class="meta">{meta_html}</div>' if meta_html else "")
+        + '</div><div class="acts">'
+        f'{expiry_note(status)}{actions}'
+        '<details class="menu"><summary class="btn btn-ghost">More</summary>'
+        f'<div class="menu-pop">{"".join(items)}</div></details>'
+        '</div></div>'
+        f'<nav class="rtabs" aria-label="Views">{"".join(tabs)}</nav>'
+        '</header>'
+        + _SCRIPT_OPEN + """
+(function () {
+  const del = document.getElementById('deljob');
+  if (del) del.addEventListener('click', () => {
+    if (!confirm('Delete this upload from the server? This cannot be undone.')) return;
+    fetch('/result/' + """ + js_json(job_id) + """ + '/delete', {method: 'POST'})
+      .then(r => r.json()).then(d => { if (d.deleted) location.href = '/'; })
+      .catch(() => {});
+  });
+})();
+</script>""")
 
 
 # --- CMTrace viewer rendering ------------------------------------------------
@@ -8082,15 +8245,16 @@ async def result(job_id: str) -> Response:
     if state == "done":
         # Native, website-styled summary is primary; the untrusted upstream
         # report stays available in a sandboxed iframe behind a toggle.
-        summary_html = render_summary_panel(read_summary(job_id))
+        summary = read_summary(job_id)
+        names = upload_names(status, job_id)
         return HTMLResponse(REPORT_PAGE % {
-            "logo": _LOGO, "job": job_id,
-            "expiry": expiry_note(status),
-            "summary": summary_html,
-            "empty": _REPORT_EMPTY_NOTE if not summary_html else "",
-            "reportopen": "" if summary_html else " open",
-            "history": history_record_js(job_id, "timeline", "done",
-                                         upload_names(status, job_id)),
+            "job": job_id, "jobjson": js_json(job_id),
+            "ptitle": html_escape(names[0] if names else "logs"),
+            "shell": render_result_shell(job_id, status, "timeline",
+                                         summary=summary),
+            "content": render_report_content(job_id, summary),
+            "analysisjson": js_json("done"),
+            "history": history_record_js(job_id, "timeline", "done", names),
         })
 
     # failed
@@ -8194,21 +8358,17 @@ async def cmtrace(job_id: str) -> Response:
     if not logs:
         return notice_response("No raw logs found for this job.", 404)
 
-    # Link back to whichever overview this job has.
+    # Diagnostics jobs show device + verdict in the shell; timeline jobs the
+    # timeline counter. Logs-only jobs get a "Run timeline analysis" tab.
+    dash = summary = None
     if status.get("kind") == "diag":
-        timeline = (f'<a class="btn btn-ghost" href="/result/{job_id}">'
-                    f'&larr; Diagnostics</a>')
-    elif status.get("state") == "done":  # finished timeline job has a report
-        timeline = f'<a class="btn btn-ghost" href="/result/{job_id}">&larr; Timeline</a>'
-    elif status.get("state") == "logs":
-        # Logs-only upload: offer the timeline analysis on demand, closing the
-        # gap between the CMTrace viewer and the diagnostics flow.
-        timeline = (f'<form method="post" action="/result/{job_id}/analyze" '
-                    f'style="display:inline;margin:0">'
-                    f'<button class="btn" type="submit">Run timeline analysis'
-                    f'</button></form>')
-    else:
-        timeline = ""
+        dash = await asyncio.to_thread(read_dashboard, job_id)
+        if (status.get("analysis") or {}).get("state") == "done":
+            summary = await asyncio.to_thread(read_summary, job_id)
+    elif status.get("state") == "done":
+        summary = await asyncio.to_thread(read_summary, job_id)
+    names = upload_names(status, job_id)
+    devname = str((dash or {}).get("device", {}).get("name", "") or "")
 
     # A logs-only job is its own history entry; a finished timeline or
     # diagnostics job viewed here keeps its existing entry (same id, update).
@@ -8218,12 +8378,13 @@ async def cmtrace(job_id: str) -> Response:
     else:
         tool = "logs" if job_state == "logs" else "timeline"
     return HTMLResponse(CMTRACE_PAGE % {
-        "logo": _LOGO, "job": job_id, "timeline": timeline,
-        "expiry": expiry_note(status),
+        "job": job_id,
+        "ptitle": html_escape(devname or (names[0] if names else "logs")),
+        "shell": render_result_shell(job_id, status, "logs",
+                                     dash=dash, summary=summary),
         "tree": render_file_tree(logs), "first": quote(logs[0]),
         "firstjson": js_json(logs[0]), "jobjson": js_json(job_id),
-        "history": history_record_js(job_id, tool, job_state,
-                                     upload_names(status, job_id)),
+        "history": history_record_js(job_id, tool, job_state, names),
     })
 
 
@@ -8251,7 +8412,9 @@ async def cmtrace_view(job_id: str, file: str) -> Response:
 # --- Diagnostics package routes ------------------------------------------------
 
 def render_diag_page(job_id: str, status: dict) -> HTMLResponse:
-    """Diagnostics overview: dashboard, analysis card, summary, file browser."""
+    """Overview tab of a diagnostics job: health cards, detail tables and (until
+    phase 4 of the GUI plan) the file browser. The timeline state is a counter
+    on the Timeline tab; its summary lives on that tab."""
     analysis = status.get("analysis") or {}
     files = list_input_files(job_id, exts=DIAG_KEEP_EXTS)
     skipped = [s.get("name", "") for s in status.get("skipped", [])
@@ -8259,35 +8422,24 @@ def render_diag_page(job_id: str, status: dict) -> HTMLResponse:
     first = files[0] if files else ""
     firstsrc = (f"/result/{job_id}/files/view?file={quote(first)}"
                 if first else "about:blank")
-    summary = (render_summary_panel(read_summary(job_id))
-               if analysis.get("state") == "done" else "")
+    summary = read_summary(job_id) if analysis.get("state") == "done" else None
     hist_state = ("busy" if analysis.get("state") in ("queued", "running")
                   else "done")
     dash = read_dashboard(job_id)
-    from_inbox = status.get("source") == "api"
-    inboxlink = '<a href="/inbox">Open inbox</a>' if from_inbox else ""
-    summarylink = (f'<a href="/result/{job_id}/summary.json" target="_blank" '
-                   'rel="noopener">summary.json <small>export</small></a>'
-                   if analysis.get("state") == "done" else "")
-    # Drop-off jobs are deleted through the token inbox, never from here.
-    deleteitem = ("" if from_inbox else
-                  '<button type="button" class="danger" id="deljob">'
-                  'Delete from server</button>')
     devname = str((dash or {}).get("device", {}).get("name", "") or "")
+    shell = render_result_shell(
+        job_id, status, "overview", dash=dash, summary=summary,
+        actions='<a class="btn btn-ghost" id="copyfindings" href="#">Copy findings</a>',
+        menu_extra='<a id="dlfile" href="#">Download this file</a>')
     return HTMLResponse(DIAG_PAGE % {
-        "logo": _LOGO, "job": job_id,
+        "job": job_id,
         # Device name in the tab title: two open result tabs were otherwise
         # indistinguishable in history/bookmarks.
         "ptitle": html_escape(devname or "diagnostics package"),
-        "dashboard": render_dashboard_cards(dash),
+        "shell": shell,
+        "dashboard": render_dashboard_cards(dash, header=False),
         "sections": render_dashboard_sections(dash),
         "dashjson": js_json(dash or {}),
-        "expiry": expiry_note(status),
-        "inboxlink": inboxlink,
-        "summarylink": summarylink,
-        "deleteitem": deleteitem,
-        "analysis": render_analysis_card(job_id, analysis),
-        "summary": summary,
         "tree": render_file_tree(files, skipped),
         "firstsrc": firstsrc,
         "jobjson": js_json(job_id), "firstjson": js_json(first),
@@ -8451,24 +8603,34 @@ async def delete_result(job_id: str) -> JSONResponse:
 
 @app.get("/result/{job_id}/timeline", response_class=HTMLResponse)
 async def diag_timeline(job_id: str) -> Response:
-    """Full timeline report page for the analysis inside a diagnostics job."""
+    """Timeline tab of a diagnostics job. Shows the report once the analysis
+    is done; before that the analysis state (running, failed, no IME logs)
+    instead of a dead end, since the tab is always in the header."""
     status, err = _job_guard(job_id, missing="Timeline report not available.")
     if err is not None:
         return err
-    if (status.get("kind") != "diag"
-            or (status.get("analysis") or {}).get("state") != "done"):
+    if status.get("kind") != "diag":
         return notice_response("Timeline report not available.", 404)
 
-    summary_html = render_summary_panel(read_summary(job_id))
+    analysis = status.get("analysis") or {}
+    state = analysis.get("state", "none")
+    summary = await asyncio.to_thread(read_summary, job_id) if state == "done" else None
+    dash = await asyncio.to_thread(read_dashboard, job_id)
+    content = (render_report_content(job_id, summary) if state == "done"
+               else render_analysis_card(job_id, analysis))
+    devname = str((dash or {}).get("device", {}).get("name", "") or "")
     return HTMLResponse(REPORT_PAGE % {
-        "logo": _LOGO, "job": job_id,
-        "expiry": expiry_note(status),
-        "summary": summary_html,
-        "empty": _REPORT_EMPTY_NOTE if not summary_html else "",
-        "reportopen": "" if summary_html else " open",
+        "job": job_id, "jobjson": js_json(job_id),
+        "ptitle": html_escape(devname or "diagnostics package"),
+        "shell": render_result_shell(job_id, status, "timeline",
+                                     dash=dash, summary=summary),
+        "content": content,
+        "analysisjson": js_json(state),
         "history": ("" if status.get("source") == "api"
-                    else history_record_js(job_id, "diag", "done",
-                                           upload_names(status, job_id))),
+                    else history_record_js(
+                        job_id, "diag",
+                        "busy" if state in ("queued", "running") else "done",
+                        upload_names(status, job_id))),
     })
 
 

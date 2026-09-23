@@ -827,10 +827,11 @@ def test_diag_full_flow(client):
     # The timeline analysis on Apps-IME/Logs completes and serves a report.
     assert _wait_for_analysis(client, job_id) == "done"
     page2 = client.get(f"/result/{job_id}")
-    assert "Timeline analysis ready" in page2.text
-    assert "Analysis summary" in page2.text          # inline summary panel
+    assert f'href="/result/{job_id}/timeline"' in page2.text   # Timeline tab
+    assert "running&hellip;" not in page2.text                 # counter settled
     timeline = client.get(f"/result/{job_id}/timeline")
     assert timeline.status_code == 200
+    assert "Analysis summary" in timeline.text       # summary lives on the tab
     report = client.get(f"/result/{job_id}/report")
     assert report.status_code == 200
     assert "Win32App" in report.text
@@ -3655,22 +3656,36 @@ def test_failed_apps_section_is_first_and_open(tmp_path):
         "Win32 app deployment status")
 
 
-def test_diag_page_titles_and_orders_analysis_before_sections(client, monkeypatch):
+def test_diag_timeline_state_is_a_tab_counter_not_a_card(client, monkeypatch):
+    """The Overview tab no longer stacks the analysis card between the health
+    cards and the tables: the state is a counter on the Timeline tab, and the
+    Timeline tab itself explains it (running / failed / no IME logs)."""
     import app as app_module
     monkeypatch.setattr(app_module, "spawn_job", lambda coro: coro.close())
     r = client.post("/diagnostics-analyze",
                     files=[("files", ("d.zip", _zip_of_diag_package(),
                                       "application/zip"))],
                     follow_redirects=False)
-    page = client.get(r.headers["location"]).text
+    job_id = r.headers["location"].rstrip("/").rsplit("/", 1)[-1]
+    page = client.get(f"/result/{job_id}").text
     # Tab title carries the device name from the package.
-    assert "<title>Sherlog &mdash; " in page
-    # The page composes cards -> analysis card -> detail sections, so the
-    # timeline CTA can never end up below screens of tables.
-    tpl_body = app_module.DIAG_PAGE.split('<div class="panels">', 1)[1]
-    assert (tpl_body.index("%(dashboard)s") < tpl_body.index("%(analysis)s")
-            < tpl_body.index("%(sections)s"))
-    assert 'class="acard' in page
+    assert "<title>Sherlog &mdash; TESTPC-01</title>" in page
+    assert 'class="acard' not in page
+    tabs = page[page.index('class="rtabs"'):]
+    assert "running&hellip;" in tabs[:tabs.index("</nav>")]
+
+    tl = client.get(f"/result/{job_id}/timeline")
+    assert tl.status_code == 200                       # not a 404 dead end
+    assert "Running the timeline analysis" in tl.text
+    assert 'aria-current="page">Timeline' in tl.text
+
+    app_module.update_status(job_id, analysis={"state": "failed",
+                                               "stderr": "pwsh <boom>"})
+    tl = client.get(f"/result/{job_id}/timeline").text
+    assert "Timeline analysis failed" in tl
+    assert "pwsh &lt;boom&gt;" in tl and "<boom>" not in tl    # escaped
+    ov = client.get(f"/result/{job_id}").text
+    assert '<span class="pill bad">failed</span>' in ov
 
 
 # --- GUI phase 1: tokens, mobile nav, "More" menu ---------------------------
@@ -3716,7 +3731,7 @@ def _web_diag_job(client) -> str:
 def test_diag_actions_live_in_more_menu(client):
     job_id = _web_diag_job(client)
     page = client.get(f"/result/{job_id}").text
-    bar = page[page.index('<div class="topbar">'):page.index('<div class="panels">')]
+    bar = page[page.index('<header class="rshell">'):page.index('<div class="panels">')]
     assert 'details class="menu"' in bar
     pop = bar[bar.index('class="menu-pop"'):]
     assert 'id="dlfile"' in pop
@@ -3724,10 +3739,11 @@ def test_diag_actions_live_in_more_menu(client):
     assert f'href="/result/{job_id}/dashboard.json"' in pop
     assert 'id="deljob"' in pop                 # web uploads can be deleted here
     assert 'href="/inbox"' not in pop           # not a drop-off job
-    # Only two actions stay visible next to "More".
-    visible = bar[:bar.index('details class="menu"')]
-    assert "Copy findings" in visible and "Raw logs (CMTrace)" in visible
+    # Only "Copy findings" stays visible next to "More"; raw logs is a tab.
+    visible = bar[bar.index('class="ctx"'):bar.index('details class="menu"')]
+    assert "Copy findings" in visible
     assert "Download package" not in visible
+    assert f'href="/result/{job_id}/cmtrace">Raw logs' in bar
 
 
 def test_dropoff_diag_menu_links_inbox_and_has_no_delete(upload_client):
@@ -3739,3 +3755,44 @@ def test_dropoff_diag_menu_links_inbox_and_has_no_delete(upload_client):
     pop = page[page.index('class="menu-pop"'):page.index('<div class="panels">')]
     assert 'href="/inbox"' in pop and "Open inbox" in pop
     assert 'id="deljob"' not in pop   # drop-off jobs are deleted via the inbox
+
+
+# --- GUI phase 2: one result shell with tabs --------------------------------
+
+def test_result_shell_is_shared_by_all_three_tabs(client, monkeypatch):
+    import app as app_module
+    monkeypatch.setattr(app_module, "spawn_job", lambda coro: coro.close())
+    r = client.post("/diagnostics-analyze",
+                    files=[("files", ("d.zip", _zip_of_diag_package(),
+                                      "application/zip"))],
+                    follow_redirects=False)
+    job_id = r.headers["location"].rstrip("/").rsplit("/", 1)[-1]
+    pages = {"overview": f"/result/{job_id}",
+             "timeline": f"/result/{job_id}/timeline",
+             "logs": f"/result/{job_id}/cmtrace"}
+    labels = {"overview": "Overview", "timeline": "Timeline", "logs": "Raw logs"}
+    for key, url in pages.items():
+        page = client.get(url).text
+        assert page.count('<header class="rshell">') == 1, url
+        assert "<h1>TESTPC-01 " in page, url            # context bar
+        assert '<span class="pill warn">2 warnings</span>' in page, url
+        assert 'data-act="theme"' in page, url           # theme toggle everywhere
+        assert page.count('aria-current="page"') == 1, url
+        assert f'aria-current="page">{labels[key]}' in page, url
+        for other in pages.values():
+            assert f'href="{other}"' in page, (url, other)
+        assert 'id="deljob"' in page                     # web upload: deletable
+
+
+def test_logs_only_job_tabs_offer_the_analysis(client):
+    r = client.post("/cmtrace-view",
+                    files=[("files", ("a.log", b"<![LOG[hi]LOG]!>", "text/plain"))],
+                    follow_redirects=False)
+    job_id = r.headers["location"].split("/")[2]
+    page = client.get(f"/result/{job_id}/cmtrace").text
+    tabs = page[page.index('class="rtabs"'):page.index("</nav>", page.index('class="rtabs"'))]
+    assert "Overview" not in tabs                       # no dashboard for loose logs
+    assert f'action="/result/{job_id}/analyze"' in tabs
+    assert 'aria-current="page">Raw logs' in tabs
+    assert "<h1>a.log " in page
+    assert 'href="/cmtrace">New upload' in page

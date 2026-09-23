@@ -1,6 +1,6 @@
 # Voorstel: een betere GUI voor Sherlog
 
-Status: fase 1 is geïmplementeerd (zie "Fasering"), fase 2 tot 6 staan open. Klikbare mockup van de volledige
+Status: fase 1 en 2 zijn geïmplementeerd (zie "Fasering"), fase 3 tot 6 staan open. Klikbare mockup van de volledige
 GUI (Home, Result met de tabs Overview/Timeline/Files, Inbox, Error codes),
 met Engelse UI-teksten zoals de app zelf: `docs/gui-voorstel-mockup.html`
 (open lokaal in een browser) of online op
@@ -262,7 +262,29 @@ Fase 1 is puur CSS en template-tekst en kan in één PR.
   buiten het menu sluit het.
 - Topbar-CSS van de drie resultaatpagina's staat nu één keer in `PAGE_CSS`.
 - Het lettertype staat als `Inter, system-ui, …` in de stack maar wordt nog
-  niet geladen; self-hosten van Inter en JetBrains Mono volgt apart. Fase 2 en 3 zijn de
+  niet geladen; self-hosten van Inter en JetBrains Mono volgt apart.
+
+**Fase 2 is uitgevoerd.** Wat er is gebeurd:
+
+- `render_result_shell()` bouwt één kop voor alle resultaatpagina's:
+  topbalk (logo, Upload/Inbox/Error codes, thema-knop), contextbalk
+  (apparaat of uploadnaam, verdict-pill, tenant/datum/collector als chips,
+  "via inbox", verloopt-hint, acties, More-menu) en een tabrij.
+- Tabs per jobsoort: diagnostics-pakket **Overview · Timeline · Raw logs**;
+  losse logs **Run timeline analysis · Raw logs**; afgeronde timeline-job
+  **Timeline · Raw logs**. Elke tab blijft een eigen route
+  (`/result/<id>`, `/result/<id>/timeline`, `/result/<id>/cmtrace`).
+- Tabtellers: Overview toont het aantal problemen/waarschuwingen (of "ok"),
+  Timeline de analysestatus ("running…", "failed", "N failed" of "ready").
+  Zonder IME-logs is de Timeline-tab uitgeschakeld.
+- De analysekaart en de timeline-samenvatting staan niet meer op Overview.
+  `/result/<id>/timeline` geeft nu altijd een pagina: het rapport als het klaar
+  is, anders de status (met automatisch herladen) of de foutuitvoer, in plaats
+  van een 404.
+- De More-menu-items en de verwijderactie komen uit de shell en staan dus op
+  elke tab; "Download this file" alleen op Overview (daar zit de viewer).
+- De derde tab heet nog **Raw logs**: de volledige bestandsbrowser staat tot
+  fase 4 onderaan Overview. In fase 4 wordt deze tab **Files**. Fase 2 en 3 zijn de
 kern van het voorstel; fase 4 tot 6 kunnen los volgen.
 
 ## Bewust niet in dit voorstel
