@@ -2059,11 +2059,14 @@ def test_inbox_autorefresh_only_while_collecting(upload_client):
     would pop the browser's resend-form dialog)."""
     _ping(upload_client, "start")
     live = upload_client.post("/inbox", data={"token": _TOK})
-    assert 'id="rfrm"' in live.text and "30000" in live.text
+    # Match the timer call itself: a bare "30000" also turns up by chance in
+    # the random hex CSP nonce and made the negative check below flaky.
+    timer = '.submit();},30000);'
+    assert 'id="rfrm"' in live.text and timer in live.text
     _ping(upload_client, "failed", reason="boom")
     done = upload_client.post("/inbox", data={"token": _TOK})
     # The hidden POST form stays (deletes re-submit it), but no timer.
-    assert "30000" not in done.text
+    assert timer not in done.text
 
 
 def test_collect_status_is_exempt_from_basic_auth(tmp_path, monkeypatch):
