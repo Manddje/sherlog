@@ -1828,8 +1828,10 @@ def test_dropoff_uses_jobs_dir_and_shared_retention(tmp_path, monkeypatch):
         # Younger than the window: kept; older: removed.
         app_module.cleanup_old_jobs()
         assert d.is_dir()
+        # Retention follows the `created` stamp (what the expiry hint
+        # shows), not the directory mtime that status updates keep bumping.
         old = time.time() - 2 * 3600
-        os.utime(d, (old, old))
+        app_module.update_status(job_id, created=old)
         app_module.cleanup_old_jobs()
         assert not d.exists()
     importlib.reload(app_module)

@@ -44,6 +44,9 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import errno
+import fcntl
+import hmac
 import hashlib
 import json
 import logging
@@ -210,22 +213,45 @@ def delete_job(job_id: str) -> bool:
     return True
 
 
+def atomic_write_text(path: Path, text: str) -> None:
+    """Write via a unique temp file + os.replace, so a reader (or a crash
+    mid-write) never sees a truncated file and two writers never interleave
+    into one temp file."""
+    tmp = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+    try:
+        tmp.write_text(text, encoding="utf-8")
+        os.replace(tmp, path)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
+
+
+def atomic_write_json(path: Path, data) -> None:
+    atomic_write_text(path, json.dumps(data))
+
+
 def write_status(job_id: str, **fields) -> None:
-    status_path(job_id).write_text(json.dumps(fields), encoding="utf-8")
+    atomic_write_json(status_path(job_id), fields)
 
 
-def update_status(job_id: str, **fields) -> None:
+def update_status(job_id: str, **fields) -> bool:
     """Merge fields into job.json (read-modify-write, atomic replace).
 
     Used by diagnostics jobs where the analysis task updates only its own
-    sub-dict while the rest of the record stays intact.
+    sub-dict while the rest of the record stays intact. Returns False (and
+    writes nothing) when the job directory is gone — a job deleted while its
+    analysis was queued or running must not crash the task or resurrect a
+    half-empty job.json.
     """
+    if not job_dir(job_id).is_dir():
+        return False
     current = read_status(job_id) or {}
     current.update(fields)
-    p = status_path(job_id)
-    tmp = p.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps(current), encoding="utf-8")
-    os.replace(tmp, p)
+    try:
+        atomic_write_json(status_path(job_id), current)
+    except FileNotFoundError:
+        return False
+    return True
 
 
 def read_status(job_id: str) -> Optional[dict]:
@@ -264,10 +290,7 @@ def bump_upload_count() -> None:
     try:
         p = counter_path()
         p.parent.mkdir(parents=True, exist_ok=True)
-        tmp = p.with_suffix(".json.tmp")
-        tmp.write_text(json.dumps({"uploads": read_upload_count() + 1}),
-                       encoding="utf-8")
-        os.replace(tmp, p)
+        atomic_write_json(p, {"uploads": read_upload_count() + 1})
     except OSError:
         log.warning("upload counter bump failed", exc_info=True)
 
@@ -316,9 +339,7 @@ def _write_pending(hash_hex: str, devices: dict) -> None:
             p.unlink(missing_ok=True)
             return
         p.parent.mkdir(parents=True, exist_ok=True)
-        tmp = p.with_suffix(".json.tmp")
-        tmp.write_text(json.dumps({"devices": devices}), encoding="utf-8")
-        os.replace(tmp, p)
+        atomic_write_json(p, {"devices": devices})
     except OSError:
         log.warning("pending status write failed", exc_info=True)
 
@@ -474,15 +495,26 @@ def read_text_tolerant(path: Path, max_bytes: int = MAX_UPLOAD_BYTES) -> str:
 # IME logs use the CMTrace format, e.g.
 #   <![LOG[message]LOG]!><time="08:45:50.100" date="9-13-2023"
 #       component="IntuneManagementExtension" context="" type="1" thread="4" file="">
-# The message may span newlines, so match non-greedily with DOTALL.
-CMTRACE_RE = re.compile(
-    r'<!\[LOG\[(?P<msg>.*?)\]LOG\]!>'
+# The message may span newlines.
+#
+# Parsing is a linear scan, deliberately NOT one big DOTALL regex: a lazy
+# `<!\[LOG\[(.*?)\]LOG\]!>` rescans to the end of the text for every opening
+# marker without a matching close (quadratic), and Python's `re` holds the GIL
+# while it does — a few KB of crafted log froze the whole single-worker server.
+# Every search below is bounded by the next opening marker, so each byte is
+# visited a constant number of times.
+_LOG_OPEN = "<![LOG["
+_LOG_CLOSE = "]LOG]!>"
+# Attribute tail after `]LOG]!>`. Only ever matched inside a short window
+# (_CMTRACE_HEADER_WINDOW) so a tag without a closing `>` can't make the
+# `[^>]*?` runs scan the rest of the file.
+CMTRACE_HEADER_RE = re.compile(
     r'<time="(?P<time>[^"]*)"\s+date="(?P<date>[^"]*)"'
     r'\s+component="(?P<component>[^"]*)"'
     r'[^>]*?\btype="(?P<type>[^"]*)"'
-    r'[^>]*?\bthread="(?P<thread>[^"]*)"',
-    re.DOTALL,
+    r'[^>]*?\bthread="(?P<thread>[^"]*)"'
 )
+_CMTRACE_HEADER_WINDOW = 1024
 
 
 def _plain_records(chunk: str):
@@ -498,6 +530,54 @@ def _plain_records(chunk: str):
                "component": "", "type": "", "thread": "", "structured": False}
 
 
+def iter_cmtrace(text: str):
+    """Yield CMTrace records in order, linear in len(text).
+
+    A structured record needs `<![LOG[msg]LOG]!>` followed by the attribute
+    tail, all before the next `<![LOG[`; anything else (plain command output,
+    a truncated or malformed record) becomes per-line plain records, so no
+    content is dropped and a broken record can never swallow the next one.
+    """
+    n = len(text)
+    pos = 0          # start of text not yet emitted
+    while pos < n:
+        s = text.find(_LOG_OPEN, pos)
+        if s == -1:
+            break
+        body = s + len(_LOG_OPEN)
+        nxt = text.find(_LOG_OPEN, body)
+        seg_end = n if nxt == -1 else nxt
+        e = text.find(_LOG_CLOSE, body, seg_end)
+        m = None
+        if e != -1:
+            hdr = e + len(_LOG_CLOSE)
+            m = CMTRACE_HEADER_RE.match(
+                text, hdr, min(seg_end, hdr + _CMTRACE_HEADER_WINDOW))
+        if m is None:
+            # Not a well-formed record: keep it (and whatever precedes it) as
+            # plain lines and resume at the next opening marker.
+            yield from _plain_records(text[pos:seg_end])
+            pos = seg_end
+            continue
+        yield from _plain_records(text[pos:s])
+        yield {
+            "msg": text[body:e],
+            "time": m.group("time"),
+            "date": m.group("date"),
+            "component": m.group("component"),
+            "type": m.group("type"),
+            "thread": m.group("thread"),
+            "structured": True,
+        }
+        pos = m.end()
+        # Skip the trailing `... file="">` tail of the matched line.
+        tail = text.find(">", pos, min(seg_end, pos + _CMTRACE_HEADER_WINDOW))
+        if tail != -1:
+            pos = tail + 1
+    if pos < n:
+        yield from _plain_records(text[pos:])
+
+
 def parse_cmtrace(text: str, limit: int = CMTRACE_MAX_LINES) -> tuple[List[dict], bool]:
     """Parse CMTrace-formatted text into records.
 
@@ -506,44 +586,11 @@ def parse_cmtrace(text: str, limit: int = CMTRACE_MAX_LINES) -> tuple[List[dict]
     is dropped. Stops at `limit` records and reports truncation.
     """
     records: List[dict] = []
-    truncated = False
-    pos = 0
-
-    def add(rec: dict) -> bool:
-        nonlocal truncated
+    for rec in iter_cmtrace(text):
         if len(records) >= limit:
-            truncated = True
-            return False
+            return records, True
         records.append(rec)
-        return True
-
-    def add_plain(chunk: str) -> bool:
-        for rec in _plain_records(chunk):
-            if not add(rec):
-                return False
-        return True
-
-    for m in CMTRACE_RE.finditer(text):
-        if not add_plain(text[pos:m.start()]):
-            return records, truncated
-        if not add({
-            "msg": m.group("msg"),
-            "time": m.group("time"),
-            "date": m.group("date"),
-            "component": m.group("component"),
-            "type": m.group("type"),
-            "thread": m.group("thread"),
-            "structured": True,
-        }):
-            return records, truncated
-        pos = m.end()
-        # Skip the trailing `... file="">` tail of the matched line.
-        tail = text.find(">", pos)
-        if tail != -1 and text.find("<![LOG[", pos, tail) == -1:
-            pos = tail + 1
-
-    add_plain(text[pos:])
-    return records, truncated
+    return records, False
 
 
 def read_and_parse_cmtrace(path: Path) -> tuple[List[dict], bool]:
@@ -3039,8 +3086,7 @@ def _write_summary(report: Path, dest: Path) -> None:
     the job outcome must never depend on the summary."""
     try:
         html = report.read_text(encoding="utf-8", errors="replace")
-        dest.write_text(json.dumps(summarize(parse_report_summary(html))),
-                        encoding="utf-8")
+        atomic_write_json(dest, summarize(parse_report_summary(html)))
     except Exception:
         log.warning("could not write summary for %s", report.name, exc_info=True)
 
@@ -3058,9 +3104,74 @@ def read_summary(job_id: str) -> Optional[dict]:
 def _diag_state_writer(job_id: str):
     """State writer for the analysis sub-task of a diagnostics job: updates
     only the `analysis` dict in job.json, never the top-level job state."""
-    def set_state(**fields) -> None:
-        update_status(job_id, analysis=fields)
+    def set_state(**fields) -> bool:
+        return update_status(job_id, analysis=fields)
     return set_state
+
+
+# Subprocess output is kept as a bounded tail: pwsh can print megabytes of
+# progress/error text, and the whole stdout/stderr used to be buffered in
+# memory and stored in job.json (re-read on every status poll).
+_PROC_OUTPUT_TAIL = 64 * 1024
+
+# Only these environment variables reach the analysis/cabextract
+# subprocesses. They process untrusted uploads, so they must not inherit
+# secrets such as GRAPH_CLIENT_SECRET or APP_PASSWORD.
+_SUBPROCESS_ENV_KEYS = ("PATH", "HOME", "LANG", "LC_ALL", "TZ", "TMPDIR",
+                        "LONG_SCRIPT_THRESHOLD_SECONDS",
+                        "POWERSHELL_TELEMETRY_OPTOUT", "POWERSHELL_UPDATECHECK",
+                        "DOTNET_SYSTEM_GLOBALIZATION_INVARIANT")
+
+
+def subprocess_env() -> dict:
+    env = {k: os.environ[k] for k in _SUBPROCESS_ENV_KEYS if k in os.environ}
+    env.setdefault("PATH", "/usr/local/bin:/usr/bin:/bin")
+    env.setdefault("POWERSHELL_TELEMETRY_OPTOUT", "1")
+    return env
+
+
+# Live analysis processes and job tasks by job id, so deleting a job (or
+# shutting down) can stop its work instead of letting it run to the timeout
+# while holding a concurrency slot.
+_running_procs: "dict[str, asyncio.subprocess.Process]" = {}
+_job_tasks: "dict[str, asyncio.Task]" = {}
+
+
+def _kill_process_group(proc) -> None:
+    try:
+        os.killpg(proc.pid, signal.SIGKILL)
+    except (ProcessLookupError, PermissionError):
+        try:
+            proc.kill()
+        except ProcessLookupError:
+            pass
+
+
+def cancel_job(job_id: str) -> None:
+    """Stop a job's analysis: kill the running process tree and cancel the
+    task (which may still be waiting for a concurrency slot). Total."""
+    proc = _running_procs.pop(job_id, None)
+    if proc is not None and proc.returncode is None:
+        _kill_process_group(proc)
+    task = _job_tasks.pop(job_id, None)
+    if task is not None and not task.done():
+        task.cancel()
+
+
+async def _read_tail(stream, limit: int = _PROC_OUTPUT_TAIL) -> bytes:
+    buf = bytearray()
+    truncated = False
+    while True:
+        chunk = await stream.read(65536)
+        if not chunk:
+            break
+        buf += chunk
+        if len(buf) > limit:
+            del buf[:len(buf) - limit]
+            truncated = True
+    if truncated:
+        return b"[... output truncated ...]\n" + bytes(buf)
+    return bytes(buf)
 
 
 async def run_job(job_id: str, input_dir: Path, output_dir: Path,
@@ -3069,22 +3180,33 @@ async def run_job(job_id: str, input_dir: Path, output_dir: Path,
 
     `set_state(**fields)` records state transitions; the default writes the
     top-level job.json record (timeline jobs). Diagnostics jobs pass
-    `_diag_state_writer(job_id)` so the analysis is a sub-state.
+    `_diag_state_writer(job_id)` so the analysis is a sub-state. When the job
+    directory disappears (the job was deleted) the run stops quietly.
     """
     if set_state is None:
-        def set_state(**fields) -> None:
+        def set_state(**fields) -> bool:
             # Merge, don't replace: the upload route stores metadata (the
             # original upload names) in job.json that must survive state
             # transitions.
-            update_status(job_id, **fields)
-    set_state(state="queued")
-    async with _job_sem:  # wait here if we are at the concurrency cap
-        await _run_job_locked(job_id, input_dir, output_dir, set_state)
+            return update_status(job_id, **fields)
+    if set_state(state="queued") is False:
+        return
+    try:
+        async with _job_sem:  # wait here if we are at the concurrency cap
+            await _run_job_locked(job_id, input_dir, output_dir, set_state)
+    except asyncio.CancelledError:
+        # Deleted or shutting down: record it if the job still exists.
+        set_state(state="failed", exitcode=None, stdout="",
+                  stderr="The analysis was cancelled.")
+        raise
+    finally:
+        _running_procs.pop(job_id, None)
 
 
 async def _run_job_locked(job_id: str, input_dir: Path, output_dir: Path,
                           set_state) -> None:
-    set_state(state="running")
+    if set_state(state="running") is False:
+        return
     try:
         proc = await asyncio.create_subprocess_exec(
             str(RUN_SCRIPT), str(input_dir), str(output_dir),
@@ -3093,30 +3215,35 @@ async def _run_job_locked(job_id: str, input_dir: Path, output_dir: Path,
             # Own process group so a timeout can kill the whole tree: the
             # wrapper is bash and killing only it would orphan the pwsh child.
             start_new_session=True,
+            env=subprocess_env(),
         )
+        _running_procs[job_id] = proc
+        readers = asyncio.gather(_read_tail(proc.stdout), _read_tail(proc.stderr))
         try:
-            out_b, err_b = await asyncio.wait_for(
-                proc.communicate(), timeout=SCRIPT_TIMEOUT_SECONDS
-            )
+            await asyncio.wait_for(proc.wait(), timeout=SCRIPT_TIMEOUT_SECONDS)
         except asyncio.TimeoutError:
-            try:
-                os.killpg(proc.pid, signal.SIGKILL)
-            except (ProcessLookupError, PermissionError):
-                proc.kill()
+            _kill_process_group(proc)
             await proc.wait()
+            await readers
             set_state(
                 state="failed", exitcode=None,
                 stdout="", stderr=f"Analysis timed out after {SCRIPT_TIMEOUT_SECONDS}s.",
             )
             log.warning("job %s timed out", job_id)
             return
+        except asyncio.CancelledError:
+            _kill_process_group(proc)
+            readers.cancel()
+            raise
+        out_b, err_b = await readers
 
         stdout = out_b.decode("utf-8", "replace")
         stderr = err_b.decode("utf-8", "replace")
         rc = proc.returncode
         report = find_report(output_dir)
         if rc == 0 and report is not None:
-            _write_summary(report, output_dir / "summary.json")
+            await asyncio.to_thread(_write_summary, report,
+                                    output_dir / "summary.json")
             set_state(state="done", exitcode=0,
                       report=report.name, stdout=stdout, stderr=stderr)
             log.info("job %s done -> %s", job_id, report.name)
@@ -3124,8 +3251,11 @@ async def _run_job_locked(job_id: str, input_dir: Path, output_dir: Path,
             set_state(state="failed", exitcode=rc,
                       stdout=stdout, stderr=stderr)
             log.warning("job %s failed (exit %s)", job_id, rc)
+    except asyncio.CancelledError:
+        raise
     except Exception as e:  # pragma: no cover - defensive
-        set_state(state="failed", exitcode=None, stdout="", stderr=repr(e))
+        set_state(state="failed", exitcode=None, stdout="",
+                  stderr=f"Analysis could not run ({type(e).__name__}).")
         log.exception("job %s crashed", job_id)
 
 
@@ -3320,7 +3450,7 @@ def _cab_member_sizes(cab: Path) -> Optional[List[int]]:
     try:
         proc = subprocess.run([CABEXTRACT, "-l", str(cab)],
                               capture_output=True, text=True,
-                              timeout=CAB_TIMEOUT_SECONDS)
+                              timeout=CAB_TIMEOUT_SECONDS, env=subprocess_env())
     except (OSError, subprocess.TimeoutExpired):
         return None
     if proc.returncode != 0:
@@ -3363,7 +3493,8 @@ def expand_cab_files(root: Path, keep_exts: set,
         try:
             proc = subprocess.run(
                 [CABEXTRACT, "-q", "-d", str(dest), str(cab)],
-                capture_output=True, timeout=CAB_TIMEOUT_SECONDS)
+                capture_output=True, timeout=CAB_TIMEOUT_SECONDS,
+                env=subprocess_env())
             ok = proc.returncode == 0
         except (OSError, subprocess.TimeoutExpired):
             ok = False
@@ -3479,6 +3610,10 @@ def fail_interrupted_jobs() -> int:
         status = read_status(child.name)
         if not status:
             continue
+        if status.get("state") == "uploading":
+            # A reservation whose upload never finished: nothing usable.
+            shutil.rmtree(child, ignore_errors=True)
+            continue
         if status.get("kind") == "diag":
             analysis = status.get("analysis") or {}
             if analysis.get("state") in ("queued", "running"):
@@ -3496,13 +3631,28 @@ def fail_interrupted_jobs() -> int:
     return failed
 
 
+def job_created_at(child: Path) -> float:
+    """Creation time of a job: the `created` stamp in job.json (what the
+    "expires in" hint uses), else the directory mtime (orphans, old jobs).
+    Status updates and on-demand analyses bump the mtime, so the mtime alone
+    let jobs outlive the retention the UI promised."""
+    st = read_status(child.name) or {}
+    try:
+        created = float(st.get("created"))
+        if created > 0:
+            return created
+    except (TypeError, ValueError):
+        pass
+    return child.stat().st_mtime
+
+
 def cleanup_old_jobs() -> int:
     # All jobs (incl. device drop-off) share one retention: JOB_RETENTION_HOURS.
     cutoff = time.time() - JOB_RETENTION_HOURS * 3600
     removed = 0
     for child in iter_job_dirs():
         try:
-            if child.stat().st_mtime < cutoff:
+            if job_created_at(child) < cutoff:
                 shutil.rmtree(child, ignore_errors=True)
                 removed += 1
         except OSError:
@@ -3535,14 +3685,19 @@ def cleanup_pending_files() -> int:
     return removed
 
 
+CLEANUP_INTERVAL_SECONDS = 3600
+
+
 async def cleanup_loop() -> None:
     while True:
         try:
-            cleanup_old_jobs()
-            cleanup_pending_files()
+            # rmtree over up to thousands of multi-GB job dirs: never on the
+            # event loop.
+            await asyncio.to_thread(cleanup_old_jobs)
+            await asyncio.to_thread(cleanup_pending_files)
         except Exception:  # pragma: no cover
             log.exception("cleanup loop error")
-        await asyncio.sleep(3600)
+        await asyncio.sleep(CLEANUP_INTERVAL_SECONDS)
 
 
 # asyncio only holds weak references to tasks; without a strong reference a
@@ -3551,10 +3706,57 @@ async def cleanup_loop() -> None:
 _bg_tasks: set = set()
 
 
-def spawn_job(coro) -> None:
+def spawn_background(coro) -> asyncio.Task:
     task = asyncio.create_task(coro)
     _bg_tasks.add(task)
     task.add_done_callback(_bg_tasks.discard)
+    return task
+
+
+def spawn_job(coro):
+    return spawn_background(coro)
+
+
+def start_analysis(job_id: str, coro) -> None:
+    """spawn_job + remember the task per job, so cancel_job() can stop it."""
+    task = spawn_job(coro)
+    if isinstance(task, asyncio.Task):
+        _job_tasks[job_id] = task
+        task.add_done_callback(
+            lambda t, j=job_id: _job_tasks.pop(j, None)
+            if _job_tasks.get(j) is t else None)
+
+
+# --- Single-process guard ----------------------------------------------------
+# Job caps, the analysis semaphore, the upload counter, the pending-status
+# lock and fail_interrupted_jobs() all assume exactly ONE process owns
+# JOBS_DIR (a second uvicorn worker would, at startup, mark the first one's
+# running jobs as failed). Enforce it with an exclusive lock file.
+_worker_lock_fh = None
+
+
+def acquire_worker_lock() -> None:
+    global _worker_lock_fh
+    path = JOBS_DIR / ".worker.lock"
+    fh = open(path, "a+")
+    try:
+        fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        fh.close()
+        raise RuntimeError(
+            f"another Sherlog process already uses {JOBS_DIR}; run exactly one "
+            "uvicorn worker per JOBS_DIR (--workers 1)")
+    _worker_lock_fh = fh
+
+
+def release_worker_lock() -> None:
+    global _worker_lock_fh
+    if _worker_lock_fh is not None:
+        try:
+            fcntl.flock(_worker_lock_fh, fcntl.LOCK_UN)
+        finally:
+            _worker_lock_fh.close()
+            _worker_lock_fh = None
 
 
 # --- App lifespan ------------------------------------------------------------
@@ -3562,21 +3764,34 @@ def spawn_job(coro) -> None:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     JOBS_DIR.mkdir(parents=True, exist_ok=True)
-    fail_interrupted_jobs()
+    acquire_worker_lock()
+    await asyncio.to_thread(fail_interrupted_jobs)
     if not AUTH_ENABLED:
         log.warning("AUTH DISABLED: APP_USER/APP_PASSWORD not both set. App is OPEN.")
     else:
         log.info("Basic auth enabled for user %r", APP_USER)
     task = asyncio.create_task(cleanup_loop())
     # Warm the Intune setting-name cache in the background (only when Graph
-    # creds are set); never blocks startup or fails it.
+    # creds are set); never blocks startup or fails it. spawn_background keeps
+    # a strong reference (asyncio only holds weak ones).
     if GRAPH_ENABLED:
-        asyncio.create_task(asyncio.to_thread(refresh_csp_names))
-        asyncio.create_task(asyncio.to_thread(refresh_app_names))
+        spawn_background(asyncio.to_thread(refresh_csp_names))
+        spawn_background(asyncio.to_thread(refresh_app_names))
     try:
         yield
     finally:
         task.cancel()
+        # Stop analyses cleanly: kill their process groups and cancel the
+        # tasks, so nothing outlives the event loop (the next start marks
+        # them failed via fail_interrupted_jobs).
+        for job_id in list(_running_procs):
+            cancel_job(job_id)
+        pending = [t for t in list(_bg_tasks) if not t.done()]
+        for t in pending:
+            t.cancel()
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
+        release_worker_lock()
 
 
 app = FastAPI(title="Sherlog", lifespan=lifespan)
@@ -6318,8 +6533,8 @@ async def diagnostics_analyze(request: Request) -> Response:
                  analysis={"state": "queued" if ime_dir else "none"})
     bump_upload_count()
     if ime_dir is not None:
-        spawn_job(run_job(job_id, ime_dir, output_dir,
-                            _diag_state_writer(job_id)))
+        start_analysis(job_id, run_job(job_id, ime_dir, output_dir,
+                                       _diag_state_writer(job_id)))
     return RedirectResponse(url=f"/result/{job_id}", status_code=303)
 
 
@@ -6429,8 +6644,8 @@ async def api_diagnostics(request: Request) -> Response:
     # a failed earlier attempt) is history.
     await asyncio.to_thread(clear_pending, token, device)
     if ime_dir is not None:
-        spawn_job(run_job(job_id, ime_dir, output_dir,
-                            _diag_state_writer(job_id)))
+        start_analysis(job_id, run_job(job_id, ime_dir, output_dir,
+                                       _diag_state_writer(job_id)))
     return JSONResponse({"job_id": job_id, "url": f"/result/{job_id}"})
 
 
@@ -7336,7 +7551,7 @@ async def analyze_logs_job(job_id: str) -> Response:
         return notice_response("Analysis is not available for this job.", 409)
     base = job_dir(job_id)
     update_status(job_id, state="queued")
-    spawn_job(run_job(job_id, base / "input", base / "output"))
+    start_analysis(job_id, run_job(job_id, base / "input", base / "output"))
     return RedirectResponse(url=f"/result/{job_id}", status_code=303)
 
 
@@ -7367,7 +7582,8 @@ async def delete_result(job_id: str) -> JSONResponse:
         return JSONResponse(
             {"error": "use the token inbox to delete drop-off uploads"},
             status_code=403)
-    return JSONResponse({"deleted": delete_job(job_id)})
+    cancel_job(job_id)
+    return JSONResponse({"deleted": await asyncio.to_thread(delete_job, job_id)})
 
 
 @app.get("/result/{job_id}/timeline", response_class=HTMLResponse)
