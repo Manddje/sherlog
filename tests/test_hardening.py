@@ -574,3 +574,19 @@ def test_html_is_gzipped_but_downloads_are_not(mk):
     assert r.headers.get("content-encoding") == "gzip"
     # The nonce survives compression (replaced before gzip).
     assert mod._CSP_NONCE_SENTINEL not in r.text
+
+
+def test_collection_card_reports_redaction_outcome(monkeypatch, tmp_path):
+    mod = _load_app(monkeypatch, tmp_path)
+    pkg = tmp_path / "pkg"
+    pkg.mkdir()
+    (pkg / "_MANIFEST.json").write_text(json.dumps({
+        "CollectorVersion": "1.4.0", "WrapperVersion": "1.4.0", "Profile": "Remote",
+        "Anonymized": False,
+        "Redaction": {"Performed": True, "Ok": False, "FilesRemoved": 2,
+                      "AnonymizeGaps": []},
+        "Steps": [{"Name": "a", "Ok": True}]}))
+    dash = mod.build_dashboard(pkg)
+    card = {c["label"]: c for c in dash["checks"]}["Collection"]
+    assert card["status"] == "warn"
+    assert "2 file(s) removed" in card["detail"]

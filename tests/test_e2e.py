@@ -2191,9 +2191,15 @@ def test_device_scripts_are_ascii_only():
 def test_remediation_template_matches_shipped_file():
     """app.py must never carry a second, driftable copy of the remediation
     script; the inbox UI has to show exactly what admins would download."""
+    import hashlib
     import app as app_module
     on_disk = (REPO_ROOT / "Remediate-CollectToSherlog.ps1").read_text(encoding="utf-8")
-    assert app_module.load_remediation_template() == on_disk
+    # The only difference: the collector hash pin is filled in.
+    sha = hashlib.sha256(
+        (REPO_ROOT / "Collect-IntuneDiagnostics.ps1").read_bytes()).hexdigest().upper()
+    assert on_disk.count("<COLLECTOR-SHA256>") == 1
+    assert app_module.load_remediation_template() == on_disk.replace(
+        "<COLLECTOR-SHA256>", sha)
 
 
 def test_remediation_script_reports_result_line():

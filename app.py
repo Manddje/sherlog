@@ -2392,20 +2392,25 @@ def build_dashboard(input_dir: Path) -> dict:
     # Prefer the locale-invariant JSON twin (collector v1.2+); the text
     # export stays the evidence link target and the pre-1.2 fallback.
     ep_rows = _json_rows(read("endpoints_json"))
+    via_proxy = False
     if ep_rows is not None:
         endpoints = [{"endpoint": str(r.get("Endpoint", "")),
                       "reachable": bool(r.get("Reachable"))}
                      for r in ep_rows if r.get("Endpoint")]
+        # Collector >= 1.4 tests through the WinHTTP proxy when one is set
+        # (a direct TCP probe gave false "unreachable" on proxy-only networks).
+        via_proxy = any("proxy" in str(r.get("Method", "")).lower() for r in ep_rows)
     else:
         endpoints = parse_endpoint_connectivity(read("endpoints"))
     if endpoints:
         down = [e["endpoint"] for e in endpoints if not e["reachable"]]
+        suffix = " (tested through the WinHTTP proxy)" if via_proxy else ""
         checks.append({
             "label": "Intune/Entra endpoints",
             "status": "ok" if not down
                       else "warn" if len(down) < len(endpoints) else "bad",
             "detail": (f"{len(endpoints)} reachable" if not down
-                       else "unreachable: " + ", ".join(down)),
+                       else "unreachable: " + ", ".join(down)) + suffix,
             # Point at the first failing row when something is down.
             **link("endpoints",
                    *((rf"{re.escape(down[0])}\s.*\bFalse\b",) if down else ()),
@@ -2919,8 +2924,25 @@ def build_dashboard(input_dir: Path) -> dict:
         if isinstance(manifest, dict):
             ver = manifest.get("CollectorVersion")
             profile = manifest.get("Profile")
+            wrapper = manifest.get("WrapperVersion")
             if ver:
-                collector_version = f"collector v{ver}" + (f" ({profile})" if profile else "")
+                collector_version = (f"collector v{ver}" + (f" ({profile})" if profile else "")
+                                     + (f", wrapper v{wrapper}" if wrapper else ""))
+            # Collector >= 1.4 reports the redaction outcome. Files it could
+            # not redact were removed from the package (fail-closed), so the
+            # dashboard says which sources are missing on purpose.
+            red = manifest.get("Redaction") if isinstance(manifest.get("Redaction"), dict) else {}
+            red_notes = []
+            try:
+                removed = int(red.get("FilesRemoved") or 0)
+            except (TypeError, ValueError):
+                removed = 0
+            if removed:
+                red_notes.append(f"{removed} file(s) removed because they could not be redacted")
+            if red.get("Performed") and red.get("Ok") is False and not removed:
+                red_notes.append("redaction reported a problem")
+            if manifest.get("Anonymized") is False and red.get("AnonymizeGaps"):
+                red_notes.append("anonymization incomplete")
             steps = manifest.get("Steps")
             if isinstance(steps, list) and steps:
                 failed = [s.get("Name") for s in steps
@@ -2929,12 +2951,15 @@ def build_dashboard(input_dir: Path) -> dict:
                     str(s.get("Name", "")): str(s.get("Error") or "")
                     for s in steps
                     if isinstance(s, dict) and s.get("Ok") is False}
+                detail = (f"{len(failed)} of {len(steps)} step(s) failed: "
+                          + ", ".join(str(n) for n in failed[:3])
+                          if failed else f"all {len(steps)} collection steps completed")
+                if red_notes:
+                    detail += " · " + "; ".join(red_notes)
                 checks.append({
                     "label": "Collection",
-                    "status": "warn" if failed else "ok",
-                    "detail": (f"{len(failed)} of {len(steps)} step(s) failed: "
-                              + ", ".join(str(n) for n in failed[:3])
-                              if failed else f"all {len(steps)} collection steps completed"),
+                    "status": "warn" if (failed or red_notes) else "ok",
+                    "detail": detail,
                     **link("manifest"),
                 })
 
