@@ -1,6 +1,6 @@
 # Voorstel: een betere GUI voor Sherlog
 
-Status: fase 1 en 2 zijn geïmplementeerd (zie "Fasering"), fase 3 tot 6 staan open. Klikbare mockup van de volledige
+Status: fase 1 tot en met 3 zijn geïmplementeerd (zie "Fasering"), fase 4 tot 6 staan open. Klikbare mockup van de volledige
 GUI (Home, Result met de tabs Overview/Timeline/Files, Inbox, Error codes),
 met Engelse UI-teksten zoals de app zelf: `docs/gui-voorstel-mockup.html`
 (open lokaal in een browser) of online op
@@ -284,7 +284,31 @@ Fase 1 is puur CSS en template-tekst en kan in één PR.
 - De More-menu-items en de verwijderactie komen uit de shell en staan dus op
   elke tab; "Download this file" alleen op Overview (daar zit de viewer).
 - De derde tab heet nog **Raw logs**: de volledige bestandsbrowser staat tot
-  fase 4 onderaan Overview. In fase 4 wordt deze tab **Files**. Fase 2 en 3 zijn de
+  fase 4 onderaan Overview. In fase 4 wordt deze tab **Files**.
+
+**Fase 3 is uitgevoerd.** Wat er is gebeurd:
+
+- `render_dashboard_cards` is opgesplitst in `render_verdict`,
+  `render_findings`, `render_healthy` en `render_not_collected`, en stelt die
+  samen (met `header=True` nog steeds met de apparaatkop, voor bestaande
+  aanroepen).
+- **Verdict-strook**: dezelfde tekst en chips als voorheen, plus "N healthy ·
+  M not collected" en een verhoudingsbalk.
+- **Findings**: alleen `bad`/`warn` worden een kaart, in twee kolommen vanaf
+  1000 px. Elke kaart heeft een statusrand, het domein als label, de waarde,
+  "What now", een knop **Open evidence** met `bestand:regel` (of **Show
+  details** als de check naar een tabel verwijst) en "Why does this matter?"
+  als native `<details>`. De kaart zelf is geen link meer; de zwevende
+  "?"-knop en zijn script zijn weg.
+- **Healthy**: één regel per check, gegroepeerd per domein; regels met een
+  bron zijn klikbaar naar het bewijs.
+- **Not collected**: één ingeklapte regel met het aantal; open toont elke
+  check met zijn detailtekst, zodat "collection step failed: …" zichtbaar
+  blijft. Bij het Remote-profiel staat de hint om zonder `-Remote` te
+  draaien erbij.
+- **Detailtabellen**: geen `max-height`-scrollbox meer; de tabel scrollt
+  alleen horizontaal in een eigen container, de pagina doet het verticale
+  scrollen. Fase 2 en 3 zijn de
 kern van het voorstel; fase 4 tot 6 kunnen los volgen.
 
 ## Bewust niet in dit voorstel

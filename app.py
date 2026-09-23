@@ -5253,62 +5253,96 @@ DIAG_PAGE = """<!doctype html>
   .chip{border:1px solid var(--border);border-radius:999px;padding:.1rem .6rem;
     font-size:.78rem;color:var(--muted);background:var(--surface)}
   .ghead{margin:.4rem 0 0;font-size:.95rem;color:var(--muted)}
-  .gcount{margin-left:.5rem;font-size:.75rem;color:var(--warn);font-weight:600}
-  .verdict{display:block;padding:.45rem .9rem;border-radius:10px;
-    border:1px solid var(--border);margin:.2rem 0 .3rem;font-weight:600}
+  .verdict{display:flex;align-items:center;flex-wrap:wrap;gap:.5rem 1rem;
+    padding:.7rem 1rem;border-radius:12px;border:1px solid var(--border);
+    background:var(--bg);font-weight:600}
+  .verdict .vmain{flex:1;min-width:14rem}
   .verdict.bad{border-color:var(--bad-bd);background:var(--bad-bg);color:var(--bad)}
   .verdict.warn{border-color:var(--warn-bd);background:var(--warn-bg);color:var(--warn)}
   .verdict.ok{border-color:var(--ok-bd);background:var(--ok-bg);color:var(--ok)}
   .verdict .vchips{display:inline-flex;flex-wrap:wrap;gap:.35rem;
     margin-left:.6rem;vertical-align:middle}
   .vchip{border:1px solid var(--border);border-radius:999px;
-    padding:.05rem .55rem;font-size:.75rem;font-weight:400;
-    text-decoration:none}
+    padding:.05rem .55rem;font-size:.75rem;font-weight:400;text-decoration:none}
   .vchip.bad{border-color:var(--bad-bd);background:var(--bg);color:var(--bad)}
   .vchip.warn{border-color:var(--warn-bd);background:var(--bg);color:var(--warn)}
   .vchip:hover{border-color:currentColor;text-decoration:none}
-  /* Same column count in every group (auto-fit gave each group its own
-     widths: 3, 1, 3, 4, 5, 2 per row read ragged). */
-  .dash{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:.7rem}
-  @media (max-width:1000px){.dash{grid-template-columns:repeat(2,minmax(0,1fr))}}
-  @media (max-width:640px){.dash{grid-template-columns:1fr}}
-  .check{border:1px solid var(--border);border-radius:12px;padding:.65rem .9rem;
-    background:var(--bg);box-shadow:var(--shadow-sm)}
-  .check .lbl{font-weight:600;font-size:.92rem;display:flex;align-items:center;gap:.45rem}
-  .check .st{width:.65rem;height:.65rem;border-radius:50%%;display:inline-block;flex:none}
+  .verdict .vside{display:flex;flex-direction:column;align-items:flex-end;gap:.3rem}
+  .verdict .vsub{color:var(--muted);font-weight:400;font-size:.8rem}
+  .vbar{display:flex;width:13rem;max-width:100%%;height:.45rem;border-radius:999px;
+    overflow:hidden;background:var(--unk-bg)}
+  .vbar i{display:block;height:100%%}
+  .vbar .bad{background:var(--bad)}.vbar .warn{background:var(--warn)}
+  .vbar .ok{background:var(--ok)}.vbar .unknown{background:var(--unk-bd)}
+  .shead{margin:.3rem 0 .5rem;font-size:.8rem;font-weight:600;letter-spacing:.06em;
+    text-transform:uppercase;color:var(--muted)}
+  .shead span{margin-left:.4rem;text-transform:none;letter-spacing:0;font-weight:400;
+    color:var(--muted);opacity:.8}
+  .st{width:.62rem;height:.62rem;border-radius:50%%;display:inline-block;flex:none}
   .st.ok{background:var(--ok)}.st.bad{background:var(--bad)}
   .st.warn{background:var(--warn)}.st.unknown{background:var(--unk)}
-  .check .det{color:var(--muted);font-size:.85rem;margin-top:.2rem;word-break:break-word}
-  .check .adv{color:var(--fg);font-size:.78rem;margin-top:.3rem;
-    padding-top:.3rem;border-top:1px dashed var(--border);font-style:italic}
-  .check .whatbtn{float:right;margin:-.15rem -.2rem 0 .3rem;width:1.25rem;
-    height:1.25rem;line-height:1;border-radius:50%%;cursor:pointer;
-    border:1px solid var(--border);background:var(--bg);color:var(--muted);
-    font:inherit;font-size:.72rem;padding:0}
-  .check .whatbtn:hover{color:var(--fg);border-color:var(--muted)}
-  .check .what{color:var(--muted);font-size:.78rem;margin-top:.3rem;
-    padding-top:.3rem;border-top:1px dashed var(--border)}
-  .check[data-file],.check[data-section]{cursor:pointer}
-  .check[data-file]:hover,.check[data-file]:focus-visible,
-  .check[data-section]:hover,.check[data-section]:focus-visible{border-color:var(--accent)}
-  details.section{background:var(--surface);border:1px solid var(--border);
-    border-radius:10px;padding:.4rem 1rem;font-size:.85rem;max-height:45vh;overflow:auto}
-  /* Sticky summary so the collapse control stays reachable while scrolling. */
-  details.section>summary{cursor:pointer;font-weight:600;padding:.4rem 0;
-    position:sticky;top:0;z-index:2;background:var(--surface)}
+  /* Findings: one card per bad/warn check. */
+  .flist{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:.7rem}
+  @media (max-width:1000px){.flist{grid-template-columns:1fr}}
+  .finding{border:1px solid var(--border);border-left:4px solid var(--border);
+    border-radius:12px;padding:.8rem 1rem;background:var(--bg);box-shadow:var(--shadow-sm);
+    display:flex;flex-direction:column;gap:.45rem;min-width:0}
+  .finding.bad{border-left-color:var(--bad)}.finding.warn{border-left-color:var(--warn)}
+  .finding .fhead{display:flex;align-items:center;flex-wrap:wrap;gap:.45rem}
+  .finding .lbl{font-weight:600;font-size:.98rem}
+  .finding .fgrp{font-size:.7rem;font-weight:600;letter-spacing:.05em;
+    text-transform:uppercase;color:var(--muted)}
+  .finding .det{word-break:break-word}
+  .finding .adv{background:var(--surface);border-radius:8px;padding:.45rem .6rem;
+    font-size:.86rem}
+  .finding .adv b{color:var(--muted);font-weight:600;margin-right:.3rem}
+  .finding .fact{display:flex;align-items:center;flex-wrap:wrap;gap:.5rem}
+  .finding .fact .btn{padding:.3rem .7rem;font-size:.84rem}
+  .evsrc{color:var(--muted);font-size:.75rem;overflow-wrap:anywhere}
+  details.why{font-size:.84rem;color:var(--muted);border-top:1px dashed var(--border);
+    padding-top:.4rem}
+  details.why summary{cursor:pointer;color:var(--accent);width:max-content}
+  details.why p{margin:.35rem 0 0}
+  /* Healthy / not collected: one line per check. */
+  .healthy{border:1px solid var(--border);border-radius:12px;background:var(--bg);
+    box-shadow:var(--shadow-sm);overflow:hidden}
+  .hgrp{display:grid;grid-template-columns:11rem 1fr;gap:.2rem 1rem;
+    padding:.5rem 1rem;border-top:1px solid var(--row-border)}
+  .hgrp:first-child{border-top:0}
+  .hgrp .ghead{margin:.25rem 0 0;font-size:.74rem;font-weight:600;letter-spacing:.05em;
+    text-transform:uppercase;color:var(--muted)}
+  @media (max-width:640px){.hgrp{grid-template-columns:1fr}}
+  .hlist{list-style:none;margin:0;padding:0}
+  .hrow{display:flex;align-items:baseline;flex-wrap:wrap;gap:.2rem .45rem;
+    padding:.28rem .4rem;border-radius:6px;font-size:.9rem}
+  .hrow .st{width:.5rem;height:.5rem;align-self:center}
+  .hrow .det{color:var(--muted);font-size:.85rem;overflow-wrap:anywhere}
+  .hrow.jump{cursor:pointer}
+  .hrow.jump:hover,.hrow.jump:focus-visible{background:var(--surface)}
+  .hgrp-tag{margin-left:auto;font-size:.72rem;color:var(--muted)}
+  details.notc{border:1px dashed var(--border2);border-radius:12px;padding:.55rem 1rem;
+    background:var(--bg)}
+  details.notc>summary{cursor:pointer;font-weight:600}
+  details.notc>summary small{color:var(--muted);font-weight:400;margin-left:.35rem}
+  details.notc .nchint{color:var(--muted);font-size:.86rem;margin:.5rem 0}
+  details.notc .hlist{margin-top:.4rem}
+  /* Detail tables: a card each; the table scrolls sideways in its own box,
+     the page does the vertical scrolling (no nested scroll area). */
+  details.section{background:var(--bg);border:1px solid var(--border);
+    border-radius:12px;padding:.3rem 1rem .6rem;font-size:.85rem;box-shadow:var(--shadow-sm)}
+  details.section>summary{cursor:pointer;font-weight:600;padding:.45rem 0}
   details.section .secsearch{display:block;width:100%%;max-width:26rem;
     margin:.1rem 0 .5rem;padding:.4rem .6rem;font:inherit;
     border:1px solid var(--border2);border-radius:6px;background:var(--bg);color:var(--fg)}
   details.section .seclink{margin-left:.5rem;font-weight:400;font-size:.8rem;
     color:var(--accent);cursor:pointer}
-  details.section table{border-collapse:collapse;width:100%%;margin-top:.5rem;
-    table-layout:fixed}
-  details.section th,details.section td{text-align:left;padding:.25rem .5rem;
+  details.section .tw{overflow-x:auto}
+  details.section table{border-collapse:collapse;width:100%%;min-width:40rem;
+    margin-top:.3rem;table-layout:fixed}
+  details.section th,details.section td{text-align:left;padding:.3rem .5rem;
     border-bottom:1px solid var(--row-border);vertical-align:top;
     overflow-wrap:anywhere;font-family:ui-monospace,Menlo,Consolas,monospace}
-  /* Header row sticks just below the sticky summary. */
-  details.section th{color:var(--muted);font-weight:600;position:sticky;top:2rem;
-    z-index:1;background:var(--surface)}
+  details.section th{color:var(--muted);font-weight:600;background:var(--surface)}
   .browser{display:flex;height:75vh;border-top:1px solid var(--border)}
   .side{width:300px;flex:none;overflow:auto;border-right:1px solid var(--border);
     background:var(--surface);padding:.5rem .35rem;font-size:.86rem}
@@ -5470,7 +5504,8 @@ DIAG_PAGE = """<!doctype html>
   (files.find(f => f.dataset.file === first) || null)?.classList.add('active');
   setDownload(first);
 
-  // Health-check cards deep-link to the evidence line in their source file.
+  // Findings ("Open evidence") and healthy rows deep-link to the evidence
+  // line in their source file.
   function openSource(card) {
     const f = files.find(x => x.dataset.file === card.dataset.file);
     if (!f) return;
@@ -5481,19 +5516,7 @@ DIAG_PAGE = """<!doctype html>
     f.scrollIntoView({block: 'nearest'});
     view.scrollIntoView({behavior: 'smooth', block: 'nearest'});
   }
-  // "?" toggle with the plain-language explanation of a check. The card
-  // itself is a deep-link, so the button must not bubble into it.
-  document.querySelectorAll('.check .whatbtn').forEach(b => {
-    b.addEventListener('click', ev => {
-      ev.stopPropagation();
-      const box = b.closest('.check').querySelector('.what');
-      if (!box) return;
-      box.hidden = !box.hidden;
-      b.setAttribute('aria-expanded', String(!box.hidden));
-    });
-    b.addEventListener('keydown', ev => ev.stopPropagation());
-  });
-  document.querySelectorAll('.check[data-file],.seclink[data-file]').forEach(card => {
+  document.querySelectorAll('.jump[data-file],.seclink[data-file]').forEach(card => {
     card.addEventListener('click', () => openSource(card));
     card.addEventListener('keydown', ev => {
       if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); openSource(card); }
@@ -5506,7 +5529,7 @@ DIAG_PAGE = """<!doctype html>
     d.open = true;
     d.scrollIntoView({behavior: 'smooth', block: 'start'});
   }
-  document.querySelectorAll('.check[data-section]').forEach(card => {
+  document.querySelectorAll('.jump[data-section]').forEach(card => {
     card.addEventListener('click', () => openSection(card));
     card.addEventListener('keydown', ev => {
       if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); openSection(card); }
@@ -5784,50 +5807,184 @@ def _check_slug(label: str) -> str:
     return re.sub(r"[^a-z0-9]+", "-", str(label).lower()).strip("-")
 
 
-def _render_check_card(c: dict) -> str:
+def _check_status(c: dict) -> str:
     st = c.get("status", "unknown")
-    if st not in ("ok", "bad", "warn", "unknown"):
-        st = "unknown"
-    # Deep-link to the evidence in the file browser when the parser
-    # recorded a source (older dashboard.json files have none).
-    attrs = f' id="chk-{attr_escape(_check_slug(c.get("label", "")))}"'
+    return st if st in ("ok", "bad", "warn", "unknown") else "unknown"
+
+
+def _jump_attrs(c: dict) -> str:
+    """Deep-link attributes for an element that opens a check's evidence: the
+    source file/line in the file browser, or the matching detail section.
+    Empty when the parser recorded neither (older dashboard.json files)."""
     src = c.get("src")
     section_key = c.get("section")
     if isinstance(src, str) and src:
         line = c.get("line")
-        attrs += (f' data-file="{attr_escape(src)}"'
-                  + (f' data-line="{line}"' if isinstance(line, int) else "")
-                  + f' role="link" tabindex="0"'
-                    f' title="Open {attr_escape(src)}"')
-    elif isinstance(section_key, str) and section_key:
-        # Card opens its matching detail section instead of a file.
-        attrs += (f' data-section="{attr_escape(section_key)}"'
-                  f' role="link" tabindex="0" title="Show details"')
+        return (f' data-file="{attr_escape(src)}"'
+                + (f' data-line="{line}"' if isinstance(line, int) else "")
+                + f' title="Open {attr_escape(src)}"')
+    if isinstance(section_key, str) and section_key:
+        return f' data-section="{attr_escape(section_key)}" title="Show details"'
+    return ""
+
+
+def _render_check_card(c: dict) -> str:
+    """One finding (bad/warn check) as a card: status edge, domain, value,
+    "What now", an explicit evidence button and the "Why does this matter?"
+    explanation folded into the card (no floating toggle)."""
+    st = _check_status(c)
+    label = str(c.get("label", ""))
+    group = _GROUP.get(label, "Other")
     advice = c.get("advice")
-    adv_html = (f'<div class="adv">{html_escape(str(advice))}</div>'
+    adv_html = (f'<div class="adv"><b>What now</b> {html_escape(str(advice))}</div>'
                 if advice else "")
-    # "What does this check mean?" toggle. The text is looked up by label
-    # here (not stored in dashboard.json), so older jobs get it too.
-    what = _WHAT.get(str(c.get("label", "")))
-    what_btn = ('<button class="whatbtn" type="button" aria-expanded="false"'
-                ' title="What does this check mean?"'
-                ' aria-label="What does this check mean?">?</button>'
-                if what else "")
-    what_html = (f'<div class="what" hidden>{html_escape(what)}</div>'
-                 if what else "")
+    jump = _jump_attrs(c)
+    ev_html = ""
+    if jump:
+        src = c.get("src")
+        if isinstance(src, str) and src:
+            line = c.get("line")
+            loc = src + (f":{line}" if isinstance(line, int) else "")
+            ev_html = ('<div class="fact">'
+                       f'<button type="button" class="btn btn-ghost jump"{jump}>'
+                       'Open evidence &rarr;</button>'
+                       f'<code class="evsrc">{html_escape(loc)}</code></div>')
+        else:
+            ev_html = ('<div class="fact">'
+                       f'<button type="button" class="btn btn-ghost jump"{jump}>'
+                       'Show details &rarr;</button></div>')
+    # Explanation looked up by label here (not stored in dashboard.json), so
+    # older jobs get it too.
+    what = _WHAT.get(label)
+    why_html = (f'<details class="why"><summary>Why does this matter?</summary>'
+                f'<p>{html_escape(what)}</p></details>' if what else "")
     return (
-        f'<div class="check"{attrs}>'
-        f'{what_btn}'
-        f'<span class="lbl"><span class="st {st}" aria-hidden="true"></span>'
+        f'<article class="check finding {st}" id="chk-{attr_escape(_check_slug(label))}">'
+        f'<div class="fhead"><span class="st {st}" aria-hidden="true"></span>'
         f'<span class="sr">status {st}: </span>'
-        f'{html_escape(str(c.get("label", "")))}</span>'
+        f'<span class="lbl">{html_escape(label)}</span>'
+        f'<span class="fgrp">{html_escape(group)}</span></div>'
         f'<div class="det">{html_escape(str(c.get("detail", "")))}</div>'
-        f'{adv_html}{what_html}</div>'
+        f'{adv_html}{ev_html}{why_html}</article>'
     )
 
 
+def _render_check_row(c: dict, with_group: bool = False) -> str:
+    """One healthy or not-collected check as a single compact line."""
+    st = _check_status(c)
+    label = str(c.get("label", ""))
+    jump = _jump_attrs(c)
+    what = _WHAT.get(label)
+    cls = "hrow jump" if jump else "hrow"
+    attrs = f' id="chk-{attr_escape(_check_slug(label))}"'
+    if jump:
+        attrs += jump + ' role="link" tabindex="0"'
+    elif what:
+        attrs += f' title="{attr_escape(what)}"'
+    grp = (f'<span class="hgrp-tag">{html_escape(_GROUP.get(label, "Other"))}</span>'
+           if with_group else "")
+    return (f'<li class="{cls}"{attrs}><span class="st {st}" aria-hidden="true"></span>'
+            f'<span class="sr">status {st}: </span>'
+            f'<span class="lbl">{html_escape(label)}</span> '
+            f'<span class="det">{html_escape(str(c.get("detail", "")))}</span>{grp}</li>')
+
+
+def _by_group(checks: list) -> list:
+    """[(group, [checks])] in _GROUP_ORDER; unmapped labels land in "Other"."""
+    groups: "dict[str, list]" = {}
+    for c in checks:
+        groups.setdefault(_GROUP.get(str(c.get("label", "")), "Other"), []).append(c)
+    return [(g, groups[g]) for g in _GROUP_ORDER if groups.get(g)]
+
+
+def render_verdict(checks: list) -> str:
+    """Verdict strip: counts in words, chips that jump to each finding, and a
+    proportion bar findings / healthy / not collected."""
+    if not checks:
+        return ""
+    _sev = {"bad": 0, "warn": 1}
+    failing = sorted((c for c in checks if c.get("status") in ("bad", "warn")),
+                     key=lambda c: _sev[c.get("status")])
+    n_bad = sum(1 for c in failing if c.get("status") == "bad")
+    n_warn = len(failing) - n_bad
+    n_ok = sum(1 for c in checks if c.get("status") == "ok")
+    n_unk = len(checks) - len(failing) - n_ok
+    if failing:
+        bits = []
+        if n_bad:
+            bits.append(f"{n_bad} problem{'s' if n_bad != 1 else ''}")
+        if n_warn:
+            bits.append(f"{n_warn} warning{'s' if n_warn != 1 else ''}")
+        cls, head = ("bad" if n_bad else "warn"), " and ".join(bits) + " found"
+    else:
+        cls, head = "ok", "No problems found"
+    vchips = "".join(
+        f'<a class="vchip {c.get("status")}" '
+        f'href="#chk-{attr_escape(_check_slug(c.get("label", "")))}">'
+        f'{html_escape(str(c.get("label", "")))}</a>' for c in failing)
+    total = len(checks)
+
+    def seg(kind: str, n: int) -> str:
+        return (f'<i class="{kind}" style="width:{n * 100 / total:.1f}%"></i>'
+                if n else "")
+    sub = f"{n_ok} healthy &middot; {n_unk} not collected"
+    return (f'<div class="verdict {cls}"><div class="vmain">{html_escape(head)}'
+            + (f'<span class="vchips">{vchips}</span>' if vchips else "")
+            + f'</div><div class="vside"><span class="vsub">{sub}</span>'
+            f'<span class="vbar" aria-hidden="true">{seg("bad", n_bad)}'
+            f'{seg("warn", n_warn)}{seg("ok", n_ok)}{seg("unknown", n_unk)}</span>'
+            '</div></div>')
+
+
+def render_findings(checks: list) -> str:
+    """Bad/warn checks as cards, most severe first."""
+    _sev = {"bad": 0, "warn": 1}
+    failing = sorted((c for c in checks if c.get("status") in ("bad", "warn")),
+                     key=lambda c: _sev[c.get("status")])
+    if not failing:
+        return ""
+    return ('<section class="ov-sec"><h2 class="shead">Findings '
+            '<span>most severe first</span></h2><div class="flist">'
+            + "".join(_render_check_card(c) for c in failing) + '</div></section>')
+
+
+def render_healthy(checks: list) -> str:
+    """Healthy checks: one line each, grouped by domain."""
+    ok = [c for c in checks if c.get("status") == "ok"]
+    if not ok:
+        return ""
+    rows = "".join(
+        f'<div class="hgrp"><h3 class="ghead">{html_escape(g)}</h3>'
+        f'<ul class="hlist">{"".join(_render_check_row(c) for c in members)}</ul></div>'
+        for g, members in _by_group(ok))
+    return (f'<section class="ov-sec"><h2 class="shead">Healthy '
+            f'<span>{len(ok)} check{"s" if len(ok) != 1 else ""}</span></h2>'
+            f'<div class="healthy">{rows}</div></section>')
+
+
+def render_not_collected(checks: list, collector: str = "") -> str:
+    """Checks without data (status unknown) folded into one line; each keeps
+    its detail, so "collection step failed: …" stays visible when opened."""
+    unk = [c for c in checks if _check_status(c) == "unknown"]
+    if not unk:
+        return ""
+    remote = "(Remote)" in (collector or "")
+    note = (" &middot; collected with the Remote profile" if remote else "")
+    hint = ('<p class="nchint">The Remote profile skips these on purpose. Run '
+            '<code>Collect-IntuneDiagnostics.ps1</code> without <code>-Remote</code> '
+            'to include them.</p>' if remote else "")
+    rows = "".join(_render_check_row(c, with_group=True)
+                   for _g, members in _by_group(unk) for c in members)
+    return (f'<details class="notc"><summary>Not collected <small>{len(unk)} '
+            f'check{"s" if len(unk) != 1 else ""}{note}</small></summary>'
+            f'{hint}<ul class="hlist">{rows}</ul></details>')
+
+
 def render_dashboard_cards(dash: Optional[dict], header: bool = True) -> str:
-    """Device header, verdict banner and the domain-grouped health cards.
+    """Overview body, findings first: verdict strip, finding cards, healthy
+    checks as a compact list, not-collected checks folded away. With `header`
+    the device name and chips come first (the result shell shows them
+    otherwise).
 
     Rendered in the app origin, so every value — all parsed from untrusted
     package content — is escaped. Grouping comes from the renderer-side
@@ -5836,73 +5993,28 @@ def render_dashboard_cards(dash: Optional[dict], header: bool = True) -> str:
     if not dash:
         return '<p class="devline">No dashboard data for this package.</p>'
     parts = []
-    device = dash.get("device", {}) if header else {}
-    name = str(device.get("name", "") or "")
-    chips = [str(b) for b in (device.get("tenant", ""),
-                              device.get("os_build", ""),
-                              device.get("collected", ""),
-                              device.get("collector", "")) if b]
-    boot = str(device.get("boot", "") or "")
-    if boot:
-        chips.append("boot " + boot[:16].replace("T", " ") + " UTC")
-    if not header:
-        pass  # the result shell's context bar shows device + chips
-    elif name or chips:
+    device = dash.get("device", {})
+    if header:
+        name = str(device.get("name", "") or "")
+        chips = [str(b) for b in (device.get("tenant", ""),
+                                  device.get("os_build", ""),
+                                  device.get("collected", ""),
+                                  device.get("collector", "")) if b]
+        boot = str(device.get("boot", "") or "")
+        if boot:
+            chips.append("boot " + boot[:16].replace("T", " ") + " UTC")
         chip_html = "".join(f'<span class="chip">{html_escape(c)}</span>'
                             for c in chips)
         parts.append(
             '<div class="devhead">'
-            + (f'<h2>{html_escape(name)}</h2>' if name
-               else '<h2>Device health</h2>')
+            + (f'<h2>{html_escape(name)}</h2>' if name else '<h2>Device health</h2>')
             + (f'<div class="chips">{chip_html}</div>' if chip_html else "")
             + '</div>')
-    else:
-        parts.append('<div class="devhead"><h2>Device health</h2></div>')
     checks = dash.get("checks", [])
-    _sev = {"bad": 0, "warn": 1, "ok": 2, "unknown": 3}
-    failing = sorted((c for c in checks if c.get("status") in ("bad", "warn")),
-                     key=lambda c: _sev.get(c.get("status"), 3))
-    n_bad = sum(1 for c in failing if c.get("status") == "bad")
-    n_warn = len(failing) - n_bad
-    if checks:
-        if failing:
-            bits = []
-            if n_bad:
-                bits.append(f"{n_bad} problem{'s' if n_bad != 1 else ''}")
-            if n_warn:
-                bits.append(f"{n_warn} warning{'s' if n_warn != 1 else ''}")
-            cls = "bad" if n_bad else "warn"
-            # Each failing check becomes a clickable chip that scrolls to its
-            # card, so the banner answers *what* is wrong, not just how much.
-            vchips = "".join(
-                f'<a class="vchip {c.get("status")}" '
-                f'href="#chk-{attr_escape(_check_slug(c.get("label", "")))}">'
-                f'{html_escape(str(c.get("label", "")))}</a>'
-                for c in failing)
-            parts.append(f'<div class="verdict {cls}">'
-                         f'{html_escape(" and ".join(bits))} found'
-                         f'<span class="vchips">{vchips}</span></div>')
-        else:
-            parts.append('<div class="verdict ok">No problems found</div>')
-    # Domain groups; severity-first inside each group so a red card still
-    # tops its domain. Unmapped labels land in "Other".
-    by_group: "dict[str, list]" = {}
-    for c in checks:
-        by_group.setdefault(_GROUP.get(str(c.get("label", "")), "Other"),
-                            []).append(c)
-    for group in _GROUP_ORDER:
-        members = sorted(by_group.get(group, []),
-                         key=lambda c: _sev.get(c.get("status"), 3))
-        if not members:
-            continue
-        issues = sum(1 for c in members
-                     if c.get("status") in ("bad", "warn"))
-        badge = (f'<span class="gcount">{issues} issue(s)</span>'
-                 if issues else "")
-        parts.append(f'<h3 class="ghead">{html_escape(group)}{badge}</h3>')
-        parts.append('<div class="dash">'
-                     + "".join(_render_check_card(c) for c in members)
-                     + '</div>')
+    parts.append(render_verdict(checks))
+    parts.append(render_findings(checks))
+    parts.append(render_healthy(checks))
+    parts.append(render_not_collected(checks, str(device.get("collector", "") or "")))
     return "".join(parts)
 
 
@@ -5983,8 +6095,8 @@ def render_dashboard_sections(dash: Optional[dict]) -> str:
         parts.append(
             f'<details class="section"{keyattr}{openattr}><summary>'
             f'{html_escape(str(sec.get("title", "")))}{link}</summary>'
-            f'{search}<table>{colgroup}<thead><tr>{head}</tr></thead>'
-            f'<tbody>{body}</tbody></table></details>')
+            f'{search}<div class="tw"><table>{colgroup}<thead><tr>{head}</tr></thead>'
+            f'<tbody>{body}</tbody></table></div></details>')
     return "".join(parts)
 
 

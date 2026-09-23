@@ -778,8 +778,8 @@ def test_diag_full_flow(client):
     # Dashboard + browser are available immediately (state "ready").
     page = client.get(f"/result/{job_id}")
     assert page.status_code == 200
-    assert 'class="devhead"' in page.text            # device header block
-    assert 'class="ghead"' in page.text              # domain-grouped cards
+    assert "<h1>TESTPC-01 " in page.text              # context bar (result shell)
+    assert 'class="ghead"' in page.text              # healthy checks per domain
     assert "Entra joined" in page.text
     assert "graph.microsoft.com" in page.text       # unreachable endpoint named
     assert "1 of 2 expired" in page.text            # expired machine cert
@@ -3085,25 +3085,30 @@ def test_every_check_label_has_explanation():
     assert not unknown_domain, f"domains missing from _GROUP_ORDER: {unknown_domain}"
 
 
-def test_check_card_renders_explanation_toggle():
+def test_finding_card_folds_explanation_and_has_evidence_button():
+    """The "?" floating toggle became a native <details> inside the card, and
+    the evidence link is an explicit button (the card itself isn't a link, so
+    opening the explanation can't trigger a deep-link)."""
     import app as app_module
     html = app_module.render_dashboard_panel({"checks": [
         {"label": "IME service", "status": "bad", "detail": "Stopped",
          "src": "Apps-IME/service-status.txt", "line": 3},
     ]})
-    assert 'class="whatbtn"' in html
-    assert 'aria-expanded="false"' in html
-    assert 'class="what" hidden' in html
-    assert "Intune Management Extension service is running" in html
-    # Unknown labels simply get no toggle (older dashboard.json files).
+    card = html[html.index('<article class="check finding bad"'):]
+    assert '<details class="why"><summary>Why does this matter?</summary>' in card
+    assert "Intune Management Extension service is running" in card
+    assert ('class="btn btn-ghost jump" data-file="Apps-IME/service-status.txt" '
+            'data-line="3"') in card
+    assert "Apps-IME/service-status.txt:3" in card
+    assert 'class="whatbtn"' not in html
+    # Unknown labels simply get no explanation (older dashboard.json files).
     plain = app_module.render_dashboard_panel({"checks": [
-        {"label": "Some retired check", "status": "ok", "detail": "x"},
+        {"label": "Some retired check", "status": "bad", "detail": "x"},
     ]})
-    assert "whatbtn" not in plain
+    assert 'class="why"' not in plain
 
 
-def test_what_toggle_does_not_trigger_card_deeplink(client, monkeypatch):
-    """The card is itself a deep-link; the toggle must stop propagation."""
+def test_overview_deeplinks_bind_to_jump_targets(client, monkeypatch):
     import app as app_module
     monkeypatch.setattr(app_module, "spawn_job", lambda coro: coro.close())
     r = client.post("/diagnostics-analyze",
@@ -3111,8 +3116,9 @@ def test_what_toggle_does_not_trigger_card_deeplink(client, monkeypatch):
                                       "application/zip"))],
                     follow_redirects=False)
     page = client.get(r.headers["location"]).text
-    assert ".check .whatbtn" in page
-    assert "ev.stopPropagation();" in page
+    assert "querySelectorAll('.jump[data-file],.seclink[data-file]')" in page
+    assert "querySelectorAll('.jump[data-section]')" in page
+    assert ".check .whatbtn" not in page
 
 
 # --- Collector <-> server contract guard -------------------------------------
@@ -3796,3 +3802,78 @@ def test_logs_only_job_tabs_offer_the_analysis(client):
     assert 'aria-current="page">Raw logs' in tabs
     assert "<h1>a.log " in page
     assert 'href="/cmtrace">New upload' in page
+
+
+# --- GUI phase 3: findings first --------------------------------------------
+
+_P3_DASH = {"device": {"name": "PC-01", "collector": "collector v1.4 (Remote)"},
+            "checks": [
+    {"label": "Entra joined", "status": "ok", "detail": "YES",
+     "src": "Identity/dsregcmd-status.txt", "line": 4},
+    {"label": "BitLocker", "status": "bad", "detail": "C: Off"},
+    {"label": "Firewall", "status": "warn", "detail": "off: Public",
+     "src": "Network/firewall.txt"},
+    {"label": "Win32 apps", "status": "bad", "detail": "1 failed",
+     "section": "failedapps"},
+    {"label": "TPM", "status": "unknown",
+     "detail": "collection step failed: Get-Tpm not supported"},
+    {"label": "Disk space", "status": "unknown",
+     "detail": "not present in this package"},
+]}
+
+
+def test_only_findings_become_cards():
+    import app as app_module
+    html = app_module.render_dashboard_cards(_P3_DASH, header=False)
+    assert html.count('<article class="check finding') == 3
+    # Severity order among findings, and findings before healthy rows.
+    assert (html.index('id="chk-bitlocker"') < html.index('id="chk-firewall"')
+            < html.index('id="chk-entra-joined"'))
+    # A section-backed finding offers "Show details" instead of a file.
+    w32 = html[html.index('id="chk-win32-apps"'):]
+    assert 'data-section="failedapps"' in w32[:w32.index("</article>")]
+    assert "Show details &rarr;" in w32[:w32.index("</article>")]
+
+
+def test_healthy_checks_are_one_line_each_and_deeplink():
+    import app as app_module
+    html = app_module.render_dashboard_cards(_P3_DASH, header=False)
+    healthy = html[html.index('class="healthy"'):html.index('class="notc"')]
+    assert '<h3 class="ghead">Identity</h3>' in healthy
+    row = healthy[healthy.index('<li class="hrow jump" id="chk-entra-joined"'):]
+    assert 'data-file="Identity/dsregcmd-status.txt" data-line="4"' in row
+    assert 'role="link" tabindex="0"' in row
+    assert "<article" not in healthy
+
+
+def test_not_collected_folds_into_one_line_and_keeps_details():
+    import app as app_module
+    html = app_module.render_dashboard_cards(_P3_DASH, header=False)
+    notc = html[html.index('<details class="notc">'):]
+    assert "Not collected <small>2 checks &middot; collected with the Remote profile" in notc
+    assert "without <code>-Remote</code>" in notc
+    # A failed collection step keeps its reason instead of a bare grey chip.
+    assert "collection step failed: Get-Tpm not supported" in notc
+    assert "<details open" not in html     # folded by default
+    # Without the Remote profile there is no profile hint.
+    plain = app_module.render_not_collected(_P3_DASH["checks"], "collector v1.4 (Full)")
+    assert "Remote" not in plain
+
+
+def test_verdict_counts_healthy_and_not_collected():
+    import app as app_module
+    html = app_module.render_verdict(_P3_DASH["checks"])
+    assert "2 problems and 1 warning found" in html
+    assert "1 healthy &middot; 2 not collected" in html
+    assert html.count('<i class="') == 4          # bad, warn, ok, unknown segments
+
+
+def test_detail_tables_scroll_sideways_not_in_a_box(client, monkeypatch):
+    import app as app_module
+    html = app_module.render_dashboard_sections({"sections": [
+        {"title": "Policy settings", "columns": ["A"], "rows": [["x"]]}]})
+    assert '<div class="tw"><table>' in html
+    css = app_module.DIAG_PAGE
+    sec = css[css.index("  details.section{"):css.index("}", css.index("  details.section{"))]
+    assert "max-height" not in sec and "overflow:auto" not in sec
+    assert "details.section .tw{overflow-x:auto}" in css
