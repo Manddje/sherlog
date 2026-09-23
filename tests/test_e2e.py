@@ -3671,3 +3671,71 @@ def test_diag_page_titles_and_orders_analysis_before_sections(client, monkeypatc
     assert (tpl_body.index("%(dashboard)s") < tpl_body.index("%(analysis)s")
             < tpl_body.index("%(sections)s"))
     assert 'class="acard' in page
+
+
+# --- GUI phase 1: tokens, mobile nav, "More" menu ---------------------------
+
+def test_status_colours_come_from_tokens_in_both_themes(client):
+    """Status colours are semantic tokens defined for light *and* dark; no
+    component rule carries its own status hex (they drifted per page and
+    needed per-component dark overrides)."""
+    import re
+    css = client.get("/assets/app.css").text
+    root = css[css.index(":root{"):css.index("}", css.index(":root{"))]
+    dark = css[css.index("html.dark{"):css.index("}", css.index("html.dark{"))]
+    for tok in ("--ok:", "--ok-bg:", "--warn:", "--warn-bg:", "--bad:",
+                "--bad-bg:", "--unk:", "--info:", "--page:", "--accent-soft:"):
+        assert tok in root and tok in dark, tok
+    rules = css.replace(root, "").replace(dark, "")
+    old = r"#(16a34a|dc2626|d97706|1a7f37|c33|9a6700|047857|b91c1c|2563eb|1d4ed8)\b"
+    assert not re.search(old, rules)
+    import app as app_module
+    for name in ("DIAG_PAGE", "REPORT_PAGE", "INBOX_PAGE"):
+        page = getattr(app_module, name, "")
+        assert not re.search(old, page), name
+
+
+def test_nav_has_mobile_menu_button(client):
+    page = client.get("/").text
+    assert 'data-act="menu"' in page
+    assert 'aria-controls="navlinks"' in page and 'id="navlinks"' in page
+    assert "k==='menu'" in page            # handled by the shared head script
+    assert 'data-act="theme"' in page      # theme toggle stays outside the menu
+
+
+def _web_diag_job(client) -> str:
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr("Identity/dsregcmd-status.txt", "AzureAdJoined : YES\n")
+    r = client.post("/diagnostics-analyze",
+                    files={"files": ("IntuneDiag.zip", buf.getvalue(),
+                                     "application/zip")}, follow_redirects=False)
+    return r.headers["location"].rstrip("/").rsplit("/", 1)[-1]
+
+
+def test_diag_actions_live_in_more_menu(client):
+    job_id = _web_diag_job(client)
+    page = client.get(f"/result/{job_id}").text
+    bar = page[page.index('<div class="topbar">'):page.index('<div class="panels">')]
+    assert 'details class="menu"' in bar
+    pop = bar[bar.index('class="menu-pop"'):]
+    assert 'id="dlfile"' in pop
+    assert f'href="/result/{job_id}/download"' in pop
+    assert f'href="/result/{job_id}/dashboard.json"' in pop
+    assert 'id="deljob"' in pop                 # web uploads can be deleted here
+    assert 'href="/inbox"' not in pop           # not a drop-off job
+    # Only two actions stay visible next to "More".
+    visible = bar[:bar.index('details class="menu"')]
+    assert "Copy findings" in visible and "Raw logs (CMTrace)" in visible
+    assert "Download package" not in visible
+
+
+def test_dropoff_diag_menu_links_inbox_and_has_no_delete(upload_client):
+    r = upload_client.post("/api/diagnostics", content=_diag_zip(),
+                           headers={"X-Upload-Token": _TOK, "X-Device-Name": "PC01",
+                                    "Content-Type": "application/zip"})
+    job_id = r.json()["job_id"]
+    page = upload_client.get(f"/result/{job_id}").text
+    pop = page[page.index('class="menu-pop"'):page.index('<div class="panels">')]
+    assert 'href="/inbox"' in pop and "Open inbox" in pop
+    assert 'id="deljob"' not in pop   # drop-off jobs are deleted via the inbox

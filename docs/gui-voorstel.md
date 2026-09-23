@@ -240,7 +240,29 @@ Elke fase is los te mergen en laat de suite groen.
 | 5 | Homepage (tegels weg, recent omhoog); uploadpagina's op de shell | `LANDING_PAGE`, `UPLOAD_PAGE` |
 | 6 | Inbox vloot-lijst en setup-wizard; foutcodes gegroepeerd met sticky zoek | inbox-templates, `/errorcodes` |
 
-Fase 1 is puur CSS en template-tekst en kan in één PR. Fase 2 en 3 zijn de
+Fase 1 is puur CSS en template-tekst en kan in één PR.
+
+**Fase 1 is uitgevoerd.** Wat er is gebeurd:
+
+- `PAGE_CSS` heeft één tokenset in het PayloadKit-palet (`--page`, `--bg`,
+  `--accent`, `--surface`, …) plus semantische statustokens
+  `--ok/--warn/--bad/--unk/--info` met `-bg`- en `-bd`-varianten, in licht én
+  donker. Alle status-hexwaarden in componentregels en de losse
+  `html.dark`-overrides per component zijn weg; de sandboxed viewers
+  gebruiken dezelfde palet-waarden.
+- `--border2` en `--row-border` bestonden alleen in de viewer-CSS maar werden
+  ook op de diagnostics-pagina gebruikt; ze zijn nu gedefinieerd.
+- Het kaartgrid is 3, 2 of 1 kolom(men) per viewport, gelijk in elke groep.
+- Navigatie: pill-links, de huidige pagina krijgt `aria-current`, en onder
+  720 px verdwijnen de links achter een menuknop (thema-knop blijft zichtbaar).
+- Diagnostics-topbar: zichtbaar blijven Copy findings, Raw logs en **More**
+  (`<details class="menu">`) met Download this file, Download package, Open
+  inbox (drop-off), dashboard.json, summary.json (als de timeline klaar is),
+  New upload en Delete from server (niet voor drop-off-jobs). Esc of een klik
+  buiten het menu sluit het.
+- Topbar-CSS van de drie resultaatpagina's staat nu één keer in `PAGE_CSS`.
+- Het lettertype staat als `Inter, system-ui, …` in de stack maar wordt nog
+  niet geladen; self-hosten van Inter en JetBrains Mono volgt apart. Fase 2 en 3 zijn de
 kern van het voorstel; fase 4 tot 6 kunnen los volgen.
 
 ## Bewust niet in dit voorstel

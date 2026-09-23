@@ -4329,49 +4329,86 @@ if STATIC_DIR.is_dir():
 # --- HTML pages --------------------------------------------------------------
 
 PAGE_CSS = """
-  :root{ --bg:#ffffff; --fg:#1f2937; --muted:#6b7280; --accent:#2563eb;
-    --border:#e5e7eb; --surface:#f9fafb; --radius:8px; }
+  /* Design tokens (palette shared with payloadkit.app). Components use these
+     names only; status colours come from the semantic ok/warn/bad/unk/info
+     sets, never from hex literals, so both themes stay in sync. --page is the
+     body ground, --bg the card/input surface on top of it. */
+  :root{ --page:#fafafa; --bg:#ffffff; --fg:#0a0a0a; --muted:#6e7278;
+    --accent:#2d69ea; --accent-hover:#2458c9; --accent-fg:#ffffff;
+    --accent-soft:rgba(45,105,234,.08);
+    --border:#e4e6ea; --border2:#d4d7dd; --row-border:#eef0f3;
+    --surface:#f5f7f9; --surface-2:#eef0f4; --radius:10px;
+    --shadow-sm:0 1px 2px rgba(0,0,0,.05); --shadow-md:0 8px 24px rgba(0,0,0,.12);
+    --ok:#15803d; --ok-bg:#f0fdf4; --ok-bd:#bbf7d0;
+    --warn:#b45309; --warn-bg:#fffbeb; --warn-bd:#fde68a;
+    --bad:#b91c1c; --bad-bg:#fef2f2; --bad-bd:#fecaca;
+    --unk:#9ca3af; --unk-bg:#f2f3f5; --unk-bd:#e4e6ea;
+    --info:#1d4ed8; --info-bg:#eff6ff; --info-bd:#bfdbfe; }
   /* Dark theme: the head script toggles .dark on <html> (localStorage
      "sherlog.theme", falling back to prefers-color-scheme). */
-  html.dark{ --bg:#0f172a; --fg:#e2e8f0; --muted:#94a3b8; --accent:#3b82f6;
-    --border:#293548; --surface:#16202f; }
-  html.dark .btn:hover{ background:#2563eb; }
-  html.dark .recent .state.done{ background:rgba(16,185,129,.12);
-    border-color:#065f46; color:#34d399; }
-  html.dark .recent .state.failed{ background:rgba(239,68,68,.12);
-    border-color:#7f1d1d; color:#f87171; }
-  /* Status text colours on the result pages need lighter shades on dark. */
-  html.dark .sum-chip .ok, html.dark details.summary .st-ok{ color:#4ade80; }
-  html.dark .sum-chip .bad, html.dark details.summary .st-bad{ color:#f87171; }
-  html.dark .sum-chip .warn, html.dark details.summary .st-warn{ color:#fbbf24; }
-  html.dark details.summary .st-nd{ color:#94a3b8; }
+  html.dark{ --page:#0c0d0f; --bg:#181b1e; --fg:#fafafa; --muted:#8c8f95;
+    --accent:#3e7cff; --accent-hover:#5a8fff; --accent-soft:rgba(62,124,255,.14);
+    --border:rgba(255,255,255,.09); --border2:rgba(255,255,255,.15);
+    --row-border:rgba(255,255,255,.05);
+    --surface:#1f2226; --surface-2:#24272b;
+    --shadow-sm:none; --shadow-md:0 8px 24px rgba(0,0,0,.5);
+    --ok:#4ade80; --ok-bg:rgba(34,197,94,.10); --ok-bd:rgba(34,197,94,.32);
+    --warn:#fbbf24; --warn-bg:rgba(245,158,11,.10); --warn-bd:rgba(245,158,11,.32);
+    --bad:#f87171; --bad-bg:rgba(239,68,68,.10); --bad-bd:rgba(239,68,68,.32);
+    --unk:#6b7280; --unk-bg:#1f2226; --unk-bd:rgba(255,255,255,.09);
+    --info:#60a5fa; --info-bg:rgba(59,130,246,.12); --info-bd:rgba(59,130,246,.32); }
   *{ box-sizing:border-box; }
-  body{ font-family:system-ui,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
-    color:var(--fg); background:var(--bg); margin:0; line-height:1.55;
+  body{ font-family:Inter,system-ui,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    color:var(--fg); background:var(--page); margin:0; line-height:1.55;
     -webkit-font-smoothing:antialiased; }
   a{ color:var(--accent); text-decoration:none; }
   a:hover{ text-decoration:underline; }
-  .nav{ display:flex; align-items:center; justify-content:space-between;
-    max-width:880px; margin:0 auto; padding:1.1rem 1.25rem; }
+  .nav{ display:flex; align-items:center; gap:.75rem; position:relative;
+    max-width:880px; margin:0 auto; padding:.9rem 1.25rem; }
   .brand{ display:flex; align-items:center; gap:.55rem; font-weight:700;
     font-size:1.05rem; color:var(--fg); }
   .brand:hover{ text-decoration:none; }
   .dot{ width:1.7rem; height:1.7rem; border-radius:7px; background:var(--accent);
     display:inline-flex; align-items:center; justify-content:center; }
-  .navlink{ color:var(--muted); font-size:.92rem; margin-left:1.4rem; }
+  /* Pill navigation (as on payloadkit.app); the head script marks the link
+     of the current page with aria-current. */
+  .navlinks{ display:flex; align-items:center; gap:.15rem; margin-left:auto; }
+  .navtools{ display:flex; align-items:center; gap:.15rem; }
+  .navlink{ color:var(--muted); font:inherit; font-size:.9rem; padding:.35rem .75rem;
+    border:0; border-radius:999px; background:none; cursor:pointer; white-space:nowrap; }
+  .navlink:hover{ background:var(--surface-2); color:var(--fg); text-decoration:none; }
+  .navlink[aria-current="page"]{ background:var(--surface-2); color:var(--fg);
+    font-weight:500; }
   /* External cross-promo link: visually separated from the tool tabs. */
-  .navlink.ext{ border-left:1px solid var(--border); padding-left:1.4rem; }
+  .navlink.ext{ position:relative; margin-left:.7rem; }
+  .navlink.ext::before{ content:""; position:absolute; left:-.4rem; top:22%;
+    bottom:22%; border-left:1px solid var(--border); }
+  button.navlink.icon{ display:inline-flex; align-items:center; justify-content:center;
+    width:2rem; height:2rem; padding:0; }
+  .navtools button.navlink.menu-btn{ display:none; }
+  @media (max-width:720px){
+    .navtools{ margin-left:auto; }
+    .navtools button.navlink.menu-btn{ display:inline-flex; }
+    .navlinks{ display:none; position:absolute; top:calc(100% - .3rem); left:1.25rem;
+      right:1.25rem; z-index:40; flex-direction:column; align-items:stretch; gap:.1rem;
+      padding:.4rem; background:var(--bg); border:1px solid var(--border);
+      border-radius:12px; box-shadow:var(--shadow-md); }
+    .nav.open .navlinks{ display:flex; }
+    .navlinks .navlink{ border-radius:8px; padding:.55rem .75rem; }
+    .navlink.ext{ margin-left:0; }
+    .navlink.ext::before{ display:none; }
+  }
   .wrap{ max-width:880px; margin:0 auto; padding:0 1.25rem; }
   .hero{ text-align:center; padding:3.5rem 0 2rem; }
   .hero h1{ font-size:2.4rem; line-height:1.15; letter-spacing:-.02em; margin:0 0 .9rem; }
   .hero p{ font-size:1.1rem; color:var(--muted); max-width:34rem; margin:0 auto; }
-  .card{ border:1px solid var(--border); border-radius:12px; background:var(--bg);
-    padding:1.75rem; box-shadow:0 1px 2px rgba(0,0,0,.04); }
+  .card{ border:1px solid var(--border); border-radius:14px; background:var(--bg);
+    padding:1.75rem; box-shadow:var(--shadow-sm); }
   .drop{ border:2px dashed var(--border); border-radius:10px; padding:2.75rem 1rem;
     text-align:center; color:var(--muted); transition:.15s; cursor:pointer;
     background:var(--surface); }
   .drop:hover{ border-color:var(--accent); }
-  .drop.hl{ border-color:var(--accent); background:rgba(37,99,235,.06); color:var(--accent); }
+  .drop.hl{ border-color:var(--accent); background:var(--accent-soft); color:var(--accent); }
   .drop strong{ color:var(--fg); }
   ul#files{ list-style:none; padding:0; margin:1rem 0 0; font-size:.9rem; color:var(--muted); }
   ul#files li{ padding:.45rem .7rem; background:var(--surface); border:1px solid var(--border);
@@ -4383,11 +4420,12 @@ PAGE_CSS = """
     border-radius:999px; background:var(--surface); border:1px solid var(--border);
     color:var(--muted); margin:.15rem .35rem .15rem 0; }
   .btn{ font-size:.95rem; font-weight:600; padding:.62rem 1.5rem; border:0;
-    border-radius:var(--radius); background:var(--accent); color:#fff; cursor:pointer;
+    border-radius:var(--radius); background:var(--accent); color:var(--accent-fg); cursor:pointer;
     transition:.15s; }
-  .btn:hover{ background:#1d4ed8; }
+  .btn:hover{ background:var(--accent-hover); }
   .btn:disabled{ opacity:.45; cursor:not-allowed; }
-  .btn-ghost{ background:transparent; color:var(--accent); border:1px solid var(--border); }
+  .btn-ghost{ background:var(--bg); color:var(--accent); border:1px solid var(--border);
+    box-shadow:var(--shadow-sm); }
   .btn-ghost:hover{ background:var(--surface); }
   .center{ text-align:center; }
   pre{ background:var(--surface); border:1px solid var(--border); padding:1rem;
@@ -4457,7 +4495,7 @@ PAGE_CSS = """
   .stepper li div{ min-width:0; overflow-wrap:anywhere; line-height:1.5; }
   .stepper code{ overflow-wrap:anywhere; }
   .stepper .n{ flex:none; width:1.6rem; height:1.6rem; border-radius:50%;
-    background:var(--accent); color:#fff; font-weight:700; font-size:.85rem;
+    background:var(--accent); color:var(--accent-fg); font-weight:700; font-size:.85rem;
     display:flex; align-items:center; justify-content:center; }
   .stepper strong{ color:var(--fg); }
   .explain{ margin-top:2.75rem; }
@@ -4474,7 +4512,7 @@ PAGE_CSS = """
   .recent{ margin-top:1.25rem; }
   .recent h2{ margin:0 0 .5rem; font-size:1.1rem; }
   .recent-head{ display:flex; justify-content:space-between; align-items:baseline; gap:1rem; }
-  .linkbtn.danger{ color:#dc2626; }
+  .linkbtn.danger{ color:var(--bad); }
   .linkbtn.danger:hover{ text-decoration:underline; }
   .recent ul{ list-style:none; margin:0; padding:0; }
   .recent li{ display:flex; align-items:center; gap:.7rem; padding:.5rem .2rem;
@@ -4486,8 +4524,8 @@ PAGE_CSS = """
   .recent .state{ font-size:.72rem; font-weight:600; padding:.18rem .55rem;
     border-radius:999px; border:1px solid var(--border); background:var(--surface);
     color:var(--muted); white-space:nowrap; }
-  .recent .state.done{ background:#ecfdf5; border-color:#a7f3d0; color:#047857; }
-  .recent .state.failed{ background:#fef2f2; border-color:#fecaca; color:#b91c1c; }
+  .recent .state.done{ background:var(--ok-bg); border-color:var(--ok-bd); color:var(--ok); }
+  .recent .state.failed{ background:var(--bad-bg); border-color:var(--bad-bd); color:var(--bad); }
   .recent .rm{ border:0; background:none; color:var(--muted); cursor:pointer;
     font-size:1rem; padding:.1rem .3rem; }
   .recent .rm:hover{ color:var(--fg); }
@@ -4507,13 +4545,44 @@ PAGE_CSS = """
   .about p{ font-size:.92rem; margin:.8rem 0; }
   .about .links{ display:flex; justify-content:center; gap:.7rem; margin-top:1.25rem; }
   /* Dark-mode toggle in the nav: moon in light theme, sun in dark theme. */
-  button.navlink.theme{ border:0; background:none; cursor:pointer; padding:0;
-    font:inherit; }
-  .theme svg{ vertical-align:-2px; }
-  .theme:hover{ color:var(--fg); }
   .theme .sun{ display:none; }
   html.dark .theme .sun{ display:inline; }
   html.dark .theme .moon{ display:none; }
+  /* --- Result pages: top bar, action row, "More" dropdown --- */
+  .topbar{ display:flex; align-items:center; justify-content:space-between; gap:.6rem;
+    padding:.6rem 1.25rem; border-bottom:1px solid var(--border); background:var(--bg); }
+  .topbar .acts{ display:flex; align-items:center; justify-content:flex-end;
+    flex-wrap:wrap; gap:.4rem; }
+  .topbar .btn{ padding:.45rem .9rem; font-size:.88rem; }
+  .expiry{ color:var(--muted); font-size:.85rem; margin-right:.3rem; white-space:nowrap; }
+  details.menu{ position:relative; }
+  details.menu>summary{ list-style:none; display:inline-flex; align-items:center; gap:.35rem; }
+  details.menu>summary::-webkit-details-marker{ display:none; }
+  details.menu>summary::after{ content:""; width:.38rem; height:.38rem; margin-top:-.2rem;
+    border-right:2px solid currentColor; border-bottom:2px solid currentColor;
+    transform:rotate(45deg); }
+  .menu-pop{ position:absolute; right:0; top:calc(100% + .35rem); z-index:50;
+    min-width:15rem; padding:.3rem; background:var(--bg); border:1px solid var(--border);
+    border-radius:12px; box-shadow:var(--shadow-md); display:flex; flex-direction:column; }
+  .menu-pop a,.menu-pop button{ display:flex; align-items:center; gap:.6rem; width:100%;
+    padding:.5rem .65rem; border:0; border-radius:8px; background:none; color:var(--fg);
+    font:inherit; font-size:.9rem; text-align:left; cursor:pointer; white-space:nowrap; }
+  .menu-pop a:hover,.menu-pop button:hover{ background:var(--surface); text-decoration:none; }
+  .menu-pop small{ margin-left:auto; color:var(--muted); font-size:.75rem; }
+  .menu-pop hr{ border:0; border-top:1px solid var(--border); margin:.3rem 0; width:100%; }
+  .menu-pop .danger{ color:var(--bad); }
+  .menu-pop [hidden]{ display:none; }
+  @media (max-width:700px){
+    .topbar{ flex-wrap:wrap; }
+    .topbar .acts{ justify-content:flex-start; width:100%; }
+    .menu-pop{ left:auto; right:0; }
+  }
+  /* Timeline summary status colours (diagnostics + timeline pages). */
+  .sum-chip .ok, details.summary .st-ok{ color:var(--ok); font-weight:600; }
+  .sum-chip .bad, details.summary .st-bad{ color:var(--bad); font-weight:600; }
+  .sum-chip .warn, details.summary .st-warn{ color:var(--warn); font-weight:600; }
+  details.summary .st-nd{ color:var(--muted); font-weight:600; }
+  .sum-chip.active{ border-color:var(--accent); background:var(--accent-soft); }
 """
 
 _LOGO = ('<span class="dot"><svg width="15" height="15" viewBox="0 0 24 24" '
@@ -4521,9 +4590,9 @@ _LOGO = ('<span class="dot"><svg width="15" height="15" viewBox="0 0 24 24" '
          '<circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.5" y2="16.5"/>'
          '</svg></span>')
 
-NAV = ("""<header><nav class="nav">
+NAV = ("""<header><nav class="nav" aria-label="Main">
   <a class="brand" href="/">%(logo)s Sherlog</a>
-  <span>
+  <span class="navlinks" id="navlinks">
     <a class="navlink" href="/cmtrace">CMTrace</a>
     <a class="navlink" href="/diagnostics">Diagnostics</a>
     <a class="navlink" href="/errorcodes">Error codes</a>
@@ -4533,7 +4602,9 @@ NAV = ("""<header><nav class="nav">
        Configuration Profiles for macOS, iOS and tvOS, by the maker of
        Sherlog">PayloadKit&nbsp;&#8599;</a>
     <a class="navlink" href="#about" data-act="about">About</a>
-    <button class="navlink theme" type="button" aria-label="Toggle dark mode"
+  </span>
+  <span class="navtools">
+    <button class="navlink icon theme" type="button" aria-label="Toggle dark mode"
             data-act="theme"><svg class="moon" width="14" height="14"
         viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
         stroke-linecap="round" stroke-linejoin="round"><path
@@ -4543,6 +4614,10 @@ NAV = ("""<header><nav class="nav">
         stroke-linejoin="round"><circle cx="12" cy="12" r="4"/><path
         d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20
         12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"/></svg></button>
+    <button class="navlink icon menu-btn" type="button" aria-label="Menu"
+            aria-expanded="false" aria-controls="navlinks" data-act="menu"><svg
+        width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+        stroke-width="2" stroke-linecap="round"><path d="M4 7h16M4 12h16M4 17h16"/></svg></button>
   </span>
 </nav>
 <dialog id="about" class="about" aria-label="About the maintainer of Sherlog">
@@ -4698,7 +4773,7 @@ def history_record_js(job_id: str, tool: str, state: str, files: List[str]) -> s
 # first paint and keeps sandboxed iframes (no localStorage) in sync via a
 # postMessage handshake. Must contain no literal '%' (pages are %-format
 # templates).
-_THEME_JS = """<script>(function(){var de=document.documentElement;function a(d){de.classList.toggle('dark',d);de.style.colorScheme=d?'dark':'light'}function cur(){return de.classList.contains('dark')}function tell(w){try{w.postMessage({sherlogTheme:cur()?'dark':'light'},'*')}catch(e){}}var t=null;try{t=localStorage.getItem('sherlog.theme')}catch(e){}a(t==='dark'||(t!=='light'&&matchMedia('(prefers-color-scheme: dark)').matches));window.sherlogTheme=function(){a(!cur());try{localStorage.setItem('sherlog.theme',cur()?'dark':'light')}catch(e){}var fs=document.querySelectorAll('iframe');for(var i=0;i<fs.length;i++)tell(fs[i].contentWindow)};try{if(parent&&parent!==window)parent.postMessage({sherlogThemeReq:1},'*')}catch(e){}window.addEventListener('load',function(e){if(e.target&&e.target.tagName==='IFRAME')tell(e.target.contentWindow)},true);window.addEventListener('message',function(e){var d=e.data||{};if(d.sherlogThemeReq&&e.source){tell(e.source);return}var v=d.sherlogTheme;if(v==='dark'||v==='light')a(v==='dark')});document.addEventListener('click',function(e){var el=e.target&&e.target.closest?e.target.closest('[data-act]'):null;if(!el)return;var k=el.getAttribute('data-act');if(k==='about'){e.preventDefault();var d=document.getElementById('about');if(d&&d.showModal)d.showModal()}else if(k==='theme'){window.sherlogTheme()}else if(k==='close-dialog'){var g=el.closest('dialog');if(g)g.close()}})})()</script>"""
+_THEME_JS = """<script>(function(){var de=document.documentElement;function a(d){de.classList.toggle('dark',d);de.style.colorScheme=d?'dark':'light'}function cur(){return de.classList.contains('dark')}function tell(w){try{w.postMessage({sherlogTheme:cur()?'dark':'light'},'*')}catch(e){}}var t=null;try{t=localStorage.getItem('sherlog.theme')}catch(e){}a(t==='dark'||(t!=='light'&&matchMedia('(prefers-color-scheme: dark)').matches));window.sherlogTheme=function(){a(!cur());try{localStorage.setItem('sherlog.theme',cur()?'dark':'light')}catch(e){}var fs=document.querySelectorAll('iframe');for(var i=0;i<fs.length;i++)tell(fs[i].contentWindow)};try{if(parent&&parent!==window)parent.postMessage({sherlogThemeReq:1},'*')}catch(e){}window.addEventListener('load',function(e){if(e.target&&e.target.tagName==='IFRAME')tell(e.target.contentWindow)},true);window.addEventListener('message',function(e){var d=e.data||{};if(d.sherlogThemeReq&&e.source){tell(e.source);return}var v=d.sherlogTheme;if(v==='dark'||v==='light')a(v==='dark')});function shut(t){var ms=document.querySelectorAll('details.menu[open]');for(var i=0;i<ms.length;i++)if(!t||!ms[i].contains(t))ms[i].open=false;var ns=document.querySelectorAll('.nav.open');for(var j=0;j<ns.length;j++)if(!t||!ns[j].contains(t)){ns[j].classList.remove('open');var b=ns[j].querySelector('[data-act=menu]');if(b)b.setAttribute('aria-expanded','false')}}document.addEventListener('keydown',function(e){if(e.key==='Escape')shut(null)});document.addEventListener('DOMContentLoaded',function(){var ls=document.querySelectorAll('.navlinks a.navlink');for(var i=0;i<ls.length;i++)if(ls[i].getAttribute('href')===location.pathname)ls[i].setAttribute('aria-current','page')});document.addEventListener('click',function(e){shut(e.target);var el=e.target&&e.target.closest?e.target.closest('[data-act]'):null;if(!el)return;var k=el.getAttribute('data-act');if(k==='about'){e.preventDefault();var d=document.getElementById('about');if(d&&d.showModal)d.showModal()}else if(k==='theme'){window.sherlogTheme()}else if(k==='menu'){var n=el.closest('.nav');if(n){var o=n.classList.toggle('open');el.setAttribute('aria-expanded',String(o))}}else if(k==='close-dialog'){var g=el.closest('dialog');if(g)g.close()}})})()</script>"""
 
 LANDING_PAGE = """<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
@@ -4977,8 +5052,6 @@ REPORT_PAGE = """<!doctype html>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Sherlog &mdash; timeline report</title>
 <link rel="stylesheet" href="/assets/app.css"><style>
-  .topbar{display:flex;align-items:center;justify-content:space-between;
-    padding:.6rem 1.25rem;border-bottom:1px solid var(--border);background:var(--bg)}
   .report-wrap{max-width:1100px;margin:0 auto;padding:1.25rem;display:flex;
     flex-direction:column;gap:1rem}
   .report-wrap h1{font-size:1.4rem;margin:.2rem 0 0}
@@ -4990,9 +5063,6 @@ REPORT_PAGE = """<!doctype html>
   .sum-chips{display:flex;flex-wrap:wrap;gap:.4rem;margin:.6rem 0}
   .sum-chip{border:1px solid var(--border);border-radius:999px;padding:.15rem .7rem;
     background:var(--bg);white-space:nowrap}
-  .sum-chip .ok{color:#1a7f37;font-weight:600}
-  .sum-chip .bad{color:#c33;font-weight:600}
-  .sum-chip .warn{color:#9a6700;font-weight:600}
   details.summary h3{margin:.8rem 0 .3rem;font-size:.98rem}
   details.summary table{border-collapse:collapse;width:100%%;font-size:.86rem}
   details.summary th,details.summary td{text-align:left;padding:.3rem .6rem;
@@ -5001,11 +5071,6 @@ REPORT_PAGE = """<!doctype html>
   details.summary .code{margin:.2rem 0}
   .sum-chip[data-type],.sum-chip[data-status]{cursor:pointer}
   .sum-chip[data-type]:hover,.sum-chip[data-status]:hover{border-color:var(--accent)}
-  .sum-chip.active{border-color:var(--accent);background:rgba(37,99,235,.08)}
-  details.summary .st-ok{color:#1a7f37;font-weight:600}
-  details.summary .st-bad{color:#c33;font-weight:600}
-  details.summary .st-warn{color:#9a6700;font-weight:600}
-  details.summary .st-nd{color:#6b7280;font-weight:600}
   details.report-orig{background:var(--surface);border:1px solid var(--border);
     border-radius:12px;padding:.5rem 1.1rem}
   details.report-orig>summary{cursor:pointer;font-weight:600;padding:.3rem 0}
@@ -5014,7 +5079,7 @@ REPORT_PAGE = """<!doctype html>
 </style></head><body>
   <div class="topbar">
     <a class="brand" href="/">%(logo)s Sherlog</a>
-    <span>
+    <span class="acts">
       %(expiry)s
       <a class="btn btn-ghost" href="/result/%(job)s">&larr; Device health</a>
       <a class="btn btn-ghost" href="/result/%(job)s/cmtrace">Raw logs (CMTrace)</a>
@@ -5056,8 +5121,6 @@ CMTRACE_PAGE = """<!doctype html>
 <title>Sherlog &mdash; raw logs (CMTrace)</title>
 <link rel="stylesheet" href="/assets/app.css"><style>
   html,body{height:100%%}
-  .topbar{display:flex;align-items:center;justify-content:space-between;
-    padding:.6rem 1.25rem;border-bottom:1px solid var(--border);background:var(--bg)}
   .body{display:flex;height:calc(100vh - 3.6rem)}
   .side{width:300px;flex:none;overflow:auto;border-right:1px solid var(--border);
     background:var(--surface);padding:.5rem .35rem;font-size:.86rem}
@@ -5070,19 +5133,18 @@ CMTRACE_PAGE = """<!doctype html>
   .side .file{padding:.3rem .5rem;border-radius:6px;color:var(--muted);cursor:pointer;
     white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
   .side .file:hover{background:var(--bg);color:var(--fg)}
-  .side .file.active{background:var(--accent);color:#fff}
+  .side .file.active{background:var(--accent);color:var(--accent-fg)}
   iframe{border:0;flex:1;height:100%%;display:block}
   @media (max-width:700px){
     .body{flex-direction:column;height:auto}
     .side{width:auto;max-height:15rem;border-right:0;
       border-bottom:1px solid var(--border)}
     iframe{height:70vh;flex:none}
-    .topbar{flex-wrap:wrap;gap:.3rem}
   }
 </style></head><body>
   <div class="topbar">
     <a class="brand" href="/">%(logo)s Sherlog</a>
-    <span>
+    <span class="acts">
       %(expiry)s
       %(timeline)s
       <a class="btn btn-ghost" href="/cmtrace">New analysis</a>
@@ -5124,8 +5186,6 @@ DIAG_PAGE = """<!doctype html>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Sherlog &mdash; %(ptitle)s</title>
 <link rel="stylesheet" href="/assets/app.css"><style>
-  .topbar{display:flex;align-items:center;justify-content:space-between;
-    padding:.6rem 1.25rem;border-bottom:1px solid var(--border);background:var(--bg)}
   .panels{padding:.9rem 1.25rem;display:flex;
     flex-direction:column;gap:.8rem}
   .panels>h2{margin:.2rem 0 0;font-size:1.15rem}
@@ -5135,27 +5195,31 @@ DIAG_PAGE = """<!doctype html>
   .chip{border:1px solid var(--border);border-radius:999px;padding:.1rem .6rem;
     font-size:.78rem;color:var(--muted);background:var(--surface)}
   .ghead{margin:.4rem 0 0;font-size:.95rem;color:var(--muted)}
-  .gcount{margin-left:.5rem;font-size:.75rem;color:#d97706;font-weight:600}
+  .gcount{margin-left:.5rem;font-size:.75rem;color:var(--warn);font-weight:600}
   .verdict{display:block;padding:.45rem .9rem;border-radius:10px;
     border:1px solid var(--border);margin:.2rem 0 .3rem;font-weight:600}
-  .verdict.bad{border-color:#dc2626;color:#dc2626}
-  .verdict.warn{border-color:#d97706;color:#d97706}
-  .verdict.ok{border-color:#16a34a;color:#16a34a}
+  .verdict.bad{border-color:var(--bad-bd);background:var(--bad-bg);color:var(--bad)}
+  .verdict.warn{border-color:var(--warn-bd);background:var(--warn-bg);color:var(--warn)}
+  .verdict.ok{border-color:var(--ok-bd);background:var(--ok-bg);color:var(--ok)}
   .verdict .vchips{display:inline-flex;flex-wrap:wrap;gap:.35rem;
     margin-left:.6rem;vertical-align:middle}
   .vchip{border:1px solid var(--border);border-radius:999px;
     padding:.05rem .55rem;font-size:.75rem;font-weight:400;
     text-decoration:none}
-  .vchip.bad{border-color:#dc2626;color:#dc2626}
-  .vchip.warn{border-color:#d97706;color:#d97706}
-  .vchip:hover{background:var(--surface)}
-  .dash{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:.7rem}
-  .check{border:1px solid var(--border);border-radius:10px;padding:.65rem .9rem;
-    background:var(--bg)}
+  .vchip.bad{border-color:var(--bad-bd);background:var(--bg);color:var(--bad)}
+  .vchip.warn{border-color:var(--warn-bd);background:var(--bg);color:var(--warn)}
+  .vchip:hover{border-color:currentColor;text-decoration:none}
+  /* Same column count in every group (auto-fit gave each group its own
+     widths: 3, 1, 3, 4, 5, 2 per row read ragged). */
+  .dash{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:.7rem}
+  @media (max-width:1000px){.dash{grid-template-columns:repeat(2,minmax(0,1fr))}}
+  @media (max-width:640px){.dash{grid-template-columns:1fr}}
+  .check{border:1px solid var(--border);border-radius:12px;padding:.65rem .9rem;
+    background:var(--bg);box-shadow:var(--shadow-sm)}
   .check .lbl{font-weight:600;font-size:.92rem;display:flex;align-items:center;gap:.45rem}
   .check .st{width:.65rem;height:.65rem;border-radius:50%%;display:inline-block;flex:none}
-  .st.ok{background:#16a34a}.st.bad{background:#dc2626}
-  .st.warn{background:#d97706}.st.unknown{background:#9ca3af}
+  .st.ok{background:var(--ok)}.st.bad{background:var(--bad)}
+  .st.warn{background:var(--warn)}.st.unknown{background:var(--unk)}
   .check .det{color:var(--muted);font-size:.85rem;margin-top:.2rem;word-break:break-word}
   .check .adv{color:var(--fg);font-size:.78rem;margin-top:.3rem;
     padding-top:.3rem;border-top:1px dashed var(--border);font-style:italic}
@@ -5201,9 +5265,6 @@ DIAG_PAGE = """<!doctype html>
   .sum-chips{display:flex;flex-wrap:wrap;gap:.4rem;margin:.5rem 0}
   .sum-chip{border:1px solid var(--border);border-radius:999px;padding:.15rem .7rem;
     background:var(--bg);white-space:nowrap}
-  .sum-chip .ok{color:#1a7f37;font-weight:600}
-  .sum-chip .bad{color:#c33;font-weight:600}
-  .sum-chip .warn{color:#9a6700;font-weight:600}
   details.summary h3{margin:.7rem 0 .3rem;font-size:.95rem}
   details.summary table{border-collapse:collapse;width:100%%;font-size:.86rem}
   details.summary th,details.summary td{text-align:left;padding:.25rem .6rem;
@@ -5212,11 +5273,6 @@ DIAG_PAGE = """<!doctype html>
   details.summary .code{margin:.2rem 0}
   .sum-chip[data-type],.sum-chip[data-status]{cursor:pointer}
   .sum-chip[data-type]:hover,.sum-chip[data-status]:hover{border-color:var(--accent)}
-  .sum-chip.active{border-color:var(--accent);background:rgba(37,99,235,.08)}
-  details.summary .st-ok{color:#1a7f37;font-weight:600}
-  details.summary .st-bad{color:#c33;font-weight:600}
-  details.summary .st-warn{color:#9a6700;font-weight:600}
-  details.summary .st-nd{color:#6b7280;font-weight:600}
   .browser{display:flex;height:75vh;border-top:1px solid var(--border)}
   .side{width:300px;flex:none;overflow:auto;border-right:1px solid var(--border);
     background:var(--surface);padding:.5rem .35rem;font-size:.86rem}
@@ -5229,7 +5285,7 @@ DIAG_PAGE = """<!doctype html>
   .side .file{padding:.3rem .5rem;border-radius:6px;color:var(--muted);cursor:pointer;
     white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
   .side .file:hover{background:var(--bg);color:var(--fg)}
-  .side .file.active{background:var(--accent);color:#fff}
+  .side .file.active{background:var(--accent);color:var(--accent-fg)}
   .side .file.disabled{opacity:.45;cursor:default}
   .side .file.disabled:hover{background:none;color:var(--muted)}
   .pkgsearch{position:sticky;top:0;background:var(--surface);padding:.35rem 0 .5rem;z-index:2}
@@ -5251,19 +5307,27 @@ DIAG_PAGE = """<!doctype html>
     .side{width:auto;max-height:16rem;border-right:0;
       border-bottom:1px solid var(--border)}
     .browser iframe{height:60vh;flex:none}
-    .topbar{flex-wrap:wrap;gap:.3rem}
   }
 </style></head><body>
   <div class="topbar">
     <a class="brand" href="/">%(logo)s Sherlog</a>
-    <span>
+    <span class="acts">
       %(expiry)s
       <a class="btn btn-ghost" id="copyfindings" href="#">Copy findings</a>
-      <a class="btn btn-ghost" id="dlfile" href="#">Download file</a>
-      <a class="btn btn-ghost" href="/result/%(job)s/download">Download package</a>
       <a class="btn btn-ghost" href="/result/%(job)s/cmtrace">Raw logs (CMTrace)</a>
-      %(inboxlink)s
-      <a class="btn btn-ghost" href="/diagnostics">New upload</a>
+      <details class="menu"><summary class="btn btn-ghost">More</summary>
+        <div class="menu-pop">
+          <a id="dlfile" href="#">Download this file</a>
+          <a href="/result/%(job)s/download">Download package <small>.zip</small></a>
+          %(inboxlink)s
+          <a href="/result/%(job)s/dashboard.json" target="_blank"
+             rel="noopener">dashboard.json <small>export</small></a>
+          %(summarylink)s
+          <hr>
+          <a href="/diagnostics">New upload</a>
+          %(deleteitem)s
+        </div>
+      </details>
     </span>
   </div>
   <div class="panels">
@@ -5328,6 +5392,15 @@ DIAG_PAGE = """<!doctype html>
         });
       })
       .catch(() => { pkgr.textContent = 'Search failed.'; });
+  });
+  // "Delete from server" (More menu). Drop-off jobs have no such item: they
+  // belong to the token inbox (the route refuses them too).
+  const del = document.getElementById('deljob');
+  if (del) del.addEventListener('click', () => {
+    if (!confirm('Delete this upload from the server? This cannot be undone.')) return;
+    fetch('/result/' + job + '/delete', {method: 'POST'})
+      .then(r => r.json()).then(d => { if (d.deleted) location.href = '/'; })
+      .catch(() => {});
   });
   // "Copy findings": dashboard as paste-ready markdown for a ticket/chat.
   const cf = document.getElementById('copyfindings');
@@ -5946,15 +6019,16 @@ def render_analysis_card(job_id: str, analysis: dict) -> str:
 # pushes its toggle the same way (both set .dark on <html>). The request makes
 # the handoff independent of the parent catching the iframe's load event.
 _CMTRACE_CSS = """
-  :root{ --bg:#ffffff; --fg:#1f2937; --muted:#6b7280; --faint:#9ca3af;
-    --surface:#f9fafb; --surface2:#f3f4f6; --border:#e5e7eb; --border2:#d1d5db;
-    --row-border:#f1f5f9; --hl:#e0e7ff; --accent:#2563eb;
+  :root{ --bg:#ffffff; --fg:#0a0a0a; --muted:#6e7278; --faint:#9ca3af;
+    --surface:#f5f7f9; --surface2:#eef0f4; --border:#e4e6ea; --border2:#d4d7dd;
+    --row-border:#eef0f3; --hl:#e0e9fd; --accent:#2d69ea;
     --warn-bg:#fffbeb; --warn-fg:#92400e; --warn-border:#fde68a;
     --err-bg:#fef2f2; --err-fg:#b91c1c; --err-border:#fecaca;
     --info-bg:#eff6ff; --info-fg:#1d4ed8; --note-bg:#fef3c7; }
-  html.dark{ --bg:#0f172a; --fg:#e2e8f0; --muted:#94a3b8; --faint:#64748b;
-    --surface:#16202f; --surface2:#1e293b; --border:#293548; --border2:#334155;
-    --row-border:#1c2638; --hl:#1e3a8a; --accent:#3b82f6;
+  html.dark{ --bg:#181b1e; --fg:#fafafa; --muted:#8c8f95; --faint:#6b7280;
+    --surface:#1f2226; --surface2:#24272b; --border:rgba(255,255,255,.09);
+    --border2:rgba(255,255,255,.15); --row-border:rgba(255,255,255,.05);
+    --hl:#1e3a8a; --accent:#3e7cff;
     --warn-bg:#27200c; --warn-fg:#fbbf24; --warn-border:#5b4708;
     --err-bg:#2c1517; --err-fg:#f87171; --err-border:#7f1d1d;
     --info-bg:#172554; --info-fg:#93c5fd; --note-bg:#27200c; }
@@ -7449,20 +7523,20 @@ INBOX_PAGE = """<!doctype html>
   table.inbox tr.devhdr td{font-weight:600;background:var(--surface);
     border-top:2px solid var(--border)}
   .delta{font-size:.8rem;margin-top:.2rem}
-  .delta.bad{color:#dc2626}
-  .delta.ok{color:#16a34a}
+  .delta.bad{color:var(--bad)}
+  .delta.ok{color:var(--ok)}
   .hdot{display:inline-block;width:.6rem;height:.6rem;border-radius:50%%;
     margin-right:.35rem;vertical-align:baseline}
-  .hdot.ok{background:#16a34a}
-  .hdot.warn{background:#d97706}
-  .hdot.bad{background:#dc2626}
-  .hdot.run{background:#2563eb;animation:pulse 1.6s ease-in-out infinite}
+  .hdot.ok{background:var(--ok)}
+  .hdot.warn{background:var(--warn)}
+  .hdot.bad{background:var(--bad)}
+  .hdot.run{background:var(--info);animation:pulse 1.6s ease-in-out infinite}
   @keyframes pulse{0%%,100%%{opacity:1}50%%{opacity:.25}}
-  .health.run{color:#2563eb}
+  .health.run{color:var(--info)}
   .health{white-space:nowrap}
-  .health.bad{color:#dc2626}
-  .health.warn{color:#d97706}
-  .health.ok{color:#16a34a}
+  .health.bad{color:var(--bad)}
+  .health.warn{color:var(--warn)}
+  .health.ok{color:var(--ok)}
   .tokrow{display:flex;gap:.5rem;flex-wrap:wrap;align-items:center;margin:.5rem 0}
   .tokrow input[type=text]{flex:1;min-width:16rem;padding:.55rem .8rem;
     border:1px solid var(--border);border-radius:8px;background:var(--bg);
@@ -7471,7 +7545,7 @@ INBOX_PAGE = """<!doctype html>
   .anon{display:inline-flex;align-items:center;gap:.45rem;font-size:.9rem;
     color:var(--fg);cursor:pointer;margin-left:auto;white-space:nowrap}
   .anon input{margin:0}
-  .anon-note{margin:.4rem 0 0;max-width:48rem;color:#dc2626}
+  .anon-note{margin:.4rem 0 0;max-width:48rem;color:var(--bad)}
   .tokval{font-family:ui-monospace,Menlo,Consolas,monospace;word-break:break-all;
     background:var(--surface);border:1px solid var(--border);border-radius:6px;
     padding:.4rem .6rem;display:inline-block}
@@ -7965,8 +8039,7 @@ def expiry_note(status: Optional[dict]) -> str:
     if remaining <= 0:
         return ""
     hours = max(1, int((remaining + 3599) // 3600))
-    return ('<span style="color:var(--muted);font-size:.85rem;'
-            'margin-right:.6rem" title="Results are deleted automatically">'
+    return ('<span class="expiry" title="Results are deleted automatically">'
             f'expires in ~{hours}h</span>')
 
 
@@ -8191,8 +8264,15 @@ def render_diag_page(job_id: str, status: dict) -> HTMLResponse:
     hist_state = ("busy" if analysis.get("state") in ("queued", "running")
                   else "done")
     dash = read_dashboard(job_id)
-    inboxlink = ('<a class="btn btn-ghost" href="/inbox">Inbox</a>'
-                 if status.get("source") == "api" else "")
+    from_inbox = status.get("source") == "api"
+    inboxlink = '<a href="/inbox">Open inbox</a>' if from_inbox else ""
+    summarylink = (f'<a href="/result/{job_id}/summary.json" target="_blank" '
+                   'rel="noopener">summary.json <small>export</small></a>'
+                   if analysis.get("state") == "done" else "")
+    # Drop-off jobs are deleted through the token inbox, never from here.
+    deleteitem = ("" if from_inbox else
+                  '<button type="button" class="danger" id="deljob">'
+                  'Delete from server</button>')
     devname = str((dash or {}).get("device", {}).get("name", "") or "")
     return HTMLResponse(DIAG_PAGE % {
         "logo": _LOGO, "job": job_id,
@@ -8204,6 +8284,8 @@ def render_diag_page(job_id: str, status: dict) -> HTMLResponse:
         "dashjson": js_json(dash or {}),
         "expiry": expiry_note(status),
         "inboxlink": inboxlink,
+        "summarylink": summarylink,
+        "deleteitem": deleteitem,
         "analysis": render_analysis_card(job_id, analysis),
         "summary": summary,
         "tree": render_file_tree(files, skipped),
