@@ -1,0 +1,7 @@
+# Test/dev dependencies on top of the runtime lock. Compile with:
+#   uv pip compile requirements-dev.in --python-version 3.12 --generate-hashes \
+#       --universal -o requirements-dev.txt
+-c requirements.txt
+httpx>=0.28.1
+pytest>=9.1.1
+pip-audit>=2.9

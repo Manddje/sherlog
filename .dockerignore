@@ -7,12 +7,14 @@
 /out/
 *_Intune_Logs_Report.html
 
-# NOTE: /testdata/ (anonymised sample logs) intentionally ships in the image
-# so the test suite can run against the built container.
+# Sample logs are only used by the test suite / Dockerfile.test.
 
 # Tests (not needed at runtime)
 /tests/
 Dockerfile.test
+requirements.in
+requirements-dev.in
+requirements-dev.txt
 .pytest_cache/
 
 # Python

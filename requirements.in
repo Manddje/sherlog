@@ -1,0 +1,8 @@
+# Runtime dependencies (direct). Compile the hash-locked requirements.txt with:
+#   uv pip compile requirements.in --python-version 3.12 --generate-hashes \
+#       --universal -o requirements.txt
+fastapi>=0.141.1
+starlette>=1.7.0
+python-multipart>=0.0.32
+uvicorn[standard]>=0.53.0
+python-evtx>=0.8.1

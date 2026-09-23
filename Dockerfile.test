@@ -8,7 +8,20 @@
 # To get the report out:
 #   docker run --rm -v "$PWD/out:/out" ime-analyzer-test \
 #       scripts/run-analysis.sh /testdata /out
-FROM mcr.microsoft.com/powershell:lts-ubuntu-22.04
+# Same base + pinned pwsh as the production Dockerfile.
+FROM ubuntu:24.04@sha256:008173c23f95b170204355c12626cb5a965d779a7e1283b09e9cffbb1bf33ca3
+
+ARG PWSH_VERSION=7.6.6
+ARG PWSH_SHA256=9585f38ab5a026c3fc0995486e26e12050777960fef47a22dca98b577c5d27a7
+ENV DEBIAN_FRONTEND=noninteractive POWERSHELL_TELEMETRY_OPTOUT=1
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates curl \
+    && curl -fsSLo /tmp/pwsh.deb \
+        "https://packages.microsoft.com/ubuntu/24.04/prod/pool/main/p/powershell/powershell_${PWSH_VERSION}-1.deb_amd64.deb" \
+    && echo "${PWSH_SHA256}  /tmp/pwsh.deb" | sha256sum -c - \
+    && apt-get install -y --no-install-recommends /tmp/pwsh.deb \
+    && rm -rf /tmp/pwsh.deb /var/lib/apt/lists/*
 
 WORKDIR /app
 
