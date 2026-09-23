@@ -7812,7 +7812,7 @@ async def inbox(request: Request) -> HTMLResponse:
                        '</p>' if is_legacy_token(token) else '')
         body = (legacy_note +
                 f'<div class="tokrow"><p class="muted" style="flex:1">'
-                f'{len(rows)} of {cap} upload(s) for this token.{full_note}'
+                f'{len(rows)} of {cap} upload(s) in this inbox.{full_note}'
                 f'{busy_note}</p>'
                 '<button class="linkbtn danger" id="delall" type="button">'
                 'Delete all</button></div>'
@@ -7821,7 +7821,7 @@ async def inbox(request: Request) -> HTMLResponse:
                 f'{trs}</tbody></table>'
                 + _SCRIPT_OPEN +
                 'document.getElementById("delall").addEventListener("click",function(){'
-                'if(!confirm("Delete all uploads for this token from the server? '
+                'if(!confirm("Delete all uploads in this inbox from the server? '
                 'This cannot be undone."))return;'
                 'fetch("/inbox/delete",{method:"POST",headers:{"X-Inbox-Key":'
                 + js_json(token) + '}}).then(function(){document.getElementById("rfrm").submit();});'
@@ -7849,9 +7849,9 @@ async def inbox(request: Request) -> HTMLResponse:
                      + _SCRIPT_OPEN + 'setTimeout(function(){'
                      'document.getElementById("rfrm").submit();},30000);</script>')
     else:
-        body = ('<p>No uploads found for this token yet. Deploy the collector '
-                'with this token via Intune, then refresh.</p>'
-                '<p class="muted"><a href="/inbox">&larr; use another token</a></p>')
+        body = ('<p>No uploads in this inbox yet. Deploy the detection script '
+                'with this inbox&rsquo;s upload token via Intune, then refresh.</p>'
+                '<p class="muted"><a href="/inbox">&larr; use another inbox key</a></p>')
     return HTMLResponse(INBOX_PAGE % {
         "nav": NAV, "footer": FOOTER, "body": body})
 
