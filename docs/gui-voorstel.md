@@ -7,6 +7,31 @@ met Engelse UI-teksten zoals de app zelf: `docs/gui-voorstel-mockup.html`
 <https://claude.ai/artifact/XYsustEmHeXVZ3rh5jvpMp>. De schermkiezer in de
 blauwe balk bovenaan en de navigatie in de header wisselen tussen de schermen.
 
+De mockup volgt de huisstijl van [payloadkit.app](https://payloadkit.app)
+(zelfde maker), zodat beide tools als één familie lezen. Overgenomen uit de
+stylesheet van PayloadKit:
+
+- **Lettertypen** Inter (UI) en JetBrains Mono (identifiers, paden, codes).
+- **Kleuren** licht: achtergrond `#fafafa`, kaarten `#ffffff`, tekst
+  `#0a0a0a`, primair `#2d69ea`, muted `#f2f3f5` / `#6e7278`, rand `#e4e6ea`,
+  sidebar `#f5f7f9`. Donker: achtergrond `#0c0d0f`, kaarten `#181b1e`,
+  primair `#3e7cff`, rand `rgba(255,255,255,.08)`, sidebar `#14161a`.
+- **Vormen** basisradius 14 px (kaarten 18 px, knoppen 12 px), `shadow-sm`
+  op kaarten met `shadow-md` bij hover, dunne randen op 50 % opacity.
+- **Patronen** sticky header van 3 rem met blur en pill-navigatie; een
+  catalogus-layout met categorie-sidebar met tellers links en een kaartgrid
+  van drie kolommen rechts; kaarten met titel, mono-identifier,
+  omschrijving, badges en een voet met twee acties; tint-badges
+  (green-50/200, blue-50/200, red-50/200) voor status.
+
+In Sherlog wordt dat: bevindingen, recente uploads en foutcodes als
+PayloadKit-kaarten; de resultaatpagina en de foutcodepagina als catalogus met
+sidebar (status/gebied/tabellen met tellers, families met tellers). Voor de
+fonts betekent dit óf de woff2-bestanden self-hosten onder `/static/fonts`
+(past bij de huidige CSP zonder externe hosts), óf `fonts.googleapis.com` en
+`fonts.gstatic.com` toevoegen aan `style-src`/`font-src`. Self-hosten heeft de
+voorkeur.
+
 De analyse is gedaan op de huidige `app.py` (commit `a465282`), met
 screenshots van elke pagina op desktop (1366 px) en telefoon (390 px), licht en
 donker, gemaakt met het testpakket uit de testsuite.

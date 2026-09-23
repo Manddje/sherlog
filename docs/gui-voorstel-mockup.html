@@ -1,431 +1,427 @@
 <!doctype html>
 <html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<!-- Mockup for docs/gui-voorstel.md. Static, no server data. -->
+<!-- Mockup for docs/gui-voorstel.md, styled after payloadkit.app. Static, no server data. -->
 <title>Sherlog redesign (mockup)</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap">
 <style>
+  /* Tokens mirror payloadkit.app (shadcn/Tailwind v4 theme): Inter + JetBrains Mono,
+     off-white ground, white cards, blue primary, 14px base radius, pill navigation. */
   :root{
-    --bg:#ffffff; --fg:#1f2937; --muted:#6b7280; --faint:#9ca3af;
-    --accent:#2563eb; --accent-fg:#ffffff; --accent-soft:rgba(37,99,235,.08);
-    --border:#e5e7eb; --surface:#f6f7f9; --surface-2:#eef0f3;
-    --ok:#15803d; --ok-bg:#ecfdf5; --warn:#b45309; --warn-bg:#fffbeb;
-    --bad:#b91c1c; --bad-bg:#fef2f2; --unk:#9ca3af; --unk-bg:#f3f4f6;
-    --run:#2563eb; --run-bg:rgba(37,99,235,.10);
-    --radius:8px; --shadow:0 1px 2px rgba(0,0,0,.05);
-    --mono:ui-monospace,Menlo,Consolas,"Cascadia Mono",monospace;
+    --background:#fafafa; --foreground:#0a0a0a; --card:#ffffff; --card-fg:#0a0a0a;
+    --primary:#2d69ea; --primary-fg:#ffffff; --secondary:#eef0f4; --secondary-fg:#2e2e2e;
+    --muted:#f2f3f5; --muted-fg:#6e7278; --accent:#e7edf7; --accent-fg:#171717;
+    --border:#e4e6ea; --border-soft:rgba(228,230,234,.6); --ring:#2d69ea; --sidebar:#f5f7f9;
+    --fg-10:rgba(10,10,10,.08); --fg-5:rgba(10,10,10,.04);
+    --ok:#15803d; --ok-bg:#f0fdf4; --ok-bd:#bbf7d0;
+    --warn:#b45309; --warn-bg:#fffbeb; --warn-bd:#fde68a;
+    --bad:#b91c1c; --bad-bg:#fef2f2; --bad-bd:#fecaca;
+    --info:#1d4ed8; --info-bg:#eff6ff; --info-bd:#bfdbfe;
+    --unk:#6e7278; --unk-bg:#f2f3f5; --unk-bd:#e4e6ea;
+    --radius:14px; --r-xl:18px; --r-lg:12px; --r-md:10px;
+    --shadow-sm:0 1px 2px rgba(0,0,0,.05); --shadow-md:0 4px 10px -2px rgba(0,0,0,.08);
+    --sans:Inter,ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+    --mono:"JetBrains Mono",ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
   }
   @media (prefers-color-scheme: dark){ :root:not([data-theme="light"]){
     color-scheme:dark;
-    --bg:#0f172a; --fg:#e2e8f0; --muted:#94a3b8; --faint:#64748b;
-    --accent:#3b82f6; --accent-soft:rgba(59,130,246,.14);
-    --border:#293548; --surface:#16202f; --surface-2:#1c2838;
-    --ok:#4ade80; --ok-bg:rgba(16,185,129,.12); --warn:#fbbf24; --warn-bg:rgba(245,158,11,.12);
-    --bad:#f87171; --bad-bg:rgba(239,68,68,.12); --unk:#64748b; --unk-bg:rgba(100,116,139,.14);
-    --run:#60a5fa; --run-bg:rgba(96,165,250,.14);
-    --shadow:none;
+    --background:#0c0d0f; --foreground:#fafafa; --card:#181b1e; --card-fg:#fafafa;
+    --primary:#3e7cff; --secondary:#24272b; --secondary-fg:#fafafa;
+    --muted:#1f2226; --muted-fg:#8c8f95; --accent:#252930; --accent-fg:#fafafa;
+    --border:rgba(255,255,255,.08); --border-soft:rgba(255,255,255,.05); --ring:#3e7cff; --sidebar:#14161a;
+    --fg-10:rgba(250,250,250,.1); --fg-5:rgba(250,250,250,.05);
+    --ok:#4ade80; --ok-bg:rgba(34,197,94,.10); --ok-bd:rgba(34,197,94,.3);
+    --warn:#fbbf24; --warn-bg:rgba(245,158,11,.10); --warn-bd:rgba(245,158,11,.3);
+    --bad:#f87171; --bad-bg:rgba(239,68,68,.10); --bad-bd:rgba(239,68,68,.3);
+    --info:#60a5fa; --info-bg:rgba(59,130,246,.10); --info-bd:rgba(59,130,246,.3);
+    --unk:#8c8f95; --unk-bg:#1f2226; --unk-bd:rgba(255,255,255,.08);
+    --shadow-sm:none; --shadow-md:0 4px 14px rgba(0,0,0,.4);
   }}
   :root[data-theme="dark"]{
     color-scheme:dark;
-    --bg:#0f172a; --fg:#e2e8f0; --muted:#94a3b8; --faint:#64748b;
-    --accent:#3b82f6; --accent-soft:rgba(59,130,246,.14);
-    --border:#293548; --surface:#16202f; --surface-2:#1c2838;
-    --ok:#4ade80; --ok-bg:rgba(16,185,129,.12); --warn:#fbbf24; --warn-bg:rgba(245,158,11,.12);
-    --bad:#f87171; --bad-bg:rgba(239,68,68,.12); --unk:#64748b; --unk-bg:rgba(100,116,139,.14);
-    --run:#60a5fa; --run-bg:rgba(96,165,250,.14);
-    --shadow:none;
+    --background:#0c0d0f; --foreground:#fafafa; --card:#181b1e; --card-fg:#fafafa;
+    --primary:#3e7cff; --secondary:#24272b; --secondary-fg:#fafafa;
+    --muted:#1f2226; --muted-fg:#8c8f95; --accent:#252930; --accent-fg:#fafafa;
+    --border:rgba(255,255,255,.08); --border-soft:rgba(255,255,255,.05); --ring:#3e7cff; --sidebar:#14161a;
+    --fg-10:rgba(250,250,250,.1); --fg-5:rgba(250,250,250,.05);
+    --ok:#4ade80; --ok-bg:rgba(34,197,94,.10); --ok-bd:rgba(34,197,94,.3);
+    --warn:#fbbf24; --warn-bg:rgba(245,158,11,.10); --warn-bd:rgba(245,158,11,.3);
+    --bad:#f87171; --bad-bg:rgba(239,68,68,.10); --bad-bd:rgba(239,68,68,.3);
+    --info:#60a5fa; --info-bg:rgba(59,130,246,.10); --info-bd:rgba(59,130,246,.3);
+    --unk:#8c8f95; --unk-bg:#1f2226; --unk-bd:rgba(255,255,255,.08);
+    --shadow-sm:none; --shadow-md:0 4px 14px rgba(0,0,0,.4);
   }
   *{box-sizing:border-box}
-  body{margin:0;background:var(--bg);color:var(--fg);
-    font:15px/1.5 system-ui,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
-    -webkit-font-smoothing:antialiased}
-  a{color:var(--accent);text-decoration:none} a:hover{text-decoration:underline}
+  body{margin:0;background:var(--background);color:var(--foreground);font:14px/1.5 var(--sans);
+    -webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility}
+  a{color:inherit;text-decoration:none}
   button{font:inherit;color:inherit}
-  :focus-visible{outline:2px solid var(--accent);outline-offset:2px}
-  code{font-family:var(--mono);font-size:.9em}
-  h1,h2,h3{text-wrap:balance;margin:0}
+  :focus-visible{outline:2px solid var(--ring);outline-offset:2px}
+  code,.mono{font-family:var(--mono);font-size:.8rem}
+  h1,h2,h3{margin:0;text-wrap:balance;letter-spacing:-.01em}
   .screen[hidden],.panel[hidden]{display:none}
+  .wrap{max-width:80rem;margin:0 auto;padding:0 1rem}
+  @media (min-width:640px){.wrap{padding:0 1.5rem}}
+  @media (min-width:1024px){.wrap{padding:0 2rem}}
 
-  /* ---- mockup notice + screen switcher ---- */
-  .note{background:var(--accent-soft);border-bottom:1px solid var(--border);
-    padding:.5rem 16px;font-size:.84rem;display:flex;gap:.5rem 1rem;align-items:center;flex-wrap:wrap}
-  .note b{color:var(--accent)}
-  .note .sw{display:flex;gap:.25rem;flex-wrap:wrap}
-  .note .sw a{padding:.15rem .55rem;border-radius:999px;border:1px solid transparent}
-  .note .sw a.cur{border-color:var(--accent);background:var(--bg)}
-  .note .sw a:hover{text-decoration:none;border-color:var(--accent)}
-  .note button{margin-left:auto;background:none;border:0;color:var(--muted);cursor:pointer}
+  /* ---- mockup notice ---- */
+  .note{background:var(--accent);border-bottom:1px solid var(--border);padding:.45rem 1rem;font-size:.8rem;
+    display:flex;gap:.5rem 1rem;align-items:center;flex-wrap:wrap;color:var(--accent-fg)}
+  .note b{color:var(--primary)}
+  .note .sw{display:flex;gap:.2rem;flex-wrap:wrap}
+  .note .sw a{padding:.1rem .6rem;border-radius:999px}
+  .note .sw a.cur{background:var(--card);box-shadow:var(--shadow-sm);font-weight:500}
+  .note button{margin-left:auto;background:none;border:0;color:var(--muted-fg);cursor:pointer}
 
-  /* ---- app shell: one header for every page ---- */
-  .shell{display:flex;align-items:center;gap:1.25rem;padding:0 16px;height:3.25rem;
-    border-bottom:1px solid var(--border);background:var(--bg);
-    position:sticky;top:env(safe-area-inset-top,0px);z-index:20}
-  .brand{display:flex;align-items:center;gap:.5rem;font-weight:700;color:var(--fg)}
-  .brand:hover{text-decoration:none}
-  .dot{width:1.6rem;height:1.6rem;border-radius:7px;background:var(--accent);
-    display:inline-flex;align-items:center;justify-content:center}
-  .shell nav{display:flex;gap:.25rem;margin-left:.5rem}
-  .shell nav a{color:var(--muted);font-size:.92rem;padding:.35rem .65rem;border-radius:6px}
-  .shell nav a.cur{color:var(--fg);background:var(--surface)}
-  .shell nav a:hover{text-decoration:none;color:var(--fg)}
-  .shell .sp{flex:1}
-  .icobtn{width:2rem;height:2rem;border:1px solid var(--border);border-radius:6px;
-    background:var(--bg);display:inline-flex;align-items:center;justify-content:center;
-    cursor:pointer;color:var(--muted)}
-  .icobtn:hover{color:var(--fg)}
-  .menu-btn{display:none}
+  /* ---- header: sticky, blurred, pill nav (as on payloadkit.app) ---- */
+  .hdr{position:sticky;top:env(safe-area-inset-top,0px);z-index:50;border-bottom:1px solid var(--border-soft);
+    background:color-mix(in srgb,var(--background) 70%,transparent);backdrop-filter:blur(24px) saturate(150%);
+    -webkit-backdrop-filter:blur(24px) saturate(150%)}
+  .hdr .in{display:flex;align-items:center;gap:.75rem;height:3rem}
+  @media (min-width:640px){.hdr .in{gap:1.5rem}}
+  .brand{display:flex;align-items:center;gap:.5rem;font-weight:600;letter-spacing:-.01em;font-size:.95rem}
+  .brand svg{width:1.25rem;height:1.25rem;color:var(--primary)}
+  .pills{display:flex;align-items:center;gap:.25rem}
+  .pill-nav{border-radius:999px;padding:.375rem .75rem;font-size:.875rem;color:var(--muted-fg);border:0;background:none;cursor:pointer;white-space:nowrap}
+  .pill-nav:hover{background:var(--fg-5);color:var(--foreground)}
+  .pill-nav.cur{background:var(--fg-10);color:var(--foreground);font-weight:500}
+  .hdr .right{margin-left:auto;display:flex;align-items:center;gap:.75rem}
+  .upd{display:none;align-items:center;gap:.4rem;font-size:.75rem;color:var(--muted-fg)}
+  .upd i{width:.375rem;height:.375rem;border-radius:999px;background:var(--ok);display:inline-block}
+  .xlink{font-size:.8rem;color:var(--muted-fg)} .xlink:hover{color:var(--foreground)}
+  .icobtn{width:2rem;height:2rem;border-radius:999px;border:0;background:none;color:var(--muted-fg);display:inline-flex;align-items:center;justify-content:center;cursor:pointer}
+  .icobtn:hover{background:var(--fg-5);color:var(--foreground)}
+  .menu-btn{display:inline-flex}
+  @media (min-width:640px){.hdr nav.pills{display:flex}.menu-btn{display:none}.upd{display:flex}}
+  @media (max-width:639px){.hdr nav.pills{display:none}}
 
-  .wrap{max-width:1180px;margin:0 auto;padding:1.1rem 16px 3rem}
-  .btn{border:1px solid var(--border);background:var(--bg);border-radius:var(--radius);
-    padding:.42rem .85rem;font-size:.9rem;font-weight:600;cursor:pointer;white-space:nowrap;
-    color:var(--fg);display:inline-flex;align-items:center;gap:.4rem}
-  .btn:hover{background:var(--surface);text-decoration:none}
-  .btn.primary{background:var(--accent);border-color:var(--accent);color:var(--accent-fg)}
-  .btn.primary:hover{filter:brightness(.95)}
-  .btn.sm{font-size:.82rem;padding:.3rem .6rem}
-  .pill{display:inline-flex;align-items:center;gap:.35rem;border-radius:999px;
-    padding:.12rem .6rem;font-size:.78rem;font-weight:600;border:1px solid transparent;white-space:nowrap}
-  .pill.warn{color:var(--warn);background:var(--warn-bg)}
-  .pill.bad{color:var(--bad);background:var(--bad-bg)}
-  .pill.ok{color:var(--ok);background:var(--ok-bg)}
-  .pill.unk{color:var(--muted);background:var(--unk-bg)}
-  .pill.run{color:var(--run);background:var(--run-bg)}
-  .pill.src{color:var(--muted);background:var(--surface);border-color:var(--border);font-weight:500}
-  .st{width:.7rem;height:.7rem;border-radius:50%;flex:none;display:inline-block}
-  .st.warn{background:var(--warn)} .st.bad{background:var(--bad)} .st.ok{background:var(--ok)} .st.unk{background:var(--unk)}
-  .st.run{background:var(--run);animation:pulse 1.6s ease-in-out infinite}
-  @keyframes pulse{0%,100%{opacity:1}50%{opacity:.3}}
-  .sec{margin-top:1.4rem}
-  .sec-h{display:flex;align-items:baseline;gap:.6rem;margin-bottom:.6rem}
-  .sec-h h2{font-size:.82rem;letter-spacing:.06em;text-transform:uppercase;color:var(--muted)}
-  .sec-h .cnt{color:var(--faint);font-size:.8rem}
-  .sec-h a{margin-left:auto;font-size:.82rem}
-  footer{max-width:1180px;margin:0 auto;padding:1.25rem 16px 2rem;border-top:1px solid var(--border);
-    color:var(--muted);font-size:.85rem;display:flex;gap:1rem;flex-wrap:wrap}
-  footer a{color:var(--muted)} footer .sp{flex:1}
+  /* ---- primitives ---- */
+  .btn{display:inline-flex;align-items:center;gap:.4rem;border-radius:var(--r-lg);border:1px solid var(--border);background:var(--card);
+    color:var(--foreground);padding:.45rem .85rem;font-size:.875rem;font-weight:500;cursor:pointer;white-space:nowrap;box-shadow:var(--shadow-sm)}
+  .btn:hover{background:var(--muted)}
+  .btn.primary{background:var(--primary);border-color:var(--primary);color:var(--primary-fg)}
+  .btn.primary:hover{filter:brightness(.94)}
+  .btn.ghost{border-color:transparent;background:none;box-shadow:none;color:var(--muted-fg)}
+  .btn.ghost:hover{background:var(--fg-5);color:var(--foreground)}
+  .btn.sm{padding:.3rem .65rem;font-size:.8rem;border-radius:var(--r-md)}
+  .btn.lg{padding:.6rem 1.1rem;font-size:.95rem;border-radius:var(--r-lg)}
+  .badge{display:inline-flex;align-items:center;gap:.3rem;border-radius:999px;padding:.1rem .55rem;font-size:11px;font-weight:500;
+    border:1px solid var(--border);background:var(--muted);color:var(--muted-fg);white-space:nowrap;line-height:1.5}
+  .badge.ok{background:var(--ok-bg);border-color:var(--ok-bd);color:var(--ok)}
+  .badge.warn{background:var(--warn-bg);border-color:var(--warn-bd);color:var(--warn)}
+  .badge.bad{background:var(--bad-bg);border-color:var(--bad-bd);color:var(--bad)}
+  .badge.info{background:var(--info-bg);border-color:var(--info-bd);color:var(--info)}
+  .badge.run{background:var(--info-bg);border-color:var(--info-bd);color:var(--info)}
+  .badge.run i{width:.4rem;height:.4rem;border-radius:999px;background:var(--info);animation:pulse 1.6s ease-in-out infinite}
+  @keyframes pulse{0%,100%{opacity:1}50%{opacity:.25}}
+  .dot{width:.5rem;height:.5rem;border-radius:999px;display:inline-block;flex:none}
+  .dot.ok{background:var(--ok)}.dot.warn{background:var(--warn)}.dot.bad{background:var(--bad)}.dot.unk{background:var(--unk)}.dot.run{background:var(--info)}
+  .card{background:var(--card);color:var(--card-fg);border:1px solid var(--border-soft);border-radius:var(--r-xl);box-shadow:var(--shadow-sm);
+    display:flex;flex-direction:column;gap:1rem;padding:1rem 0;font-size:.875rem;transition:box-shadow .15s}
+  .card:hover{box-shadow:var(--shadow-md)}
+  .card>*{padding:0 1rem}
+  .card .ct{font-size:1rem;font-weight:500;line-height:1.35}
+  .card .cid{font-family:var(--mono);font-size:.75rem;color:var(--muted-fg);margin-top:.15rem;overflow-wrap:anywhere}
+  .card .cd{color:var(--muted-fg);flex:1}
+  .card .cb{display:flex;flex-wrap:wrap;gap:.25rem}
+  .card .cf{border-top:1px solid var(--border-soft);background:color-mix(in srgb,var(--muted) 30%,transparent);
+    padding:.65rem 1rem;margin-bottom:-1rem;border-radius:0 0 var(--r-xl) var(--r-xl);display:flex;align-items:center;gap:.5rem}
+  .card .cf .sp{flex:1}
+  .grid{display:grid;grid-template-columns:1fr;gap:1.5rem}
+  @media (min-width:768px){.grid{grid-template-columns:1fr 1fr}}
+  @media (min-width:1024px){.grid{grid-template-columns:1fr 1fr 1fr}}
+  .sec-h{display:flex;align-items:baseline;gap:.6rem;margin:2rem 0 .8rem}
+  .sec-h h2{font-size:1.05rem;font-weight:600}
+  .sec-h .cnt{color:var(--muted-fg);font-size:.8rem}
+  .sec-h .r{margin-left:auto;font-size:.8rem;color:var(--muted-fg)}
+  .tabs{display:flex;gap:.25rem;flex-wrap:wrap}
+  .tab{border-radius:999px;padding:.375rem .8rem;font-size:.875rem;color:var(--muted-fg);border:0;background:none;cursor:pointer;display:inline-flex;align-items:center;gap:.4rem}
+  .tab:hover{background:var(--fg-5);color:var(--foreground)}
+  .tab[aria-selected="true"]{background:var(--fg-10);color:var(--foreground);font-weight:500}
+  .tab .n{font-size:11px;padding:0 .4rem;border-radius:999px;background:var(--card);border:1px solid var(--border);color:var(--muted-fg);font-weight:500}
+  .tab .n.warn{background:var(--warn-bg);border-color:var(--warn-bd);color:var(--warn)}
+  .tab .n.bad{background:var(--bad-bg);border-color:var(--bad-bd);color:var(--bad)}
+  .catalog{display:grid;grid-template-columns:1fr;gap:1.5rem;align-items:start}
+  @media (min-width:900px){.catalog{grid-template-columns:14rem 1fr}}
+  .side{background:var(--sidebar);border:1px solid var(--border-soft);border-radius:var(--r-xl);padding:.5rem;position:sticky;top:calc(3rem + env(safe-area-inset-top,0px) + 1rem)}
+  .side h3{font-size:11px;font-weight:600;color:var(--muted-fg);letter-spacing:.04em;text-transform:uppercase;padding:.5rem .75rem .25rem}
+  .side a{display:flex;align-items:center;gap:.5rem;padding:.4rem .75rem;border-radius:var(--r-md);font-size:.875rem;color:var(--muted-fg)}
+  .side a:hover{background:var(--fg-5);color:var(--foreground)}
+  .side a.cur{background:var(--card);color:var(--foreground);box-shadow:var(--shadow-sm);font-weight:500}
+  .side a .n{margin-left:auto;font-size:11px;font-family:var(--mono);color:var(--muted-fg)}
+  .side a .dot{margin-right:.1rem}
+  .toolbar{display:flex;align-items:center;gap:.5rem;flex-wrap:wrap;margin-bottom:1rem}
+  .toolbar .cnt{color:var(--muted-fg);font-size:.8rem;margin-left:auto}
+  .input{border:1px solid var(--border);border-radius:var(--r-lg);background:var(--card);color:var(--foreground);padding:.45rem .75rem;font:inherit;font-size:.875rem;box-shadow:var(--shadow-sm)}
+  .input::placeholder{color:var(--muted-fg)}
+  table{border-collapse:collapse;width:100%;font-size:.85rem;font-variant-numeric:tabular-nums}
+  th,td{text-align:left;padding:.55rem 1rem;border-top:1px solid var(--border-soft);vertical-align:top}
+  thead th{border-top:0;color:var(--muted-fg);font-weight:500;font-size:.75rem;background:color-mix(in srgb,var(--muted) 30%,transparent)}
+  tbody tr:hover td{background:var(--fg-5)}
+  td.mono{font-family:var(--mono);font-size:.78rem}
+  .tcard{background:var(--card);border:1px solid var(--border-soft);border-radius:var(--r-xl);box-shadow:var(--shadow-sm);overflow:hidden}
+  .tcard .tw{overflow-x:auto}
+  .tcard .th{display:flex;align-items:center;gap:.6rem;padding:.75rem 1rem;border-bottom:1px solid var(--border-soft)}
+  .tcard .th h3{font-size:.95rem;font-weight:500}
+  .tcard .th .n{color:var(--muted-fg);font-size:.8rem}
+  .tcard .th .r{margin-left:auto}
+  footer{margin-top:3rem;border-top:1px solid var(--border-soft)}
+  footer .in{display:flex;gap:1.25rem;flex-wrap:wrap;padding:1.5rem 0 2rem;font-size:.8rem;color:var(--muted-fg)}
+  footer .sp{flex:1}
+  footer a:hover{color:var(--foreground)}
 
   /* ---- HOME ---- */
-  .hero{display:grid;grid-template-columns:1fr 1fr;gap:2.5rem;align-items:start;padding:2rem 0 1.5rem}
-  .hero h1{font-size:2.2rem;line-height:1.12;letter-spacing:-.02em}
-  .hero .lead{color:var(--muted);font-size:1.08rem;margin:.9rem 0 0;max-width:34rem}
-  .badges{display:flex;flex-wrap:wrap;gap:.45rem;margin:1.1rem 0 0}
-  .badges span{font-size:.78rem;font-weight:600;color:var(--muted);border:1px solid var(--border);
-    border-radius:999px;padding:.18rem .65rem}
-  .count{color:var(--accent);font-weight:600;font-size:.9rem;margin:.9rem 0 0}
-  .drop{border:2px dashed var(--border);border-radius:10px;padding:2.1rem 1.25rem;text-align:center;
-    color:var(--muted);background:var(--surface);line-height:1.6}
-  .drop strong{color:var(--fg)}
-  .drop:hover{border-color:var(--accent)}
-  .droprow{display:flex;align-items:center;gap:.6rem;margin-top:.7rem;flex-wrap:wrap;font-size:.86rem;color:var(--muted)}
-  .droprow .b{font-size:.72rem;font-weight:600;padding:.16rem .55rem;border-radius:999px;background:var(--surface);border:1px solid var(--border)}
-  .droprow .btn{margin-left:auto}
-  .route{font-size:.84rem;color:var(--muted);margin:.6rem 0 0}
-  .recent{margin-top:1.25rem;border:1px solid var(--border);border-radius:10px}
-  .recent .h{display:flex;align-items:baseline;gap:.6rem;padding:.6rem .9rem;border-bottom:1px solid var(--border)}
-  .recent .h h2{font-size:.82rem;letter-spacing:.06em;text-transform:uppercase;color:var(--muted)}
-  .recent .h a{margin-left:auto;font-size:.8rem;color:var(--bad)}
-  .recent ul{list-style:none;margin:0;padding:0}
-  .recent li{display:grid;grid-template-columns:auto 1fr auto auto;gap:.7rem;align-items:center;
-    padding:.5rem .9rem;border-top:1px solid var(--border);font-size:.9rem}
-  .recent li:first-child{border-top:0}
-  .recent li .f{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-  .recent li .w{color:var(--muted);font-size:.82rem;white-space:nowrap}
-  .recent li .x{color:var(--faint);cursor:pointer}
-  .two{display:grid;grid-template-columns:1fr 1fr;gap:1rem;margin-top:1.75rem}
-  .card{border:1px solid var(--border);border-radius:12px;padding:1.25rem;background:var(--bg)}
-  .card h2{font-size:1.05rem;margin-bottom:.35rem}
-  .card p{color:var(--muted);font-size:.9rem;margin:0 0 .9rem}
-  .stepper{list-style:none;margin:0;padding:0;display:grid;grid-template-columns:repeat(3,1fr);gap:1.1rem}
-  .stepper li{display:flex;gap:.7rem;color:var(--muted);font-size:.9rem;line-height:1.5}
-  .stepper .n{flex:none;width:1.5rem;height:1.5rem;border-radius:50%;background:var(--accent);color:#fff;
-    font-weight:700;font-size:.8rem;display:flex;align-items:center;justify-content:center;margin-top:.1rem}
-  .stepper strong{color:var(--fg)}
+  .hero{text-align:center;padding:3rem 0 1.5rem;max-width:56rem;margin:0 auto}
+  .hero h1{font-size:2.25rem;font-weight:700;letter-spacing:-.025em;line-height:1.1}
+  @media (min-width:640px){.hero h1{font-size:3rem}}
+  @media (min-width:1024px){.hero h1{font-size:3.5rem}}
+  .hero p{color:var(--muted-fg);font-size:1.05rem;margin:1rem auto 0;max-width:38rem}
+  .hero .cta{display:flex;align-items:center;justify-content:center;gap:.75rem;margin-top:1.5rem;flex-wrap:wrap}
+  .hero .or{color:var(--muted-fg);font-size:.875rem}
+  .hero .trust{display:flex;justify-content:center;gap:.4rem;flex-wrap:wrap;margin-top:1.25rem}
+  .dropwrap{margin:1.75rem auto 0;max-width:48rem}
+  .drop{border:1px dashed var(--border);border-radius:var(--r-xl);background:var(--card);padding:1.25rem 1.5rem;display:flex;align-items:center;gap:1rem;flex-wrap:wrap;box-shadow:var(--shadow-sm)}
+  .drop .ic{width:2.5rem;height:2.5rem;border-radius:var(--r-md);background:var(--accent);color:var(--primary);display:flex;align-items:center;justify-content:center;flex:none}
+  .drop .tx{flex:1;min-width:14rem;text-align:left}
+  .drop .tx strong{font-weight:500}
+  .drop .tx div{color:var(--muted-fg);font-size:.8rem;margin-top:.1rem}
+  .steps{display:grid;grid-template-columns:1fr;gap:1.5rem}
+  @media (min-width:768px){.steps{grid-template-columns:repeat(3,1fr)}}
+  .step{display:flex;gap:.8rem;color:var(--muted-fg);font-size:.875rem}
+  .step .n{flex:none;width:1.6rem;height:1.6rem;border-radius:999px;background:var(--fg-10);color:var(--foreground);font-weight:600;font-size:.8rem;display:flex;align-items:center;justify-content:center}
+  .step strong{color:var(--foreground);font-weight:500}
 
-  /* ---- RESULT: context bar + tabs ---- */
-  .ctx{border-bottom:1px solid var(--border);background:var(--bg)}
-  .ctx-in{max-width:1180px;margin:0 auto;padding:.85rem 16px .6rem;display:flex;
-    gap:1rem;align-items:flex-start;flex-wrap:wrap}
-  .ctx h1{font-size:1.25rem;line-height:1.2;display:flex;align-items:center;gap:.6rem;flex-wrap:wrap}
-  .ctx .meta{display:flex;flex-wrap:wrap;gap:.35rem .9rem;color:var(--muted);font-size:.85rem;margin-top:.3rem}
-  .ctx .meta span b{color:var(--fg);font-weight:500}
-  .ctx .acts{margin-left:auto;display:flex;gap:.5rem;align-items:center;position:relative}
-  .exp{color:var(--muted);font-size:.82rem;margin-right:.35rem;white-space:nowrap}
-  .pop{position:absolute;right:0;top:calc(100% + .35rem);min-width:15rem;background:var(--bg);
-    border:1px solid var(--border);border-radius:10px;box-shadow:0 10px 30px rgba(0,0,0,.14);
-    padding:.35rem;z-index:30}
-  .pop a,.pop button{display:flex;width:100%;text-align:left;gap:.6rem;align-items:center;
-    padding:.5rem .65rem;border:0;background:none;border-radius:6px;color:var(--fg);
-    font-size:.9rem;cursor:pointer}
-  .pop a:hover,.pop button:hover{background:var(--surface);text-decoration:none}
-  .pop .sep{border-top:1px solid var(--border);margin:.3rem 0}
+  /* ---- RESULT ---- */
+  .ctx{padding:1.5rem 0 0}
+  .ctx .top{display:flex;align-items:flex-start;gap:1rem;flex-wrap:wrap}
+  .ctx h1{font-size:1.75rem;font-weight:700;letter-spacing:-.02em;display:flex;align-items:center;gap:.6rem;flex-wrap:wrap}
+  .ctx .cid{font-family:var(--mono);font-size:.75rem;color:var(--muted-fg);margin-top:.3rem;overflow-wrap:anywhere}
+  .ctx .meta{display:flex;flex-wrap:wrap;gap:.35rem;margin-top:.6rem}
+  .ctx .acts{margin-left:auto;display:flex;align-items:center;gap:.5rem;position:relative}
+  .exp{font-size:.75rem;color:var(--muted-fg);white-space:nowrap;display:inline-flex;align-items:center;gap:.35rem}
+  .exp i{width:.375rem;height:.375rem;border-radius:999px;background:var(--warn);display:inline-block}
+  .pop{position:absolute;right:0;top:calc(100% + .4rem);min-width:15rem;background:var(--card);border:1px solid var(--border);border-radius:var(--r-lg);
+    box-shadow:var(--shadow-md);padding:.3rem;z-index:30}
+  .pop a,.pop button{display:flex;width:100%;text-align:left;gap:.6rem;align-items:center;padding:.45rem .6rem;border:0;background:none;border-radius:var(--r-md);font-size:.875rem;cursor:pointer}
+  .pop a:hover,.pop button:hover{background:var(--muted)}
+  .pop .sep{border-top:1px solid var(--border-soft);margin:.3rem 0}
   .pop .danger{color:var(--bad)}
-  .pop small{color:var(--muted);margin-left:auto;font-size:.75rem}
-  .tabs{max-width:1180px;margin:0 auto;padding:0 16px;display:flex;gap:.25rem;overflow-x:auto;scrollbar-width:none}
-  .tabs::-webkit-scrollbar{display:none}
-  .tab{border:0;background:none;padding:.6rem .8rem .55rem;font-size:.92rem;font-weight:600;
-    color:var(--muted);border-bottom:2px solid transparent;cursor:pointer;white-space:nowrap;
-    display:inline-flex;align-items:center;gap:.45rem}
-  .tab:hover{color:var(--fg)}
-  .tab[aria-selected="true"]{color:var(--fg);border-bottom-color:var(--accent)}
-  .n{font-size:.72rem;font-weight:600;padding:.05rem .45rem;border-radius:999px;background:var(--surface-2);color:var(--muted)}
-  .n.warn{background:var(--warn-bg);color:var(--warn)} .n.bad{background:var(--bad-bg);color:var(--bad)} .n.ok{background:var(--ok-bg);color:var(--ok)}
-
-  /* overview */
-  .verdict{display:grid;grid-template-columns:1fr auto;gap:1rem;align-items:center;
-    padding:.9rem 1.1rem;border:1px solid var(--border);border-radius:12px;background:var(--surface)}
-  .verdict h2{font-size:1.05rem}
-  .verdict p{margin:.15rem 0 0;color:var(--muted);font-size:.88rem}
-  .bar{display:flex;height:.55rem;width:16rem;max-width:100%;border-radius:999px;overflow:hidden;background:var(--unk-bg)}
-  .bar i{display:block;height:100%}
-  .bar .w{background:var(--warn)} .bar .o{background:var(--ok)} .bar .u{background:var(--unk)}
-  .legend{display:flex;gap:.9rem;font-size:.78rem;color:var(--muted);margin-top:.35rem;justify-content:flex-end;flex-wrap:wrap}
-  .legend i{display:inline-block;width:.6rem;height:.6rem;border-radius:2px;margin-right:.3rem;vertical-align:-1px}
-  .finding{display:grid;grid-template-columns:auto 1fr auto;gap:.75rem 1rem;align-items:start;
-    padding:.9rem 1rem;border:1px solid var(--border);border-left-width:4px;border-radius:10px;
-    background:var(--bg);margin-bottom:.6rem}
+  .pop small{color:var(--muted-fg);margin-left:auto;font-size:.72rem;font-family:var(--mono)}
+  .ctx .tabs{margin-top:1.25rem;padding-bottom:.75rem;border-bottom:1px solid var(--border-soft)}
+  main{padding-top:1.25rem}
+  .verdict{display:flex;align-items:center;gap:1rem;flex-wrap:wrap;padding:.9rem 1.1rem;background:var(--card);border:1px solid var(--border-soft);border-radius:var(--r-xl);box-shadow:var(--shadow-sm);margin-bottom:1rem}
+  .verdict h2{font-size:1rem;font-weight:600}
+  .verdict p{margin:.1rem 0 0;color:var(--muted-fg);font-size:.85rem}
+  .verdict .bar{margin-left:auto;display:flex;height:.5rem;width:14rem;max-width:100%;border-radius:999px;overflow:hidden;background:var(--muted)}
+  .verdict .bar i{display:block;height:100%}
+  .verdict .bar .w{background:var(--warn)} .verdict .bar .o{background:var(--ok)} .verdict .bar .u{background:var(--unk-bd)}
+  .finding{border-left:3px solid transparent}
   .finding.warn{border-left-color:var(--warn)} .finding.bad{border-left-color:var(--bad)}
-  .finding>.st{margin-top:.45rem}
-  .finding h3{font-size:.98rem;display:flex;gap:.5rem;align-items:center;flex-wrap:wrap}
-  .finding .grp{font-size:.72rem;font-weight:600;color:var(--muted);letter-spacing:.04em;text-transform:uppercase}
-  .finding .val{margin:.1rem 0 0}
-  .finding .adv{margin:.45rem 0 0;padding:.45rem .6rem;background:var(--surface);border-radius:6px;font-size:.86rem}
-  .finding .adv b{font-weight:600;color:var(--muted);margin-right:.3rem}
-  .finding .ev{display:flex;flex-direction:column;gap:.35rem;align-items:flex-end}
-  .finding .ev .file{font-family:var(--mono);font-size:.74rem;color:var(--muted);white-space:nowrap}
-  .why{grid-column:2/4;font-size:.84rem;color:var(--muted);border-top:1px dashed var(--border);padding-top:.5rem;margin-top:.1rem}
-  .why summary{cursor:pointer;color:var(--accent);list-style:none;display:inline}
+  .adv{background:var(--muted);border-radius:var(--r-md);padding:.5rem .65rem;color:var(--foreground);font-size:.8rem}
+  .adv b{font-weight:500;color:var(--muted-fg);margin-right:.3rem}
+  .why{font-size:.8rem;color:var(--muted-fg)}
+  .why summary{cursor:pointer;color:var(--primary);list-style:none;display:inline}
   .why summary::-webkit-details-marker{display:none}
   .why p{margin:.35rem 0 0}
-  .healthy{border:1px solid var(--border);border-radius:10px;overflow:hidden}
-  .healthy .row{display:grid;grid-template-columns:8.5rem 1fr;gap:.25rem 1rem;padding:.6rem 1rem;border-top:1px solid var(--border);align-items:baseline}
-  .healthy .row:first-child{border-top:0}
-  .healthy .g{font-size:.78rem;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.04em;padding-top:.15rem}
-  .healthy ul{list-style:none;margin:0;padding:0;display:flex;flex-wrap:wrap;gap:.35rem .9rem}
-  .healthy li{display:inline-flex;align-items:center;gap:.4rem;font-size:.9rem}
-  .healthy li .st{width:.55rem;height:.55rem}
-  .healthy li span,.healthy li code{color:var(--muted)} .healthy li code{font-size:.8rem}
-  details.notc{border:1px dashed var(--border);border-radius:10px;padding:.55rem .9rem;color:var(--muted);font-size:.9rem}
-  details.notc summary{cursor:pointer;font-weight:600;color:var(--fg)}
-  details.notc summary small{color:var(--muted);font-weight:400;margin-left:.4rem}
-  .chips{display:flex;flex-wrap:wrap;gap:.35rem;margin-top:.55rem}
-  .chip{border:1px solid var(--border);border-radius:999px;padding:.08rem .6rem;font-size:.78rem;background:var(--unk-bg);color:var(--muted)}
-  .dt{border:1px solid var(--border);border-radius:10px;margin-bottom:.6rem;background:var(--bg)}
-  .dt summary{cursor:pointer;padding:.65rem 1rem;font-weight:600;display:flex;gap:.6rem;align-items:center;list-style:none}
-  .dt summary::-webkit-details-marker{display:none}
-  .dt summary::before{content:"";width:.4rem;height:.4rem;border-right:2px solid var(--muted);border-bottom:2px solid var(--muted);transform:rotate(-45deg);transition:.12s;margin-right:.2rem}
-  .dt[open] summary::before{transform:rotate(45deg)}
-  .dt summary .n{font-weight:500;font-size:.8rem}
-  .dt summary .src{margin-left:auto;font-size:.8rem;font-weight:500}
-  .dt .tw{overflow-x:auto;border-top:1px solid var(--border)}
-  table{border-collapse:collapse;width:100%;font-size:.86rem;font-variant-numeric:tabular-nums}
-  th,td{text-align:left;padding:.45rem 1rem;border-top:1px solid var(--border);vertical-align:top}
-  thead th{border-top:0;color:var(--muted);font-weight:600;font-size:.78rem;text-transform:uppercase;letter-spacing:.04em;background:var(--surface)}
-  tbody tr:first-child td{border-top:0}
-  td.mono{font-family:var(--mono);font-size:.8rem}
-  td .st{width:.55rem;height:.55rem;margin-right:.35rem;vertical-align:1px}
-
-  /* timeline */
-  .stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(11rem,1fr));gap:.6rem}
-  .stat{border:1px solid var(--border);border-radius:10px;padding:.7rem .9rem;background:var(--bg)}
-  .stat .k{font-size:.78rem;color:var(--muted);text-transform:uppercase;letter-spacing:.04em}
-  .stat .v{font-size:1.35rem;font-weight:700;font-variant-numeric:tabular-nums;margin-top:.1rem}
-  .stat .v small{font-size:.85rem;font-weight:500;color:var(--muted);margin-left:.3rem}
-  .stat.warn .v{color:var(--warn)} .stat.bad .v{color:var(--bad)} .stat.ok .v{color:var(--ok)}
-  .frame{border:1px solid var(--border);border-radius:10px;background:var(--surface);height:14rem;display:flex;align-items:center;justify-content:center;color:var(--muted);font-size:.9rem;text-align:center;padding:1rem}
-
-  /* files */
-  .files{display:grid;grid-template-columns:18rem 1fr;border:1px solid var(--border);border-radius:10px;overflow:hidden;min-height:34rem;background:var(--bg)}
-  .tree{border-right:1px solid var(--border);background:var(--surface);font-size:.86rem;display:flex;flex-direction:column}
-  .search{padding:.6rem;border-bottom:1px solid var(--border);display:flex;flex-direction:column;gap:.45rem}
-  .search input,.vbar input,.vbar select,.keybar input,.ecsearch input{width:100%;padding:.45rem .6rem;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--fg);font:inherit;font-size:.86rem}
-  .hits{font-size:.78rem;color:var(--muted)}
-  .hit{padding:.35rem .5rem;border-radius:6px;cursor:pointer;background:var(--bg);border:1px solid var(--border);margin-top:.3rem}
-  .hit b{font-family:var(--mono);font-size:.74rem;color:var(--fg);display:block}
-  .hit span{color:var(--muted);display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-  .tree ul{list-style:none;margin:0;padding:.4rem .35rem;overflow:auto}
-  .tree li{padding:.25rem .5rem;border-radius:6px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;cursor:pointer}
-  .tree li.dir{color:var(--fg);font-weight:600;cursor:default}
-  .tree li.l1{padding-left:1.25rem} .tree li.l2{padding-left:2rem}
-  .tree li.cur{background:var(--accent);color:#fff}
+  .healthy li{display:flex;align-items:center;gap:.5rem;padding:.45rem 1rem;border-top:1px solid var(--border-soft);font-size:.875rem}
+  .healthy ul{list-style:none;margin:0;padding:0}
+  .healthy li .g{margin-left:auto;font-size:11px;color:var(--muted-fg)}
+  .healthy li code{color:var(--muted-fg)}
+  .chips{display:flex;flex-wrap:wrap;gap:.3rem}
+  details.notc{background:var(--card);border:1px dashed var(--border);border-radius:var(--r-xl);padding:.75rem 1rem;color:var(--muted-fg);font-size:.875rem}
+  details.notc summary{cursor:pointer;color:var(--foreground);font-weight:500;display:flex;align-items:center;gap:.5rem;flex-wrap:wrap}
+  details.notc summary small{color:var(--muted-fg);font-weight:400}
+  details.notc p{margin:.6rem 0}
+  .stats{display:grid;grid-template-columns:repeat(2,1fr);gap:1rem}
+  @media (min-width:768px){.stats{grid-template-columns:repeat(4,1fr)}}
+  .stat{background:var(--card);border:1px solid var(--border-soft);border-radius:var(--r-xl);box-shadow:var(--shadow-sm);padding:.9rem 1rem}
+  .stat .k{font-size:.75rem;color:var(--muted-fg)}
+  .stat .v{font-size:1.5rem;font-weight:600;letter-spacing:-.02em;font-variant-numeric:tabular-nums;margin-top:.1rem}
+  .stat .v small{font-size:.8rem;font-weight:500;color:var(--muted-fg);margin-left:.3rem}
+  .stat.ok .v{color:var(--ok)} .stat.warn .v{color:var(--warn)} .stat.bad .v{color:var(--bad)}
+  .frame{background:var(--muted);border:1px solid var(--border-soft);border-radius:var(--r-xl);height:14rem;display:flex;align-items:center;justify-content:center;color:var(--muted-fg);font-size:.875rem;text-align:center;padding:1rem}
+  .files{display:grid;grid-template-columns:1fr;background:var(--card);border:1px solid var(--border-soft);border-radius:var(--r-xl);box-shadow:var(--shadow-sm);overflow:hidden;min-height:34rem}
+  @media (min-width:900px){.files{grid-template-columns:17rem 1fr}}
+  .tree{background:var(--sidebar);border-right:1px solid var(--border-soft);display:flex;flex-direction:column;font-size:.85rem}
+  .tree .search{padding:.75rem;border-bottom:1px solid var(--border-soft);display:flex;flex-direction:column;gap:.5rem}
+  .tree .search .input{width:100%;font-family:var(--mono);font-size:.8rem}
+  .hits{font-size:.75rem;color:var(--muted-fg)}
+  .hit{padding:.4rem .55rem;border-radius:var(--r-md);cursor:pointer;background:var(--card);border:1px solid var(--border-soft);margin-top:.35rem}
+  .hit b{font-family:var(--mono);font-size:.72rem;color:var(--foreground);display:block;font-weight:500}
+  .hit span{color:var(--muted-fg);display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .tree ul{list-style:none;margin:0;padding:.5rem;overflow:auto}
+  .tree li{padding:.3rem .6rem;border-radius:var(--r-md);color:var(--muted-fg);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;cursor:pointer;font-family:var(--mono);font-size:.78rem}
+  .tree li.dir{color:var(--foreground);font-family:var(--sans);font-size:.8rem;font-weight:500;cursor:default;margin-top:.25rem}
+  .tree li.l1{padding-left:1.4rem} .tree li.l2{padding-left:2.2rem}
+  .tree li.cur{background:var(--card);color:var(--foreground);box-shadow:var(--shadow-sm)}
   .tree li.dis{opacity:.45}
-  .tree li:not(.dir):not(.cur):hover{background:var(--bg);color:var(--fg)}
+  .tree li:not(.dir):not(.cur):hover{background:var(--fg-5);color:var(--foreground)}
   .viewer{display:flex;flex-direction:column;min-width:0}
-  .vbar{display:flex;align-items:center;gap:.6rem;padding:.5rem .8rem;border-bottom:1px solid var(--border);flex-wrap:wrap}
-  .vbar input,.vbar select{width:auto;font-size:.82rem;padding:.3rem .5rem}
-  .crumb{font-family:var(--mono);font-size:.8rem;color:var(--muted);display:flex;gap:.35rem;align-items:center;min-width:0;flex:1}
-  .crumb b{color:var(--fg);font-weight:600}
-  .log{font-family:var(--mono);font-size:.78rem;overflow:auto;flex:1}
-  .log th,.log td{padding:.3rem .8rem;white-space:nowrap}
+  .vbar{display:flex;align-items:center;gap:.5rem;padding:.6rem .9rem;border-bottom:1px solid var(--border-soft);flex-wrap:wrap}
+  .crumb{font-family:var(--mono);font-size:.75rem;color:var(--muted-fg);flex:1;min-width:0}
+  .crumb b{color:var(--foreground);font-weight:500}
+  .vbar .input{padding:.3rem .6rem;font-size:.8rem}
+  .log{font-family:var(--mono);font-size:.76rem;overflow:auto;flex:1}
+  .log th,.log td{padding:.35rem .9rem;white-space:nowrap}
   .log td.m{white-space:normal;min-width:22rem}
   .log tr.w td{background:var(--warn-bg)} .log tr.e td{background:var(--bad-bg)}
-  .log tr.hl td:first-child{box-shadow:inset 3px 0 0 var(--accent)}
-  .log td.t,.log td.c{color:var(--muted)}
+  .log tr.hl td:first-child{box-shadow:inset 3px 0 0 var(--primary)}
+  .log td.t,.log td.c{color:var(--muted-fg)}
+  .log tbody tr:hover td{background:var(--fg-5)}
 
   /* ---- INBOX ---- */
-  .keybar{display:flex;gap:.6rem;align-items:center;flex-wrap:wrap;padding:.75rem 1rem;border:1px solid var(--border);border-radius:10px;background:var(--surface)}
-  .keybar label{font-size:.86rem;font-weight:600;white-space:nowrap}
-  .keybar input{flex:1;min-width:14rem;font-family:var(--mono);font-size:.82rem}
-  .keybar .btn{white-space:nowrap}
-  .banner{display:flex;gap:.8rem;align-items:center;flex-wrap:wrap;padding:.65rem .9rem;border-radius:10px;
-    border:1px solid var(--warn);background:var(--warn-bg);color:var(--fg);font-size:.88rem;margin-top:.9rem}
+  .keybar{display:flex;gap:.6rem;align-items:center;flex-wrap:wrap;background:var(--card);border:1px solid var(--border-soft);border-radius:var(--r-xl);box-shadow:var(--shadow-sm);padding:.75rem 1rem}
+  .keybar label{font-size:.85rem;font-weight:500;white-space:nowrap}
+  .keybar .input{flex:1;min-width:14rem;font-family:var(--mono);font-size:.8rem}
+  .banner{display:flex;gap:.75rem;align-items:center;flex-wrap:wrap;padding:.7rem 1rem;border-radius:var(--r-xl);border:1px solid var(--warn-bd);background:var(--warn-bg);font-size:.85rem;margin-top:1rem}
   .banner .btn{margin-left:auto}
-  .fleet{border:1px solid var(--border);border-radius:10px;overflow:hidden}
-  .fleet .hd,.fleet .dev{display:grid;grid-template-columns:1.4rem 1fr 7rem 9rem 10rem 8rem;gap:.8rem;align-items:center;padding:.6rem 1rem}
-  .fleet .hd{background:var(--surface);color:var(--muted);font-size:.78rem;font-weight:600;text-transform:uppercase;letter-spacing:.04em}
-  .fleet .dev{border-top:1px solid var(--border);cursor:pointer}
-  .fleet .dev:hover{background:var(--surface)}
-  .fleet .dev b{font-weight:600}
-  .fleet .dev .m{color:var(--muted);font-size:.85rem;font-variant-numeric:tabular-nums}
-  .fleet .delta{font-size:.82rem}
-  .fleet .delta.bad{color:var(--bad)} .fleet .delta.ok{color:var(--ok)}
-  .fleet .acts{display:flex;gap:.4rem;justify-content:flex-end}
-  .fleet .ups{border-top:1px solid var(--border);background:var(--surface);padding:.3rem 1rem .5rem 3.2rem}
-  .fleet .up{display:grid;grid-template-columns:1fr 9rem 10rem 8rem;gap:.8rem;align-items:center;padding:.35rem 0;font-size:.86rem;color:var(--muted)}
-  .fleet .up .acts a{font-size:.82rem}
-  .wizard{display:grid;grid-template-columns:repeat(3,1fr);gap:1rem;margin-top:.6rem}
-  .step{border:1px solid var(--border);border-radius:10px;padding:1rem;background:var(--bg)}
-  .step .n{width:1.5rem;height:1.5rem;border-radius:50%;background:var(--accent);color:#fff;display:inline-flex;align-items:center;justify-content:center;font-weight:700;font-size:.8rem;padding:0}
-  .step h3{font-size:.95rem;margin:.5rem 0 .3rem}
-  .step p{color:var(--muted);font-size:.86rem;margin:0 0 .6rem}
-  .tokval{font-family:var(--mono);font-size:.78rem;word-break:break-all;background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:.4rem .6rem;display:block;margin:.4rem 0}
-  .step .row{display:flex;gap:.4rem;flex-wrap:wrap;align-items:center}
-  .step label{font-size:.82rem;display:inline-flex;gap:.35rem;align-items:center;color:var(--muted)}
-  .step ol{margin:.2rem 0 0;padding-left:1.1rem;font-size:.86rem;color:var(--muted)}
-  .step ol li{margin:.2rem 0}
+  .dev{display:grid;grid-template-columns:auto 1fr 5rem 9rem 12rem auto;gap:.8rem;align-items:center;padding:.65rem 1rem;border-top:1px solid var(--border-soft);cursor:pointer}
+  .dev:hover{background:var(--fg-5)}
+  .dev b{font-weight:500}
+  .dev .m{color:var(--muted-fg);font-size:.82rem;font-variant-numeric:tabular-nums}
+  .dev .delta{font-size:.8rem}
+  .dev .delta.bad{color:var(--bad)} .dev .delta.ok{color:var(--ok)}
+  .ups{border-top:1px solid var(--border-soft);background:color-mix(in srgb,var(--muted) 40%,transparent);padding:.3rem 1rem .5rem 2.7rem}
+  .up{display:grid;grid-template-columns:1fr 9rem 12rem auto;gap:.8rem;align-items:center;padding:.4rem 0;font-size:.82rem;color:var(--muted-fg)}
+  .up .acts a{color:var(--primary)} .up .acts a.del{color:var(--bad);margin-left:.6rem}
+  .wizard{display:grid;grid-template-columns:1fr;gap:1.5rem}
+  @media (min-width:900px){.wizard{grid-template-columns:repeat(3,1fr)}}
+  .tokval{font-family:var(--mono);font-size:.75rem;word-break:break-all;background:var(--muted);border:1px solid var(--border-soft);border-radius:var(--r-md);padding:.45rem .6rem;display:block}
+  .row{display:flex;gap:.4rem;flex-wrap:wrap;align-items:center}
+  .row label{font-size:.8rem;display:inline-flex;gap:.35rem;align-items:center;color:var(--muted-fg)}
+  .card ol{margin:0;padding-left:1.1rem;color:var(--muted-fg)}
+  .card ol li{margin:.25rem 0}
+  .card ol strong{color:var(--foreground);font-weight:500}
 
   /* ---- ERROR CODES ---- */
-  .ecsearch{position:sticky;top:calc(3.25rem + env(safe-area-inset-top,0px));background:var(--bg);padding:.6rem 0;z-index:5;display:flex;gap:.6rem;align-items:center;flex-wrap:wrap}
-  .ecsearch input{flex:1;min-width:14rem}
-  .ecsearch .fam{display:flex;gap:.3rem;flex-wrap:wrap}
-  .ecsearch .fam a{font-size:.78rem;padding:.15rem .55rem;border-radius:999px;border:1px solid var(--border);color:var(--muted)}
-  .ecsearch .fam a:hover{text-decoration:none;border-color:var(--accent);color:var(--fg)}
-  .ec{border:1px solid var(--border);border-radius:10px;overflow:hidden;margin-top:1rem}
-  .ec .fh{display:flex;gap:.6rem;align-items:baseline;padding:.6rem 1rem;background:var(--surface);border-bottom:1px solid var(--border)}
-  .ec .fh h2{font-size:.95rem}
-  .ec .fh span{color:var(--muted);font-size:.82rem}
-  .ec .r{display:grid;grid-template-columns:9rem auto 1fr;gap:.8rem;align-items:start;padding:.55rem 1rem;border-top:1px solid var(--border);font-size:.9rem}
-  .ec .r:nth-child(2){border-top:0}
-  .ec .r code{font-size:.84rem;font-weight:600}
-  .ec .r .cp{border:1px solid var(--border);background:var(--bg);border-radius:5px;font-size:.72rem;padding:.05rem .4rem;cursor:pointer;color:var(--muted)}
-  .ec .r .cp:hover{color:var(--fg)}
-  .ec .r .mean{color:var(--fg)}
-  .ec .r .mean a{font-size:.8rem;margin-left:.4rem}
+  .eccard .ct{font-family:var(--mono);font-size:.95rem;font-weight:500}
 
   /* ---- responsive ---- */
-  @media (max-width:820px){
-    .shell nav{display:none} .menu-btn{display:inline-flex}
-    .hero,.two{grid-template-columns:1fr;gap:1.25rem}
-    .hero h1{font-size:1.8rem}
-    .stepper,.wizard{grid-template-columns:1fr}
+  @media (max-width:899px){
+    .side{position:static}
+    .dev{grid-template-columns:auto 1fr auto} .dev .m,.dev .delta{grid-column:2}
+    .up{grid-template-columns:1fr auto} .ups{padding-left:1rem}
     .ctx .acts{margin-left:0;width:100%}
-    .verdict{grid-template-columns:1fr} .legend{justify-content:flex-start}
-    .finding{grid-template-columns:auto 1fr}
-    .finding .ev{grid-column:2;align-items:flex-start;flex-direction:row;flex-wrap:wrap}
-    .healthy .row{grid-template-columns:1fr}
-    .files{grid-template-columns:1fr;min-height:0}
-    .tree{border-right:0;border-bottom:1px solid var(--border);max-height:16rem} .tree ul{max-height:10rem}
-    .fleet .hd{display:none}
-    .fleet .dev{grid-template-columns:1.4rem 1fr auto;grid-auto-rows:auto}
-    .fleet .dev .m,.fleet .delta{grid-column:2}
-    .fleet .up{grid-template-columns:1fr auto}
-    .fleet .ups{padding-left:1rem}
-    .ec .r{grid-template-columns:1fr auto} .ec .r .mean{grid-column:1/3}
+    .verdict .bar{margin-left:0}
+    .tree{border-right:0;border-bottom:1px solid var(--border-soft);max-height:18rem} .tree ul{max-height:10rem}
   }
   @media (prefers-reduced-motion:reduce){ *{transition:none!important;animation:none!important} }
 </style>
 
 </head><body>
 <div class="note" id="note">
-  <span><b>Mockup</b> for <code>docs/gui-voorstel.md</code>. Screens:</span>
+  <span><b>Mockup</b> for <code>docs/gui-voorstel.md</code>, styled after payloadkit.app. Screens:</span>
   <span class="sw" id="sw"><a href="#home" data-s="home">Home</a><a href="#result" data-s="result">Result</a><a href="#inbox" data-s="inbox">Inbox</a><a href="#errorcodes" data-s="errorcodes">Error codes</a></span>
-  <span style="color:var(--muted)">Sample data: test package TESTPC-01.</span>
+  <span style="color:var(--muted-fg)">Sample data: test package TESTPC-01.</span>
   <button type="button" id="notex" aria-label="Close">&times;</button>
 </div>
 
-<header class="shell">
-  <a class="brand" href="#home"><span class="dot"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.5" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.5" y2="16.5"/></svg></span> Sherlog</a>
-  <nav aria-label="Main" id="mainnav">
-    <a href="#home" data-s="home">Upload</a>
-    <a href="#inbox" data-s="inbox">Inbox</a>
-    <a href="#errorcodes" data-s="errorcodes">Error codes</a>
+<header class="hdr"><div class="wrap in">
+  <a class="brand" href="#home"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/><path d="M8 11h6M11 8v6"/></svg><span>Sherlog</span></a>
+  <nav class="pills" aria-label="Main">
+    <a class="pill-nav" href="#home" data-s="home">Upload</a>
+    <a class="pill-nav" href="#inbox" data-s="inbox">Inbox</a>
+    <a class="pill-nav" href="#errorcodes" data-s="errorcodes">Error codes</a>
+    <button class="pill-nav" type="button">About</button>
   </nav>
-  <span class="sp"></span>
-  <button class="icobtn" type="button" id="theme" aria-label="Toggle dark mode" title="Toggle dark mode"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg></button>
-  <button class="icobtn menu-btn" type="button" aria-label="Menu"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 7h16M4 12h16M4 17h16"/></svg></button>
-</header>
+  <div class="right">
+    <a class="upd" href="#home"><i></i>Collector 1.4 &middot; updated today</a>
+    <a class="xlink" href="#home" title="PayloadKit, by the maker of Sherlog">PayloadKit &#8599;</a>
+    <button class="icobtn" type="button" id="theme" aria-label="Toggle dark mode" title="Toggle dark mode"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg></button>
+    <button class="icobtn menu-btn" type="button" aria-label="Menu"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 7h16M4 12h16M4 17h16"/></svg></button>
+  </div>
+</div></header>
 
 <!-- ======================= HOME ======================= -->
 <section class="screen" id="home">
   <div class="wrap">
     <div class="hero">
-      <div>
-        <h1>Troubleshoot Intune-managed Windows devices</h1>
-        <p class="lead">Upload IME logs or a full diagnostics package and see what actually happened: app installs, scripts, errors, device health and applied policies. Nothing touches the device or Intune.</p>
-        <div class="badges"><span>No account</span><span>Browser-only</span><span>Deleted after 24h</span></div>
-        <p class="count">1,284 uploads analysed so far</p>
-      </div>
-      <div>
-        <div class="drop"><strong>Drag &amp; drop</strong> a diagnostics <code>.zip</code>, <code>.log</code> files or a whole folder, or <a href="#home">choose files</a> &middot; <a href="#home">choose a folder</a></div>
-        <div class="droprow"><span class="b">.log</span><span class="b">.zip</span> Max <strong>100 MB</strong> <a class="btn primary" href="#result">Open</a></div>
-        <p class="route">A <code>.zip</code> opens the device health dashboard. Loose <code>.log</code> files open the CMTrace viewer; you can run the timeline analysis from there.</p>
-        <div class="recent">
-          <div class="h"><h2>Recent uploads</h2><span style="color:var(--faint);font-size:.8rem">stored in this browser only</span><a href="#home">Delete all</a></div>
-          <ul>
-            <li><span class="pill warn">2 warnings</span><a class="f" href="#result">IntuneDiag-TESTPC-01.zip</a><span class="w">12 min ago</span><span class="x" title="Remove from history">&times;</span></li>
-            <li><span class="pill bad">1 problem</span><a class="f" href="#result">IntuneDiag-LAPTOP-0042.zip</a><span class="w">3 h ago</span><span class="x">&times;</span></li>
-            <li><span class="pill unk">Logs</span><a class="f" href="#files">IntuneManagementExtension.log, AgentExecutor.log</a><span class="w">1 d ago</span><span class="x">&times;</span></li>
-          </ul>
-        </div>
+      <h1>Troubleshoot Intune-managed Windows devices</h1>
+      <p>Upload IME logs or a full diagnostics package and see what actually happened: app installs, scripts, errors, device health and applied policies.</p>
+      <div class="cta"><a class="btn primary lg" href="#result">Upload logs or a package</a><span class="or">or drag and drop a <code>.zip</code> or <code>.log</code> files anywhere</span></div>
+      <div class="trust"><span class="badge">No account</span><span class="badge">Browser-only</span><span class="badge">Deleted after 24h</span><span class="badge ok">1,284 uploads analysed</span></div>
+    </div>
+    <div class="dropwrap">
+      <div class="drop">
+        <span class="ic"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12"/><path d="m7 8 5-5 5 5"/><path d="M5 21h14"/></svg></span>
+        <div class="tx"><strong>Drop a diagnostics <code>.zip</code>, <code>.log</code> files or a whole folder</strong><div>A zip opens the device health dashboard. Loose logs open the CMTrace viewer; the timeline analysis is one click away from there. Max 100 MB.</div></div>
+        <a class="btn" href="#home">Choose files</a><a class="btn ghost" href="#home">Choose a folder</a>
       </div>
     </div>
 
-    <div class="two">
-      <div class="card">
-        <h2>Don't have a package yet?</h2>
-        <p>Run <code>Collect-IntuneDiagnostics.ps1</code> in an elevated PowerShell on the device. It writes <code>IntuneDiag-&lt;device&gt;-&lt;timestamp&gt;.zip</code> to <code>%ProgramData%\Sherlog\Collect</code>. Upload that zip above.</p>
-        <a class="btn" href="#home">Download Collect-IntuneDiagnostics.ps1</a>
-      </div>
-      <div class="card">
-        <h2>Collect straight from Intune</h2>
-        <p>Deploy the collector as an Intune remediation and let devices upload here automatically. Review each device in your inbox, no manual zipping.</p>
-        <a class="btn" href="#inbox">Open inbox</a>
-      </div>
+    <div class="sec-h"><h2>Recent uploads</h2><span class="cnt">stored in this browser only</span><a class="r" href="#home" style="color:var(--bad)">Delete all</a></div>
+    <div class="grid">
+      <article class="card">
+        <div><div class="ct"><a href="#result">TESTPC-01</a></div><div class="cid">IntuneDiag-TESTPC-01.zip &middot; e096f45a</div></div>
+        <div class="cd">2 warnings: an expired machine certificate and one unreachable Intune endpoint. Timeline ready, 1 failed Win32 app.</div>
+        <div class="cb"><span class="badge warn">2 warnings</span><span class="badge">Diagnostics</span><span class="badge">12 min ago</span></div>
+        <div class="cf"><a class="btn sm ghost" href="#home">Remove</a><span class="sp"></span><a class="btn sm" href="#result">Open</a></div>
+      </article>
+      <article class="card">
+        <div><div class="ct"><a href="#result">LAPTOP-0042</a></div><div class="cid">IntuneDiag-LAPTOP-0042.zip &middot; 5c2f9fde</div></div>
+        <div class="cd">1 problem: Entra PRT missing for the signed-in user. 2 warnings. Uploaded through the inbox.</div>
+        <div class="cb"><span class="badge bad">1 problem</span><span class="badge">Diagnostics</span><span class="badge">3 h ago</span></div>
+        <div class="cf"><a class="btn sm ghost" href="#home">Remove</a><span class="sp"></span><a class="btn sm" href="#result">Open</a></div>
+      </article>
+      <article class="card">
+        <div><div class="ct"><a href="#files">Loose IME logs</a></div><div class="cid">IntuneManagementExtension.log, AgentExecutor.log</div></div>
+        <div class="cd">Raw logs in the CMTrace viewer. No timeline analysis yet; run it from the Files view.</div>
+        <div class="cb"><span class="badge">Logs</span><span class="badge">1 d ago</span></div>
+        <div class="cf"><a class="btn sm ghost" href="#home">Remove</a><span class="sp"></span><a class="btn sm" href="#files">Open</a></div>
+      </article>
     </div>
 
-    <div class="sec">
-      <div class="sec-h"><h2>How it works</h2></div>
-      <ol class="stepper">
-        <li><span class="n">1</span><div><strong>Get the logs.</strong> From <code>%ProgramData%\Microsoft\IntuneManagementExtension\Logs</code>, the Intune <em>Collect diagnostics</em> export, or the collector script.</div></li>
-        <li><span class="n">2</span><div><strong>Upload here.</strong> Drop a zip, loose logs or a folder. Nothing leaves your browser until you click Open.</div></li>
-        <li><span class="n">3</span><div><strong>Read it in the browser.</strong> Findings first, the timeline next, and every file in the package one click away, with each finding linking back to its evidence line.</div></li>
-      </ol>
+    <div class="sec-h"><h2>Get a package</h2></div>
+    <div class="grid">
+      <article class="card">
+        <div><div class="ct">Run the collector on the device</div><div class="cid">Collect-IntuneDiagnostics.ps1</div></div>
+        <div class="cd">Elevated PowerShell. Writes <code>IntuneDiag-&lt;device&gt;-&lt;timestamp&gt;.zip</code> to <code>%ProgramData%\Sherlog\Collect</code>. Upload that zip above.</div>
+        <div class="cb"><span class="badge">30+ health checks</span><span class="badge">IME logs</span><span class="badge">mdmdiagnostics</span></div>
+        <div class="cf"><a class="btn sm ghost" href="#home">View source</a><span class="sp"></span><a class="btn sm" href="#home">Download .ps1</a></div>
+      </article>
+      <article class="card">
+        <div><div class="ct">Collect straight from Intune</div><div class="cid">Remediation &rarr; /api/diagnostics</div></div>
+        <div class="cd">Deploy the collector as an Intune remediation. Devices upload here automatically; review each one in your inbox.</div>
+        <div class="cb"><span class="badge info">Intune remediation</span><span class="badge">Token-scoped</span></div>
+        <div class="cf"><span class="sp"></span><a class="btn sm" href="#inbox">Open inbox</a></div>
+      </article>
+      <article class="card">
+        <div><div class="ct">Intune export</div><div class="cid">Devices &rarr; Collect diagnostics</div></div>
+        <div class="cd">The zip Intune produces from the admin center works too; Sherlog reads the IME logs inside it.</div>
+        <div class="cb"><span class="badge">Timeline only</span></div>
+        <div class="cf"><span class="sp"></span><a class="btn sm ghost" href="#home">Docs</a></div>
+      </article>
     </div>
+
+    <div class="sec-h"><h2>How it works</h2></div>
+    <ol class="steps" style="list-style:none;margin:0;padding:0">
+      <li class="step"><span class="n">1</span><div><strong>Get the logs.</strong> From <code>%ProgramData%\Microsoft\IntuneManagementExtension\Logs</code>, the Intune export, or the collector.</div></li>
+      <li class="step"><span class="n">2</span><div><strong>Upload here.</strong> Drop a zip, loose logs or a folder. Nothing leaves your browser until you click Open.</div></li>
+      <li class="step"><span class="n">3</span><div><strong>Read it in the browser.</strong> Findings first, the timeline next, every file one click away, each finding linked to its evidence line.</div></li>
+    </ol>
   </div>
-  <footer><span>Sherlog &middot; sherlog.nl</span><span class="sp"></span><a href="#home">About</a><a href="#home">PayloadKit &#8599;</a><a href="#home">Source on GitHub</a></footer>
+  <footer><div class="wrap in"><span>Sherlog &middot; sherlog.nl</span><span class="sp"></span><a href="#home">About</a><a href="#home">Changelog</a><a href="#home">PayloadKit &#8599;</a><a href="#home">GitHub</a></div></footer>
 </section>
 
 <!-- ======================= RESULT ======================= -->
 <section class="screen" id="result" hidden>
-  <div class="ctx">
-    <div class="ctx-in">
+  <div class="wrap ctx">
+    <div class="top">
       <div>
-        <h1>TESTPC-01 <span class="pill warn">2 warnings</span> <span class="pill src">via inbox</span></h1>
-        <div class="meta">
-          <span>Tenant <b>Contoso</b></span>
-          <span>Collected <b>11 Jun 2026 10:00</b></span>
-          <span>Collector <b>1.4 &middot; Remote profile</b></span>
-          <span>Windows <b>22631.4037</b></span>
-        </div>
+        <h1>TESTPC-01 <span class="badge warn">2 warnings</span></h1>
+        <div class="cid">IntuneDiag-TESTPC-01.zip &middot; e096f45a &middot; via inbox</div>
+        <div class="meta"><span class="badge">Tenant Contoso</span><span class="badge">Collected 11 Jun 2026 10:00</span><span class="badge">Collector 1.4 &middot; Remote profile</span><span class="badge">Windows 22631.4037</span></div>
       </div>
       <div class="acts">
-        <span class="exp">expires in ~24h</span>
+        <span class="exp"><i></i>expires in ~24h</span>
         <button class="btn" type="button" id="copy">Copy findings</button>
         <button class="btn" type="button" id="more" aria-haspopup="true" aria-expanded="false">More <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M6 9l6 6 6-6"/></svg></button>
         <div class="pop" id="pop" hidden>
           <a href="#files">Download package <small>.zip</small></a>
-          <a href="#files">Download this file <small>IntuneManagementExtension.log</small></a>
+          <a href="#files">Download this file <small>IME.log</small></a>
           <a href="#inbox">Open in inbox</a>
-          <a href="#overview">dashboard.json <small>export</small></a>
-          <a href="#overview">summary.json <small>export</small></a>
+          <a href="#overview">dashboard.json</a>
+          <a href="#overview">summary.json</a>
           <div class="sep"></div>
           <a href="#home">New upload</a>
           <button type="button" class="danger">Delete from server</button>
@@ -440,90 +436,88 @@
   </div>
 
   <main class="wrap">
-    <!-- overview -->
+    <!-- overview: catalog layout, categories left, cards right -->
     <div class="panel" id="overview" role="tabpanel" aria-labelledby="t-overview">
-      <div class="verdict">
+      <div class="catalog">
+        <aside class="side">
+          <h3>Status</h3>
+          <a class="cur" href="#overview"><span class="dot warn"></span>Findings <span class="n">2</span></a>
+          <a href="#overview"><span class="dot ok"></span>Healthy <span class="n">4</span></a>
+          <a href="#overview"><span class="dot unk"></span>Not collected <span class="n">12</span></a>
+          <h3>Area</h3>
+          <a href="#overview">Identity <span class="n">3</span></a>
+          <a href="#overview">Enrollment &amp; sync <span class="n">1</span></a>
+          <a href="#overview">Apps &amp; scripts <span class="n">3</span></a>
+          <a href="#overview">Network <span class="n">4</span></a>
+          <a href="#overview">Security &amp; updates <span class="n">5</span></a>
+          <a href="#overview">System <span class="n">2</span></a>
+          <h3>Details</h3>
+          <a href="#overview">Win32 app deployments <span class="n">3</span></a>
+          <a href="#overview">Known error codes <span class="n">2</span></a>
+          <a href="#overview">Policy settings <span class="n">48</span></a>
+        </aside>
         <div>
-          <h2>2 warnings, no blocking problems</h2>
-          <p>4 checks healthy &middot; 12 not collected in the Remote profile. Every finding links to its evidence line in the package.</p>
+          <div class="verdict">
+            <div><h2>2 warnings, no blocking problems</h2><p>4 checks healthy &middot; 12 not collected in the Remote profile. Every finding links to its evidence line.</p></div>
+            <div class="bar" aria-hidden="true"><i class="w" style="width:11%"></i><i class="o" style="width:22%"></i><i class="u" style="width:67%"></i></div>
+          </div>
+
+          <div class="sec-h" style="margin-top:1.25rem"><h2>Findings</h2><span class="cnt">most severe first</span></div>
+          <div class="grid" style="grid-template-columns:1fr">
+            <article class="card finding warn">
+              <div><div class="ct">Machine certificates</div><div class="cid">Identity/certs-machine-overview.txt:14</div></div>
+              <div class="cd">1 of 2 machine certificates expired. <span class="adv" style="display:block;margin-top:.5rem"><b>What now</b>Renew or clean up the expired certificates; an expired MDM certificate silently kills sync.</span></div>
+              <div class="cb"><span class="badge warn">Warning</span><span class="badge">Identity</span><span class="badge">MDM sync health</span></div>
+              <details class="why"><summary>Why does this matter?</summary><p>Intune binds the enrollment to a machine certificate. When it expires, check-ins keep "succeeding" while policies and apps stop arriving (the zombie-device pattern).</p></details>
+              <div class="cf"><a class="btn sm ghost" href="#errorcodes">Docs</a><span class="sp"></span><a class="btn sm" href="#files">Open evidence</a></div>
+            </article>
+            <article class="card finding warn">
+              <div><div class="ct">Intune/Entra endpoints</div><div class="cid">Network/endpoint-connectivity.txt:7</div></div>
+              <div class="cd">Unreachable: <code>graph.microsoft.com</code>. 11 of 12 endpoints answered. <span class="adv" style="display:block;margin-top:.5rem"><b>What now</b>Allow the unreachable endpoints through firewall/proxy; TLS inspection also breaks Intune traffic.</span></div>
+              <div class="cb"><span class="badge warn">Warning</span><span class="badge">Network</span><span class="badge">Content delivery</span></div>
+              <details class="why"><summary>Why does this matter?</summary><p>The collector runs a TCP/TLS test against the Microsoft endpoints IME and the MDM client need. One blocked endpoint often explains "content download failed" in the timeline.</p></details>
+              <div class="cf"><a class="btn sm ghost" href="#errorcodes">Docs</a><span class="sp"></span><a class="btn sm" href="#files">Open evidence</a></div>
+            </article>
+          </div>
+
+          <div class="sec-h"><h2>Healthy</h2><span class="cnt">4 checks</span></div>
+          <div class="tcard healthy"><ul>
+            <li><span class="dot ok"></span>Entra joined <code>YES</code><span class="g">Identity</span></li>
+            <li><span class="dot ok"></span>Entra PRT <code>YES (interactive user)</code><span class="g">Identity</span></li>
+            <li><span class="dot ok"></span>MDM enrollment <code>enrollment.manage.microsoft.com</code><span class="g">Enrollment &amp; sync</span></li>
+            <li><span class="dot ok"></span>IME service <code>Running</code><span class="g">Apps &amp; scripts</span></li>
+          </ul></div>
+
+          <div class="sec-h"><h2>Not collected</h2><span class="cnt">12 checks</span></div>
+          <details class="notc">
+            <summary>This package was made with the Remote profile <small>&middot; run the collector without <code>-Remote</code> to include these</small></summary>
+            <div class="chips" style="margin-top:.7rem"><span class="badge">Installed apps</span><span class="badge">Win32 apps</span><span class="badge">WinHTTP proxy</span><span class="badge">Firewall</span><span class="badge">TLS inspection</span><span class="badge">TPM</span><span class="badge">BitLocker</span><span class="badge">Secure Boot</span><span class="badge">Pending reboot</span><span class="badge">Windows Update</span><span class="badge">Disk space</span><span class="badge">Time sync</span></div>
+          </details>
+
+          <div class="sec-h"><h2>Details</h2><span class="cnt">tables from the package</span></div>
+          <div class="tcard" style="margin-bottom:1rem">
+            <div class="th"><h3>Win32 app deployments</h3><span class="n">3 apps &middot; 1 failed</span><a class="btn sm ghost r" href="#files">Source</a></div>
+            <div class="tw"><table>
+              <thead><tr><th>App</th><th>Status</th><th>Error code</th><th>Meaning</th><th>Last attempt</th></tr></thead>
+              <tbody>
+                <tr><td>7-Zip 24.08 (x64)</td><td><span class="badge bad">Failed</span></td><td class="mono">0x87D1041C</td><td>The application was installed but the detection rules do not find it.</td><td class="mono">2026-06-11 09:52</td></tr>
+                <tr><td>Company Portal</td><td><span class="badge ok">Installed</span></td><td class="mono">0x0</td><td></td><td class="mono">2026-06-11 09:41</td></tr>
+                <tr><td>Adobe Reader DC</td><td><span class="badge ok">Installed</span></td><td class="mono">0x0</td><td></td><td class="mono">2026-06-10 17:03</td></tr>
+              </tbody></table></div>
+          </div>
+          <div class="tcard" style="margin-bottom:1rem">
+            <div class="th"><h3>Known error codes</h3><span class="n">2 codes across all logs</span><a class="btn sm ghost r" href="#errorcodes">All codes</a></div>
+            <div class="tw"><table><thead><tr><th>Code</th><th>Count</th><th>Meaning</th></tr></thead>
+              <tbody><tr><td class="mono">0x87D1041C</td><td>3&times;</td><td>Detection rule not satisfied after installation.</td></tr>
+              <tr><td class="mono">0x80072EE7</td><td>1&times;</td><td>The server name could not be resolved (DNS).</td></tr></tbody></table></div>
+          </div>
+          <div class="tcard">
+            <div class="th"><h3>Policy settings (RSOP)</h3><span class="n">48 settings</span><input class="input r" type="search" placeholder="Filter rows…" aria-label="Filter rows" style="padding:.3rem .6rem;font-size:.8rem"></div>
+            <div class="tw"><table><thead><tr><th>Setting</th><th>OMA-URI</th><th>Value</th></tr></thead>
+              <tbody><tr><td>Require Device Encryption</td><td class="mono">./Device/Vendor/MSFT/BitLocker/RequireDeviceEncryption</td><td class="mono">1</td></tr>
+              <tr><td>Allow Cortana</td><td class="mono">./Device/Vendor/MSFT/Policy/Config/Experience/AllowCortana</td><td class="mono">0</td></tr></tbody></table></div>
+          </div>
         </div>
-        <div>
-          <div class="bar" aria-hidden="true"><i class="w" style="width:11%"></i><i class="o" style="width:22%"></i><i class="u" style="width:67%"></i></div>
-          <div class="legend"><span><i style="background:var(--warn)"></i>2 warnings</span><span><i style="background:var(--ok)"></i>4 ok</span><span><i style="background:var(--unk)"></i>12 not collected</span></div>
-        </div>
-      </div>
-
-      <div class="sec">
-        <div class="sec-h"><h2>Findings</h2><span class="cnt">most severe first</span></div>
-        <article class="finding warn">
-          <span class="st warn"></span>
-          <div>
-            <h3>Machine certificates <span class="grp">Identity</span></h3>
-            <p class="val">1 of 2 expired</p>
-            <p class="adv"><b>What now</b> Renew or clean up the expired certificates; an expired MDM certificate silently kills sync.</p>
-          </div>
-          <div class="ev">
-            <a class="btn sm" href="#files">Open evidence &rarr;</a>
-            <span class="file">Identity/certs-machine-overview.txt:14</span>
-          </div>
-          <details class="why"><summary>Why does this matter?</summary><p>Intune binds the enrollment to a machine certificate. When it expires, check-ins keep "succeeding" while policies and apps stop arriving (the zombie-device pattern).</p></details>
-        </article>
-        <article class="finding warn">
-          <span class="st warn"></span>
-          <div>
-            <h3>Intune/Entra endpoints <span class="grp">Network</span></h3>
-            <p class="val">unreachable: <code>graph.microsoft.com</code></p>
-            <p class="adv"><b>What now</b> Allow the unreachable endpoints through firewall/proxy; TLS inspection also breaks Intune traffic.</p>
-          </div>
-          <div class="ev">
-            <a class="btn sm" href="#files">Open evidence &rarr;</a>
-            <span class="file">Network/endpoint-connectivity.txt:7</span>
-          </div>
-          <details class="why"><summary>Why does this matter?</summary><p>The collector runs a TCP/TLS test against the Microsoft endpoints IME and the MDM client need. One blocked endpoint often explains "content download failed" in the timeline.</p></details>
-        </article>
-      </div>
-
-      <div class="sec">
-        <div class="sec-h"><h2>Healthy</h2><span class="cnt">4 checks</span></div>
-        <div class="healthy">
-          <div class="row"><span class="g">Identity</span><ul><li><span class="st ok"></span>Entra joined <span>YES</span></li><li><span class="st ok"></span>Entra PRT <span>YES</span></li></ul></div>
-          <div class="row"><span class="g">Enrollment</span><ul><li><span class="st ok"></span>MDM enrollment <code>enrollment.manage.microsoft.com</code></li></ul></div>
-          <div class="row"><span class="g">Apps</span><ul><li><span class="st ok"></span>IME service <span>Running</span></li></ul></div>
-        </div>
-      </div>
-
-      <div class="sec">
-        <details class="notc">
-          <summary>Not collected <small>12 checks &middot; this package was made with the Remote profile</small></summary>
-          <p style="margin:.5rem 0 0">These checks no longer take up a grey card each. Run the collector without <code>-Remote</code> to include them.</p>
-          <div class="chips"><span class="chip">Installed apps</span><span class="chip">Win32 apps</span><span class="chip">WinHTTP proxy</span><span class="chip">Firewall</span><span class="chip">TLS inspection</span><span class="chip">TPM</span><span class="chip">BitLocker</span><span class="chip">Secure Boot</span><span class="chip">Pending reboot</span><span class="chip">Windows Update</span><span class="chip">Disk space</span><span class="chip">Time sync</span></div>
-        </details>
-      </div>
-
-      <div class="sec">
-        <div class="sec-h"><h2>Details</h2><span class="cnt">tables from the package</span></div>
-        <details class="dt" open>
-          <summary>Win32 app deployments <span class="n">3 apps &middot; 1 failed</span><a class="src" href="#files">source &rarr;</a></summary>
-          <div class="tw"><table>
-            <thead><tr><th>App</th><th>Status</th><th>Error code</th><th>Meaning</th><th>Last attempt</th></tr></thead>
-            <tbody>
-              <tr><td>7-Zip 24.08 (x64)</td><td><span class="st bad"></span>Failed</td><td class="mono">0x87D1041C</td><td>The application was installed but the detection rules do not find it.</td><td class="mono">2026-06-11 09:52</td></tr>
-              <tr><td>Company Portal</td><td><span class="st ok"></span>Installed</td><td class="mono">0x0</td><td></td><td class="mono">2026-06-11 09:41</td></tr>
-              <tr><td>Adobe Reader DC</td><td><span class="st ok"></span>Installed</td><td class="mono">0x0</td><td></td><td class="mono">2026-06-10 17:03</td></tr>
-            </tbody></table></div>
-        </details>
-        <details class="dt">
-          <summary>Known error codes <span class="n">2 codes across all logs</span></summary>
-          <div class="tw"><table><thead><tr><th>Code</th><th>Count</th><th>Meaning</th></tr></thead>
-            <tbody><tr><td class="mono">0x87D1041C</td><td>3&times;</td><td>Detection rule not satisfied after installation.</td></tr>
-            <tr><td class="mono">0x80072EE7</td><td>1&times;</td><td>The server name could not be resolved (DNS).</td></tr></tbody></table></div>
-        </details>
-        <details class="dt">
-          <summary>Policy settings (RSOP) <span class="n">48 settings</span><a class="src" href="#files">source &rarr;</a></summary>
-          <div class="tw"><table><thead><tr><th>Setting</th><th>OMA-URI</th><th>Value</th></tr></thead>
-            <tbody><tr><td>Require Device Encryption</td><td class="mono">./Device/Vendor/MSFT/BitLocker/RequireDeviceEncryption</td><td class="mono">1</td></tr>
-            <tr><td>Allow Cortana</td><td class="mono">./Device/Vendor/MSFT/Policy/Config/Experience/AllowCortana</td><td class="mono">0</td></tr></tbody></table></div>
-        </details>
       </div>
     </div>
 
@@ -535,16 +529,12 @@
         <div class="stat warn"><div class="k">Warnings</div><div class="v">1</div></div>
         <div class="stat"><div class="k">Downloads</div><div class="v">412 MB <small>in 6 min</small></div></div>
       </div>
-      <div class="sec">
-        <div class="sec-h"><h2>Failed items</h2><span class="cnt">click a row to open the log line</span></div>
-        <div class="dt" style="margin:0"><div class="tw" style="border-top:0"><table>
-          <thead><tr><th>Type</th><th>Name</th><th>Status</th><th>Error code</th><th>Time</th></tr></thead>
-          <tbody><tr><td>Win32App</td><td>7-Zip 24.08 (x64)</td><td><span class="st bad"></span>Failed</td><td class="mono">0x87D1041C</td><td class="mono">09:52:14</td></tr></tbody></table></div></div>
-      </div>
-      <div class="sec">
-        <div class="sec-h"><h2>Original report</h2><span class="cnt">Get-IntuneManagementExtensionDiagnostics, sandboxed</span></div>
-        <div class="frame">The existing HTML timeline report loads here in the sandboxed iframe, unchanged.</div>
-      </div>
+      <div class="sec-h"><h2>Failed items</h2><span class="cnt">click a row to open the log line</span></div>
+      <div class="tcard"><div class="tw"><table>
+        <thead><tr><th>Type</th><th>Name</th><th>Status</th><th>Error code</th><th>Time</th></tr></thead>
+        <tbody><tr><td>Win32App</td><td>7-Zip 24.08 (x64)</td><td><span class="badge bad">Failed</span></td><td class="mono">0x87D1041C</td><td class="mono">09:52:14</td></tr></tbody></table></div></div>
+      <div class="sec-h"><h2>Original report</h2><span class="cnt">Get-IntuneManagementExtensionDiagnostics, sandboxed</span></div>
+      <div class="frame">The existing HTML timeline report loads here in the sandboxed iframe, unchanged.</div>
     </div>
 
     <!-- files -->
@@ -552,7 +542,7 @@
       <div class="files">
         <aside class="tree">
           <div class="search">
-            <input type="search" id="pkgq" value="0x87D1041C" aria-label="Search all files">
+            <input class="input" type="search" id="pkgq" value="0x87D1041C" aria-label="Search all files">
             <div class="hits">3 matches in 2 files
               <div class="hit"><b>IntuneManagementExtension.log:1842</b><span>[Win32App] Detection rule not satisfied after install, 0x87D1041C</span></div>
               <div class="hit"><b>AppWorkload.log:311</b><span>ExitCode 0x87D1041C for app 7-Zip 24.08</span></div>
@@ -579,8 +569,8 @@
         <div class="viewer">
           <div class="vbar">
             <div class="crumb">Apps-IME / Logs / <b>IntuneManagementExtension.log</b></div>
-            <input type="search" placeholder="Filter text…" aria-label="Filter text">
-            <select aria-label="Severity"><option>All severities</option><option>Warnings + errors</option><option>Errors</option><option>Warnings</option></select>
+            <input class="input" type="search" placeholder="Filter text…" aria-label="Filter text">
+            <select class="input" aria-label="Severity" style="padding:.3rem .6rem;font-size:.8rem"><option>All severities</option><option>Warnings + errors</option><option>Errors</option><option>Warnings</option></select>
             <a class="btn sm" href="#files">Download</a>
           </div>
           <div class="log"><table>
@@ -600,123 +590,98 @@
 
 <!-- ======================= INBOX ======================= -->
 <section class="screen" id="inbox" hidden>
-  <div class="wrap">
+  <div class="wrap" style="padding-top:1.5rem">
     <div class="keybar">
       <label for="ikey">Inbox key</label>
-      <input id="ikey" type="password" value="shk_d5pr5H2FSfN3hpE0j0-ZVM3V7oLv1vR42b9gDnSaWFY" aria-label="Inbox key">
+      <input class="input" id="ikey" type="password" value="shk_d5pr5H2FSfN3hpE0j0-ZVM3V7oLv1vR42b9gDnSaWFY" aria-label="Inbox key">
       <a class="btn" href="#inbox">Lock</a>
       <a class="btn primary" href="#setup">Set up a new inbox</a>
     </div>
-    <div class="banner"><span class="st warn"></span><span><strong>Legacy token.</strong> This inbox still uses one secret for uploading and reading. Anyone who can see the detection script can open it.</span><a class="btn sm" href="#setup">Generate a new key</a></div>
+    <div class="banner"><span class="dot warn"></span><span><strong>Legacy token.</strong> This inbox still uses one secret for uploading and reading. Anyone who can see the detection script can open it.</span><a class="btn sm" href="#setup">Generate a new key</a></div>
 
-    <div class="sec">
-      <div class="sec-h"><h2>Devices</h2><span class="cnt">4 uploads of 200 &middot; refreshes every 30 s while a collection runs</span><a href="#inbox" style="color:var(--bad)">Delete all</a></div>
-      <div class="fleet">
-        <div class="hd"><span></span><span>Device</span><span>Uploads</span><span>Last upload</span><span>Change since previous</span><span></span></div>
-
-        <div class="dev"><span class="st run"></span><b>NB-KRIS-01</b><span class="m">collecting…</span><span class="m">started 2 min ago</span><span class="delta"></span><span class="acts"></span></div>
-
-        <div class="dev" data-open="ups1"><span class="st bad"></span><b>LAPTOP-0042</b><span class="m">2</span><span class="m">today 12:16</span><span class="delta bad">+1 problem (Entra PRT)</span><span class="acts"><a class="btn sm" href="#result">Open latest</a></span></div>
-        <div class="ups" id="ups1">
-          <div class="up"><span><span class="pill bad">1 problem</span> &nbsp;2 warnings &middot; timeline ready</span><span>today 12:16</span><span>1.4 &middot; Remote &middot; anonymized</span><span class="acts"><a href="#result">open</a> &nbsp; <a href="#inbox" style="color:var(--bad)">delete</a></span></div>
-          <div class="up"><span><span class="pill warn">2 warnings</span> &nbsp;timeline ready</span><span>yesterday 08:02</span><span>1.4 &middot; Remote</span><span class="acts"><a href="#result">open</a> &nbsp; <a href="#inbox" style="color:var(--bad)">delete</a></span></div>
-        </div>
-
-        <div class="dev"><span class="st warn"></span><b>TESTPC-01</b><span class="m">1</span><span class="m">today 10:00</span><span class="delta">first upload</span><span class="acts"><a class="btn sm" href="#result">Open latest</a></span></div>
-        <div class="dev"><span class="st ok"></span><b>DESKTOP-17</b><span class="m">1</span><span class="m">Mon 16:40</span><span class="delta ok">no problems</span><span class="acts"><a class="btn sm" href="#result">Open latest</a></span></div>
+    <div class="sec-h"><h2>Devices</h2><span class="cnt">4 uploads of 200 &middot; refreshes every 30 s while a collection runs</span><a class="r" href="#inbox" style="color:var(--bad)">Delete all</a></div>
+    <div class="tcard">
+      <div class="dev" style="border-top:0"><span class="dot run"></span><b>NB-KRIS-01</b><span class="m"></span><span class="m"><span class="badge run"><i></i>collecting…</span></span><span class="m">started 2 min ago</span><span></span></div>
+      <div class="dev" data-open="ups1"><span class="dot bad"></span><b>LAPTOP-0042</b><span class="m">2 uploads</span><span class="m">today 12:16</span><span class="delta bad">+1 problem (Entra PRT)</span><a class="btn sm" href="#result">Open latest</a></div>
+      <div class="ups" id="ups1">
+        <div class="up"><span><span class="badge bad">1 problem</span> <span class="badge warn">2 warnings</span> timeline ready</span><span>today 12:16</span><span>1.4 &middot; Remote &middot; anonymized</span><span class="acts"><a href="#result">open</a><a class="del" href="#inbox">delete</a></span></div>
+        <div class="up"><span><span class="badge warn">2 warnings</span> timeline ready</span><span>yesterday 08:02</span><span>1.4 &middot; Remote</span><span class="acts"><a href="#result">open</a><a class="del" href="#inbox">delete</a></span></div>
       </div>
+      <div class="dev"><span class="dot warn"></span><b>TESTPC-01</b><span class="m">1 upload</span><span class="m">today 10:00</span><span class="delta">first upload</span><a class="btn sm" href="#result">Open latest</a></div>
+      <div class="dev"><span class="dot ok"></span><b>DESKTOP-17</b><span class="m">1 upload</span><span class="m">Mon 16:40</span><span class="delta ok">no problems</span><a class="btn sm" href="#result">Open latest</a></div>
     </div>
 
-    <div class="sec" id="setup">
-      <div class="sec-h"><h2>Set up a new inbox</h2><span class="cnt">three steps, shown together here; in the app step 2 and 3 unfold after step 1</span></div>
-      <div class="wizard">
-        <div class="step">
-          <span class="n">1</span>
-          <h3>Keep the inbox key</h3>
-          <p>Shown once. It is the only way to open or clear this inbox. Never put it in a script.</p>
-          <span class="tokval">shk_d5pr5H2FSfN3hpE0j0-ZVM3V7oLv1vR42b9gDnSaWFY</span>
-          <div class="row"><a class="btn sm" href="#setup">Copy key</a><a class="btn sm" href="#setup">Regenerate</a></div>
-        </div>
-        <div class="step">
-          <span class="n">2</span>
-          <h3>Copy the detection script</h3>
-          <p>The derived upload token is already filled in. It can upload and report status, nothing else.</p>
-          <span class="tokval">shu_zVXsg9YAfnArPM6wT-4XuV6fKWNbYM5fUfEEgnvwNRE</span>
-          <div class="row"><a class="btn sm primary" href="#setup">Copy script</a><a class="btn sm" href="#setup">Download .ps1</a><label><input type="checkbox"> Anonymize tenant/company</label></div>
-          <p style="margin:.6rem 0 0">Pins collector SHA-256 <code>C9022A0D…260B0</code>. After a Sherlog update that changes the collector, copy the script again.</p>
-        </div>
-        <div class="step">
-          <span class="n">3</span>
-          <h3>Deploy in Intune</h3>
-          <ol>
-            <li><strong>Devices &rarr; Scripts and remediations &rarr; Create</strong></li>
-            <li>Paste as the <strong>Detection script</strong>; leave the remediation script empty</li>
-            <li>64-bit PowerShell: <code>Yes</code> &middot; logged-on credentials: <code>No</code></li>
-            <li>Assign to a device group, or pick a device &rarr; <strong>Run remediation</strong></li>
-          </ol>
-          <p style="margin:.6rem 0 0">Devices appear above within minutes, first as "collecting…".</p>
-        </div>
-      </div>
+    <div class="sec-h" id="setup"><h2>Set up a new inbox</h2><span class="cnt">three steps, shown together here; in the app step 2 and 3 unfold after step 1</span></div>
+    <div class="wizard">
+      <article class="card">
+        <div><span class="badge info">Step 1</span><div class="ct" style="margin-top:.5rem">Keep the inbox key</div><div class="cid">shk_… &middot; shown once</div></div>
+        <div class="cd">It is the only way to open or clear this inbox. It travels in the request body, never in the URL. Never put it in a script.</div>
+        <div><span class="tokval">shk_d5pr5H2FSfN3hpE0j0-ZVM3V7oLv1vR42b9gDnSaWFY</span></div>
+        <div class="cf"><a class="btn sm ghost" href="#setup">Regenerate</a><span class="sp"></span><a class="btn sm" href="#setup">Copy key</a></div>
+      </article>
+      <article class="card">
+        <div><span class="badge info">Step 2</span><div class="ct" style="margin-top:.5rem">Copy the detection script</div><div class="cid">shu_… upload token filled in</div></div>
+        <div class="cd">The derived upload token can upload and report status, nothing else. Pins collector SHA-256 <code>C9022A0D…260B0</code>; after a Sherlog update that changes the collector, copy the script again.</div>
+        <div class="row"><label><input type="checkbox"> Anonymize tenant/company</label></div>
+        <div class="cf"><a class="btn sm ghost" href="#setup">Download .ps1</a><span class="sp"></span><a class="btn sm primary" href="#setup">Copy script</a></div>
+      </article>
+      <article class="card">
+        <div><span class="badge info">Step 3</span><div class="ct" style="margin-top:.5rem">Deploy in Intune</div><div class="cid">Devices &rarr; Scripts and remediations</div></div>
+        <div class="cd"><ol>
+          <li><strong>Create</strong> a script package; paste as the <strong>Detection script</strong>, leave the remediation script empty</li>
+          <li>64-bit PowerShell: <code>Yes</code> &middot; logged-on credentials: <code>No</code></li>
+          <li>Assign to a device group, or pick a device &rarr; <strong>Run remediation</strong></li>
+        </ol></div>
+        <div class="cf"><span class="sp"></span><a class="btn sm ghost" href="#inbox">Devices appear above within minutes</a></div>
+      </article>
     </div>
   </div>
-  <footer><span>Sherlog &middot; sherlog.nl</span><span class="sp"></span><a href="#home">About</a><a href="#home">PayloadKit &#8599;</a></footer>
+  <footer><div class="wrap in"><span>Sherlog &middot; sherlog.nl</span><span class="sp"></span><a href="#home">About</a><a href="#home">Changelog</a><a href="#home">PayloadKit &#8599;</a></div></footer>
 </section>
 
 <!-- ======================= ERROR CODES ======================= -->
 <section class="screen" id="errorcodes" hidden>
-  <div class="wrap">
-    <div class="ecsearch">
-      <input type="search" placeholder="Filter by code or text, e.g. 0x87D1041C, detection, proxy…" aria-label="Filter error codes">
-      <span class="fam"><a href="#f-win32">Win32 app</a><a href="#f-mdm">MDM / enrollment</a><a href="#f-http">HTTP / network</a><a href="#f-msi">MSI</a><a href="#f-do">Delivery Optimization</a></span>
-      <span style="color:var(--muted);font-size:.82rem">110 codes</span>
-    </div>
-
-    <div class="ec" id="f-win32">
-      <div class="fh"><h2>Win32 app (IME)</h2><span>0x87D1… &middot; 24 codes</span></div>
-      <div class="r"><code>0x87D1041C</code><button class="cp" type="button">copy</button><span class="mean">The application was successfully installed but is not detected after install. Check the detection rule.</span></div>
-      <div class="r"><code>0x87D13B9F</code><button class="cp" type="button">copy</button><span class="mean">The app is not applicable to this device (requirement rule not met).</span></div>
-      <div class="r"><code>0x87D30067</code><button class="cp" type="button">copy</button><span class="mean">A file hash mismatch was found; the downloaded content does not match the package. Re-upload the .intunewin.</span></div>
-      <div class="r"><code>0x87D300CF</code><button class="cp" type="button">copy</button><span class="mean">Download of the app content timed out. Check proxy, Delivery Optimization and endpoint reachability.</span></div>
-    </div>
-
-    <div class="ec" id="f-mdm">
-      <div class="fh"><h2>MDM enrollment and sync</h2><span>0x8018… &middot; 18 codes</span></div>
-      <div class="r"><code>0x80180001</code><button class="cp" type="button">copy</button><span class="mean">Enrollment failed: invalid data received from the enrollment server.</span></div>
-      <div class="r"><code>0x8018000A</code><button class="cp" type="button">copy</button><span class="mean">The device is already enrolled (MDM enrollment record exists). Remove the stale enrollment first.</span></div>
-      <div class="r"><code>0x80180014</code><button class="cp" type="button">copy</button><span class="mean">The MDM certificate on the device is missing or invalid; the enrollment must be repaired.</span></div>
-    </div>
-
-    <div class="ec" id="f-http">
-      <div class="fh"><h2>HTTP and network</h2><span>0x8007… / 0x80072… &middot; 22 codes</span></div>
-      <div class="r"><code>0x80072EE7</code><button class="cp" type="button">copy</button><span class="mean">The server name or address could not be resolved. DNS or proxy issue.</span></div>
-      <div class="r"><code>0x80072EFD</code><button class="cp" type="button">copy</button><span class="mean">A connection with the server could not be established.</span></div>
-      <div class="r"><code>0x80072F8F</code><button class="cp" type="button">copy</button><span class="mean">A security error occurred: the TLS handshake failed. Check the device clock and TLS inspection.</span></div>
-      <div class="r"><code>0x80190190</code><button class="cp" type="button">copy</button><span class="mean">HTTP 400 Bad Request from the service.</span></div>
-      <div class="r"><code>0x80190191</code><button class="cp" type="button">copy</button><span class="mean">HTTP 401 Unauthorized: the device token was rejected.</span></div>
-    </div>
-
-    <div class="ec" id="f-msi">
-      <div class="fh"><h2>MSI (Windows Installer)</h2><span>16xx / 3010 &middot; 20 codes</span></div>
-      <div class="r"><code>1603</code><button class="cp" type="button">copy</button><span class="mean">Fatal error during installation. Check the application's install log.</span></div>
-      <div class="r"><code>1618</code><button class="cp" type="button">copy</button><span class="mean">Another installation is already in progress. Wait and retry.</span></div>
-      <div class="r"><code>1641</code><button class="cp" type="button">copy</button><span class="mean">The installer initiated a restart; the install succeeded.</span></div>
-      <div class="r"><code>3010</code><button class="cp" type="button">copy</button><span class="mean">A restart is required to complete the install; the install succeeded.</span></div>
-    </div>
-
-    <div class="ec" id="f-do">
-      <div class="fh"><h2>Delivery Optimization</h2><span>0x80D0… &middot; 16 codes</span></div>
-      <div class="r"><code>0x80D02002</code><button class="cp" type="button">copy</button><span class="mean">The download timed out. Check proxy configuration and DO endpoint reachability.</span></div>
-      <div class="r"><code>0x80D03805</code><button class="cp" type="button">copy</button><span class="mean">The download was paused because the device is on a metered connection.</span></div>
+  <div class="wrap" style="padding-top:1.5rem">
+    <div class="sec-h" style="margin-top:0"><h2 style="font-size:1.5rem;font-weight:700;letter-spacing:-.02em">Intune &amp; Win32 error codes</h2><span class="cnt">searchable reference of the codes Sherlog recognises</span></div>
+    <div class="catalog">
+      <aside class="side">
+        <h3>Family</h3>
+        <a class="cur" href="#errorcodes">All <span class="n">110</span></a>
+        <a href="#errorcodes">Win32 app (IME) <span class="n">24</span></a>
+        <a href="#errorcodes">MDM enrollment <span class="n">18</span></a>
+        <a href="#errorcodes">HTTP / network <span class="n">22</span></a>
+        <a href="#errorcodes">MSI <span class="n">20</span></a>
+        <a href="#errorcodes">Delivery Optimization <span class="n">16</span></a>
+        <a href="#errorcodes">Windows / other <span class="n">10</span></a>
+      </aside>
+      <div>
+        <div class="toolbar">
+          <input class="input" type="search" placeholder="Filter by code or text, e.g. 0x87D1041C, detection, proxy…" aria-label="Filter error codes" style="flex:1;min-width:14rem">
+          <div class="tabs"><button class="tab" aria-selected="true">All</button><button class="tab">Seen in this package</button></div>
+          <span class="cnt">110 codes</span>
+        </div>
+        <div class="grid">
+          <article class="card eccard"><div><div class="ct">0x87D1041C</div><div class="cid">Win32 app (IME)</div></div><div class="cd">The application was successfully installed but is not detected after install. Check the detection rule.</div><div class="cb"><span class="badge warn">Seen 3&times; in this package</span><span class="badge">Detection</span></div><div class="cf"><button class="btn sm ghost cp" type="button">Copy code</button><span class="sp"></span><a class="btn sm" href="#files">Find in logs</a></div></article>
+          <article class="card eccard"><div><div class="ct">0x87D13B9F</div><div class="cid">Win32 app (IME)</div></div><div class="cd">The app is not applicable to this device: a requirement rule was not met.</div><div class="cb"><span class="badge">Requirements</span></div><div class="cf"><button class="btn sm ghost cp" type="button">Copy code</button><span class="sp"></span><a class="btn sm ghost" href="#errorcodes">Docs</a></div></article>
+          <article class="card eccard"><div><div class="ct">0x87D30067</div><div class="cid">Win32 app (IME)</div></div><div class="cd">A file hash mismatch was found; the downloaded content does not match the package. Re-upload the .intunewin.</div><div class="cb"><span class="badge">Content</span></div><div class="cf"><button class="btn sm ghost cp" type="button">Copy code</button><span class="sp"></span><a class="btn sm ghost" href="#errorcodes">Docs</a></div></article>
+          <article class="card eccard"><div><div class="ct">0x80072EE7</div><div class="cid">HTTP / network</div></div><div class="cd">The server name or address could not be resolved. DNS or proxy issue.</div><div class="cb"><span class="badge warn">Seen 1&times; in this package</span><span class="badge">DNS</span></div><div class="cf"><button class="btn sm ghost cp" type="button">Copy code</button><span class="sp"></span><a class="btn sm" href="#files">Find in logs</a></div></article>
+          <article class="card eccard"><div><div class="ct">0x80072F8F</div><div class="cid">HTTP / network</div></div><div class="cd">A security error occurred: the TLS handshake failed. Check the device clock and TLS inspection.</div><div class="cb"><span class="badge">TLS</span></div><div class="cf"><button class="btn sm ghost cp" type="button">Copy code</button><span class="sp"></span><a class="btn sm ghost" href="#errorcodes">Docs</a></div></article>
+          <article class="card eccard"><div><div class="ct">0x8018000A</div><div class="cid">MDM enrollment</div></div><div class="cd">The device is already enrolled; an MDM enrollment record exists. Remove the stale enrollment first.</div><div class="cb"><span class="badge">Enrollment</span></div><div class="cf"><button class="btn sm ghost cp" type="button">Copy code</button><span class="sp"></span><a class="btn sm ghost" href="#errorcodes">Docs</a></div></article>
+          <article class="card eccard"><div><div class="ct">1603</div><div class="cid">MSI (Windows Installer)</div></div><div class="cd">Fatal error during installation. Check the application's own install log.</div><div class="cb"><span class="badge">Installer</span></div><div class="cf"><button class="btn sm ghost cp" type="button">Copy code</button><span class="sp"></span><a class="btn sm ghost" href="#errorcodes">Docs</a></div></article>
+          <article class="card eccard"><div><div class="ct">1618</div><div class="cid">MSI (Windows Installer)</div></div><div class="cd">Another installation is already in progress. Wait and retry.</div><div class="cb"><span class="badge">Installer</span></div><div class="cf"><button class="btn sm ghost cp" type="button">Copy code</button><span class="sp"></span><a class="btn sm ghost" href="#errorcodes">Docs</a></div></article>
+          <article class="card eccard"><div><div class="ct">0x80D02002</div><div class="cid">Delivery Optimization</div></div><div class="cd">The download timed out. Check proxy configuration and Delivery Optimization endpoint reachability.</div><div class="cb"><span class="badge">Download</span></div><div class="cf"><button class="btn sm ghost cp" type="button">Copy code</button><span class="sp"></span><a class="btn sm ghost" href="#errorcodes">Docs</a></div></article>
+        </div>
+      </div>
     </div>
   </div>
-  <footer><span>Sherlog &middot; sherlog.nl</span><span class="sp"></span><a href="#home">About</a><a href="#home">PayloadKit &#8599;</a></footer>
+  <footer><div class="wrap in"><span>Sherlog &middot; sherlog.nl</span><span class="sp"></span><a href="#home">About</a><a href="#home">Changelog</a><a href="#home">PayloadKit &#8599;</a></div></footer>
 </section>
 
 <script>
 (function(){
   var SCREENS=['home','result','inbox','errorcodes'];
   var TABS=['overview','timeline','files'];
-  var tabs=[].slice.call(document.querySelectorAll('.tab'));
+  var tabs=[].slice.call(document.querySelectorAll('#result .tab[role=tab]'));
   function showTab(id){
     tabs.forEach(function(t){var on=t.getAttribute('aria-controls')===id;
       t.setAttribute('aria-selected',String(on));
@@ -725,13 +690,13 @@
   function showScreen(id){
     SCREENS.forEach(function(s){document.getElementById(s).hidden=(s!==id);});
     [].slice.call(document.querySelectorAll('[data-s]')).forEach(function(a){
-      a.classList.toggle('cur',a.getAttribute('data-s')===id||(id==='result'&&a.getAttribute('data-s')==='home'&&a.closest('nav')!==null));});
+      var s=a.getAttribute('data-s');
+      a.classList.toggle('cur',s===id||(id==='result'&&s==='home'&&a.classList.contains('pill-nav')));});
   }
   function go(token){
     if(TABS.indexOf(token)>=0){showScreen('result');showTab(token);}
     else if(SCREENS.indexOf(token)>=0){showScreen(token);}
     else if(token==='setup'){showScreen('inbox');var el=document.getElementById('setup');if(el)el.scrollIntoView({block:'start'});return;}
-    else if(token.indexOf('f-')===0){showScreen('errorcodes');var e2=document.getElementById(token);if(e2)e2.scrollIntoView({block:'start'});return;}
     else return;
     window.scrollTo({top:0});
     try{history.replaceState(null,'','#'+token)}catch(e){}
@@ -743,7 +708,6 @@
   });
   try{history.scrollRestoration='manual'}catch(e){}
   go((location.hash||'#home').replace('#','')||'home');
-  // The browser's own hash jump lands after load; undo it so screens open at the top.
   setTimeout(function(){window.scrollTo(0,0)},0);
   window.addEventListener('load',function(){setTimeout(function(){window.scrollTo(0,0)},0)});
 
@@ -759,8 +723,8 @@
     try{navigator.clipboard.writeText(txt).then(done,done)}catch(e){done()}
   });
   [].slice.call(document.querySelectorAll('.cp')).forEach(function(b){
-    b.addEventListener('click',function(){var c=b.previousElementSibling.textContent;
-      var done=function(){b.textContent='copied';setTimeout(function(){b.textContent='copy'},1200)};
+    b.addEventListener('click',function(){var c=b.closest('.card').querySelector('.ct').textContent;
+      var done=function(){b.textContent='Copied';setTimeout(function(){b.textContent='Copy code'},1200)};
       try{navigator.clipboard.writeText(c).then(done,done)}catch(e){done()}});
   });
   [].slice.call(document.querySelectorAll('.dev[data-open]')).forEach(function(d){
