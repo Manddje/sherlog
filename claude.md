@@ -54,7 +54,12 @@ achtergrondtaak (`JOB_RETENTION_HOURS`, default 24), gerekend vanaf de
 `created`-stempel in job.json (`job_created_at`; mtime alleen als fallback —
 statusupdates bumpen de mtime). Alle JSON-state gaat via
 `atomic_write_json` (unieke tmp + `os.replace`). Precies **één proces** per
-`JOBS_DIR`: `acquire_worker_lock()` (flock op `.worker.lock`) in de lifespan. Twee soorten niet-job-
+`JOBS_DIR`: `try_worker_lock()` (flock op `.worker.lock`, houder schrijft
+"hostname pid") in de lifespan. Zelfde hostname als de houder → hard
+fout (tweede worker); andere/onbekende hostname → standby
+(`_wait_for_worker_lock`) tot de oude container stopt, dan `_become_primary`
+(`fail_interrupted_jobs` met `_owned_jobs` als skip-set + `cleanup_loop`).
+Nodig voor Coolify's rolling update op een gedeeld volume. Twee soorten niet-job-
 bestanden staan in de root, allebei **bestanden i.p.v. dirs** en daarmee
 onzichtbaar voor `iter_job_dirs` (en dus voor de retentie-sweep, de jobcaps en
 `fail_interrupted_jobs`): `upload-count.json` — de cumulatieve upload-teller

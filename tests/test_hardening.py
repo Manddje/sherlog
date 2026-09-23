@@ -604,3 +604,76 @@ def test_inbox_limit_counts_only_empty_lookups(mk):
     codes = [c.post("/inbox", data={"token": "g" * 30 + str(i)}).status_code
              for i in range(5)]
     assert codes[:3] == [200, 200, 200] and codes[-1] == 429
+
+
+# --- Rolling update: standby instead of a crash -------------------------------
+
+def _hold_lock_as(mod, host: str):
+    """Simulate another process holding JOBS_DIR, tagged with `host`."""
+    import fcntl
+    mod.JOBS_DIR.mkdir(parents=True, exist_ok=True)
+    fh = open(mod.JOBS_DIR / ".worker.lock", "a+")
+    fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    fh.seek(0); fh.truncate(); fh.write(f"{host} 1\n"); fh.flush()
+    return fh
+
+
+def test_rolling_update_starts_in_standby_and_takes_over(monkeypatch, tmp_path):
+    import fcntl
+    mod = _load_app(monkeypatch, tmp_path)
+    monkeypatch.setattr(mod, "WORKER_LOCK_POLL_SECONDS", 0.05)
+    old = _hold_lock_as(mod, "old-container")
+    # A job the old container left running: must be failed after takeover.
+    stale = "a" * 32
+    mod.job_dir(stale).mkdir(parents=True)
+    mod.write_status(stale, state="running", created=time.time())
+    with TestClient(mod.app) as c:
+        body = c.get("/health").json()
+        assert body["role"] == "standby"                    # serving, not crashed
+        assert mod.read_status(stale)["state"] == "running"  # not touched yet
+        # Work this process does while in standby is its own.
+        r = c.post("/cmtrace-view", files={"files": ("a.log", b"<![LOG[hi]LOG]!>",
+                                                     "text/plain")},
+                   follow_redirects=False)
+        mine = r.headers["location"].split("/")[2]
+        mod.update_status(mine, state="running")             # e.g. an analysis
+        # The old container exits.
+        fcntl.flock(old, fcntl.LOCK_UN); old.close()
+        deadline = time.time() + 5
+        while c.get("/health").json()["role"] != "primary":
+            assert time.time() < deadline, "standby never took over"
+            time.sleep(0.05)
+        deadline = time.time() + 5
+        while mod.read_status(stale)["state"] != "failed":
+            assert time.time() < deadline, "old job not recovered"
+            time.sleep(0.05)
+        assert mod.read_status(mine)["state"] == "running"   # own job untouched
+        assert mod.lock_holder_host() == __import__("socket").gethostname()
+
+
+def test_second_worker_in_same_container_still_refuses(monkeypatch, tmp_path):
+    import socket
+    mod = _load_app(monkeypatch, tmp_path)
+    fh = _hold_lock_as(mod, socket.gethostname())
+    try:
+        with pytest.raises(RuntimeError, match="--workers 1"):
+            with TestClient(mod.app):
+                pass
+    finally:
+        fh.close()
+
+
+def test_unknown_holder_from_an_older_version_means_standby(monkeypatch, tmp_path):
+    """The container running today predates the owner tag: an empty lock file
+    must read as 'another container', not as a same-container worker."""
+    import fcntl
+    mod = _load_app(monkeypatch, tmp_path)
+    mod.JOBS_DIR.mkdir(parents=True, exist_ok=True)
+    fh = open(mod.JOBS_DIR / ".worker.lock", "a+")
+    fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    try:
+        assert mod.lock_holder_host() == ""
+        with TestClient(mod.app) as c:
+            assert c.get("/health").json()["role"] == "standby"
+    finally:
+        fh.close()

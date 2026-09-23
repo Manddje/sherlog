@@ -51,6 +51,7 @@ import hashlib
 import json
 import logging
 import os
+import socket
 import re
 import secrets
 import shutil
@@ -4084,17 +4085,20 @@ class BasicAuthMiddleware:
 
 # --- Background cleanup ------------------------------------------------------
 
-def fail_interrupted_jobs() -> int:
+def fail_interrupted_jobs(skip: "frozenset[str] | set[str]" = frozenset()) -> int:
     """Mark jobs left queued/running by a previous process as failed.
 
     Analysis tasks live in this process only; after a restart (deploy,
     crash) any job still queued/running can never finish, and its result
-    page would poll forever.
+    page would poll forever. `skip` holds jobs this process already owns
+    (reserved or started while it waited in standby for the lock).
     """
     msg = ("The analysis was interrupted by an app restart. "
            "Please upload again.")
     failed = 0
     for child in iter_job_dirs():
+        if child.name in skip:
+            continue
         status = read_status(child.name)
         if not status:
             continue
@@ -4232,6 +4236,7 @@ def spawn_job(coro):
 
 def start_analysis(job_id: str, coro) -> None:
     """spawn_job + remember the task per job, so cancel_job() can stop it."""
+    _owned_jobs.add(job_id)
     task = spawn_job(coro)
     if isinstance(task, asyncio.Task):
         _job_tasks[job_id] = task
@@ -4244,22 +4249,64 @@ def start_analysis(job_id: str, coro) -> None:
 # Job caps, the analysis semaphore, the upload counter, the pending-status
 # lock and fail_interrupted_jobs() all assume exactly ONE process owns
 # JOBS_DIR (a second uvicorn worker would, at startup, mark the first one's
-# running jobs as failed). Enforce it with an exclusive lock file.
+# running jobs as failed). Enforce it with an exclusive lock file. A second
+# worker in the same container still refuses to start; a new container that
+# finds the lock held by another one (a rolling update on a shared volume)
+# starts in standby and takes over the owner duties when the lock frees up.
 _worker_lock_fh = None
 
 
-def acquire_worker_lock() -> None:
+# Jobs this process reserved or started. When a standby process takes over
+# JOBS_DIR (rolling update, see lifespan) its startup recovery must leave
+# these alone: they are live in *this* process, not leftovers of the old one.
+_owned_jobs: "set[str]" = set()
+WORKER_LOCK_POLL_SECONDS = 2
+
+
+def _lock_owner_tag() -> str:
+    return f"{socket.gethostname()} {os.getpid()}"
+
+
+def try_worker_lock() -> bool:
+    """Take the exclusive JOBS_DIR lock without blocking. True when this
+    process now owns JOBS_DIR. The holder writes "<hostname> <pid>" into the
+    lock file so a second process can tell a second worker in the same
+    container (a misconfiguration) from a new container during a rolling
+    update (expected)."""
     global _worker_lock_fh
-    path = JOBS_DIR / ".worker.lock"
-    fh = open(path, "a+")
+    if _worker_lock_fh is not None:
+        return True
+    fh = open(JOBS_DIR / ".worker.lock", "a+")
     try:
         fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except OSError:
         fh.close()
+        return False
+    try:
+        fh.seek(0)
+        fh.truncate()
+        fh.write(_lock_owner_tag() + "\n")
+        fh.flush()
+    except OSError:  # the tag is informational; the flock is the guard
+        pass
+    _worker_lock_fh = fh
+    return True
+
+
+def lock_holder_host() -> str:
+    """Hostname recorded by the current lock holder ("" when unknown, e.g. a
+    holder started by a version that did not write the tag)."""
+    try:
+        return (JOBS_DIR / ".worker.lock").read_text(encoding="utf-8").split()[0]
+    except (OSError, IndexError, UnicodeDecodeError):
+        return ""
+
+
+def acquire_worker_lock() -> None:
+    if not try_worker_lock():
         raise RuntimeError(
             f"another Sherlog process already uses {JOBS_DIR}; run exactly one "
             "uvicorn worker per JOBS_DIR (--workers 1)")
-    _worker_lock_fh = fh
 
 
 def release_worker_lock() -> None:
@@ -4274,16 +4321,47 @@ def release_worker_lock() -> None:
 
 # --- App lifespan ------------------------------------------------------------
 
+async def _become_primary() -> None:
+    """Duties of the one process that owns JOBS_DIR: recover jobs a previous
+    process left behind, then run the retention sweep."""
+    await asyncio.to_thread(fail_interrupted_jobs, frozenset(_owned_jobs))
+    spawn_background(cleanup_loop())
+
+
+async def _wait_for_worker_lock() -> None:
+    """Standby: poll for the JOBS_DIR lock and take over when it frees up."""
+    waited = 0
+    while not await asyncio.to_thread(try_worker_lock):
+        await asyncio.sleep(WORKER_LOCK_POLL_SECONDS)
+        waited += WORKER_LOCK_POLL_SECONDS
+        if waited % 600 < WORKER_LOCK_POLL_SECONDS:
+            log.warning("still in standby after %d min: another container holds "
+                        "%s", waited // 60, JOBS_DIR)
+    log.info("took over %s from the previous container", JOBS_DIR)
+    await _become_primary()
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     JOBS_DIR.mkdir(parents=True, exist_ok=True)
-    acquire_worker_lock()
-    await asyncio.to_thread(fail_interrupted_jobs)
+    if try_worker_lock():
+        await _become_primary()
+    else:
+        holder = lock_holder_host()
+        if holder and holder == socket.gethostname():
+            # A second worker in the same container: still a hard error.
+            acquire_worker_lock()
+        # Another container holds JOBS_DIR: a rolling update (Coolify starts
+        # the new container before stopping the old one, both on the same
+        # volume). Serve requests now so the health check passes, and take
+        # over the single-owner duties once the old container exits.
+        log.warning("JOBS_DIR %s is held by another container (%s); starting "
+                    "in standby until it stops", JOBS_DIR, holder or "unknown")
+        spawn_background(_wait_for_worker_lock())
     if not AUTH_ENABLED:
         log.warning("AUTH DISABLED: APP_USER/APP_PASSWORD not both set. App is OPEN.")
     else:
         log.info("Basic auth enabled for user %r", APP_USER)
-    task = asyncio.create_task(cleanup_loop())
     # Warm the Intune setting-name cache in the background (only when Graph
     # creds are set); never blocks startup or fails it. spawn_background keeps
     # a strong reference (asyncio only holds weak ones).
@@ -4293,7 +4371,6 @@ async def lifespan(app: FastAPI):
     try:
         yield
     finally:
-        task.cancel()
         # Stop analyses cleanly: kill their process groups and cancel the
         # tasks, so nothing outlives the event loop (the next start marks
         # them failed via fail_interrupted_jobs).
@@ -7444,7 +7521,9 @@ async def health() -> JSONResponse:
     # Report presence only — the install path is nobody's business.
     body = {"status": "ok" if (pwsh and jobs_ok) else "degraded",
             "pwsh": "available" if pwsh else "missing",
-            "jobs_dir": "writable" if jobs_ok else "unwritable"}
+            "jobs_dir": "writable" if jobs_ok else "unwritable",
+            # "standby" during a rolling update, until the old container exits.
+            "role": "primary" if _worker_lock_fh is not None else "standby"}
     return JSONResponse(body, status_code=200 if (pwsh and jobs_ok) else 503)
 
 
@@ -7602,6 +7681,7 @@ async def reserve_job(source: str, upload_hash: str = "") -> str:
             log.warning("upload rejected: low disk space (%d MB free)", free // 2**20)
             raise UploadError(507, "The server is low on disk space. Please try again later.")
         job_id = uuid.uuid4().hex
+        _owned_jobs.add(job_id)
         base = job_dir(job_id)
         (base / "input").mkdir(parents=True, exist_ok=True)
         (base / "output").mkdir(parents=True, exist_ok=True)

@@ -370,9 +370,14 @@ Stap voor stap:
    de analyse.
 8. **Eén instantie per volume.** De app draait bewust met één uvicorn-worker
    (`--workers 1`): caps, de analyse-semafoor, de teller en het herstel na een
-   herstart gaan uit van één proces per `JOBS_DIR`. Een tweede proces op
-   hetzelfde volume weigert te starten (lockfile `JOBS_DIR/.worker.lock`).
-   Schaal dus niet horizontaal op één volume.
+   herstart gaan uit van één proces per `JOBS_DIR` (lockfile
+   `JOBS_DIR/.worker.lock`, met de hostnaam van de houder erin). Een tweede
+   worker in dezelfde container weigert te starten. Een nieuwe container die
+   de lock bezet vindt, zoals bij Coolify's rolling update (nieuwe container
+   start vóór de oude stopt, op hetzelfde volume), start in **standby**: hij
+   bedient verzoeken en `/health` is 200 (`"role": "standby"`), en neemt het
+   herstel na een herstart en de retentie-sweep over zodra de oude container
+   stopt (`"role": "primary"`). Schaal dus niet horizontaal op één volume.
 
 ## Publieke deployment (zonder login)
 
