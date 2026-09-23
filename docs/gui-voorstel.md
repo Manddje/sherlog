@@ -1,8 +1,11 @@
 # Voorstel: een betere GUI voor Sherlog
 
-Status: voorstel, nog niets geïmplementeerd. Klikbare mockup van de nieuwe
-resultaatpagina: `docs/gui-voorstel-mockup.html` (open lokaal in een browser)
-of online op <https://claude.ai/artifact/XYsustEmHeXVZ3rh5jvpMp>.
+Status: voorstel, nog niets geïmplementeerd. Klikbare mockup van de volledige
+GUI (Home, Result met de tabs Overview/Timeline/Files, Inbox, Error codes),
+met Engelse UI-teksten zoals de app zelf: `docs/gui-voorstel-mockup.html`
+(open lokaal in een browser) of online op
+<https://claude.ai/artifact/XYsustEmHeXVZ3rh5jvpMp>. De schermkiezer in de
+blauwe balk bovenaan en de navigatie in de header wisselen tussen de schermen.
 
 De analyse is gedaan op de huidige `app.py` (commit `a465282`), met
 screenshots van elke pagina op desktop (1366 px) en telefoon (390 px), licht en

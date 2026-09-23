@@ -1,8 +1,8 @@
 <!doctype html>
-<html lang="nl"><head><meta charset="utf-8">
+<html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<!-- Mockup bij docs/gui-voorstel.md. Statisch, geen serverdata. -->
-<title>Sherlog werkblad (mockup)</title>
+<!-- Mockup for docs/gui-voorstel.md. Static, no server data. -->
+<title>Sherlog redesign (mockup)</title>
 <style>
   :root{
     --bg:#ffffff; --fg:#1f2937; --muted:#6b7280; --faint:#9ca3af;
@@ -10,6 +10,7 @@
     --border:#e5e7eb; --surface:#f6f7f9; --surface-2:#eef0f3;
     --ok:#15803d; --ok-bg:#ecfdf5; --warn:#b45309; --warn-bg:#fffbeb;
     --bad:#b91c1c; --bad-bg:#fef2f2; --unk:#9ca3af; --unk-bg:#f3f4f6;
+    --run:#2563eb; --run-bg:rgba(37,99,235,.10);
     --radius:8px; --shadow:0 1px 2px rgba(0,0,0,.05);
     --mono:ui-monospace,Menlo,Consolas,"Cascadia Mono",monospace;
   }
@@ -20,6 +21,7 @@
     --border:#293548; --surface:#16202f; --surface-2:#1c2838;
     --ok:#4ade80; --ok-bg:rgba(16,185,129,.12); --warn:#fbbf24; --warn-bg:rgba(245,158,11,.12);
     --bad:#f87171; --bad-bg:rgba(239,68,68,.12); --unk:#64748b; --unk-bg:rgba(100,116,139,.14);
+    --run:#60a5fa; --run-bg:rgba(96,165,250,.14);
     --shadow:none;
   }}
   :root[data-theme="dark"]{
@@ -29,6 +31,7 @@
     --border:#293548; --surface:#16202f; --surface-2:#1c2838;
     --ok:#4ade80; --ok-bg:rgba(16,185,129,.12); --warn:#fbbf24; --warn-bg:rgba(245,158,11,.12);
     --bad:#f87171; --bad-bg:rgba(239,68,68,.12); --unk:#64748b; --unk-bg:rgba(100,116,139,.14);
+    --run:#60a5fa; --run-bg:rgba(96,165,250,.14);
     --shadow:none;
   }
   *{box-sizing:border-box}
@@ -40,12 +43,16 @@
   :focus-visible{outline:2px solid var(--accent);outline-offset:2px}
   code{font-family:var(--mono);font-size:.9em}
   h1,h2,h3{text-wrap:balance;margin:0}
+  .screen[hidden],.panel[hidden]{display:none}
 
-  /* ---- notice about this mockup ---- */
+  /* ---- mockup notice + screen switcher ---- */
   .note{background:var(--accent-soft);border-bottom:1px solid var(--border);
-    padding:.55rem 16px;font-size:.86rem;color:var(--fg);display:flex;gap:.75rem;
-    align-items:center;flex-wrap:wrap}
+    padding:.5rem 16px;font-size:.84rem;display:flex;gap:.5rem 1rem;align-items:center;flex-wrap:wrap}
   .note b{color:var(--accent)}
+  .note .sw{display:flex;gap:.25rem;flex-wrap:wrap}
+  .note .sw a{padding:.15rem .55rem;border-radius:999px;border:1px solid transparent}
+  .note .sw a.cur{border-color:var(--accent);background:var(--bg)}
+  .note .sw a:hover{text-decoration:none;border-color:var(--accent)}
   .note button{margin-left:auto;background:none;border:0;color:var(--muted);cursor:pointer}
 
   /* ---- app shell: one header for every page ---- */
@@ -67,7 +74,73 @@
   .icobtn:hover{color:var(--fg)}
   .menu-btn{display:none}
 
-  /* ---- context bar: what am I looking at ---- */
+  .wrap{max-width:1180px;margin:0 auto;padding:1.1rem 16px 3rem}
+  .btn{border:1px solid var(--border);background:var(--bg);border-radius:var(--radius);
+    padding:.42rem .85rem;font-size:.9rem;font-weight:600;cursor:pointer;white-space:nowrap;
+    color:var(--fg);display:inline-flex;align-items:center;gap:.4rem}
+  .btn:hover{background:var(--surface);text-decoration:none}
+  .btn.primary{background:var(--accent);border-color:var(--accent);color:var(--accent-fg)}
+  .btn.primary:hover{filter:brightness(.95)}
+  .btn.sm{font-size:.82rem;padding:.3rem .6rem}
+  .pill{display:inline-flex;align-items:center;gap:.35rem;border-radius:999px;
+    padding:.12rem .6rem;font-size:.78rem;font-weight:600;border:1px solid transparent;white-space:nowrap}
+  .pill.warn{color:var(--warn);background:var(--warn-bg)}
+  .pill.bad{color:var(--bad);background:var(--bad-bg)}
+  .pill.ok{color:var(--ok);background:var(--ok-bg)}
+  .pill.unk{color:var(--muted);background:var(--unk-bg)}
+  .pill.run{color:var(--run);background:var(--run-bg)}
+  .pill.src{color:var(--muted);background:var(--surface);border-color:var(--border);font-weight:500}
+  .st{width:.7rem;height:.7rem;border-radius:50%;flex:none;display:inline-block}
+  .st.warn{background:var(--warn)} .st.bad{background:var(--bad)} .st.ok{background:var(--ok)} .st.unk{background:var(--unk)}
+  .st.run{background:var(--run);animation:pulse 1.6s ease-in-out infinite}
+  @keyframes pulse{0%,100%{opacity:1}50%{opacity:.3}}
+  .sec{margin-top:1.4rem}
+  .sec-h{display:flex;align-items:baseline;gap:.6rem;margin-bottom:.6rem}
+  .sec-h h2{font-size:.82rem;letter-spacing:.06em;text-transform:uppercase;color:var(--muted)}
+  .sec-h .cnt{color:var(--faint);font-size:.8rem}
+  .sec-h a{margin-left:auto;font-size:.82rem}
+  footer{max-width:1180px;margin:0 auto;padding:1.25rem 16px 2rem;border-top:1px solid var(--border);
+    color:var(--muted);font-size:.85rem;display:flex;gap:1rem;flex-wrap:wrap}
+  footer a{color:var(--muted)} footer .sp{flex:1}
+
+  /* ---- HOME ---- */
+  .hero{display:grid;grid-template-columns:1fr 1fr;gap:2.5rem;align-items:start;padding:2rem 0 1.5rem}
+  .hero h1{font-size:2.2rem;line-height:1.12;letter-spacing:-.02em}
+  .hero .lead{color:var(--muted);font-size:1.08rem;margin:.9rem 0 0;max-width:34rem}
+  .badges{display:flex;flex-wrap:wrap;gap:.45rem;margin:1.1rem 0 0}
+  .badges span{font-size:.78rem;font-weight:600;color:var(--muted);border:1px solid var(--border);
+    border-radius:999px;padding:.18rem .65rem}
+  .count{color:var(--accent);font-weight:600;font-size:.9rem;margin:.9rem 0 0}
+  .drop{border:2px dashed var(--border);border-radius:10px;padding:2.1rem 1.25rem;text-align:center;
+    color:var(--muted);background:var(--surface);line-height:1.6}
+  .drop strong{color:var(--fg)}
+  .drop:hover{border-color:var(--accent)}
+  .droprow{display:flex;align-items:center;gap:.6rem;margin-top:.7rem;flex-wrap:wrap;font-size:.86rem;color:var(--muted)}
+  .droprow .b{font-size:.72rem;font-weight:600;padding:.16rem .55rem;border-radius:999px;background:var(--surface);border:1px solid var(--border)}
+  .droprow .btn{margin-left:auto}
+  .route{font-size:.84rem;color:var(--muted);margin:.6rem 0 0}
+  .recent{margin-top:1.25rem;border:1px solid var(--border);border-radius:10px}
+  .recent .h{display:flex;align-items:baseline;gap:.6rem;padding:.6rem .9rem;border-bottom:1px solid var(--border)}
+  .recent .h h2{font-size:.82rem;letter-spacing:.06em;text-transform:uppercase;color:var(--muted)}
+  .recent .h a{margin-left:auto;font-size:.8rem;color:var(--bad)}
+  .recent ul{list-style:none;margin:0;padding:0}
+  .recent li{display:grid;grid-template-columns:auto 1fr auto auto;gap:.7rem;align-items:center;
+    padding:.5rem .9rem;border-top:1px solid var(--border);font-size:.9rem}
+  .recent li:first-child{border-top:0}
+  .recent li .f{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .recent li .w{color:var(--muted);font-size:.82rem;white-space:nowrap}
+  .recent li .x{color:var(--faint);cursor:pointer}
+  .two{display:grid;grid-template-columns:1fr 1fr;gap:1rem;margin-top:1.75rem}
+  .card{border:1px solid var(--border);border-radius:12px;padding:1.25rem;background:var(--bg)}
+  .card h2{font-size:1.05rem;margin-bottom:.35rem}
+  .card p{color:var(--muted);font-size:.9rem;margin:0 0 .9rem}
+  .stepper{list-style:none;margin:0;padding:0;display:grid;grid-template-columns:repeat(3,1fr);gap:1.1rem}
+  .stepper li{display:flex;gap:.7rem;color:var(--muted);font-size:.9rem;line-height:1.5}
+  .stepper .n{flex:none;width:1.5rem;height:1.5rem;border-radius:50%;background:var(--accent);color:#fff;
+    font-weight:700;font-size:.8rem;display:flex;align-items:center;justify-content:center;margin-top:.1rem}
+  .stepper strong{color:var(--fg)}
+
+  /* ---- RESULT: context bar + tabs ---- */
   .ctx{border-bottom:1px solid var(--border);background:var(--bg)}
   .ctx-in{max-width:1180px;margin:0 auto;padding:.85rem 16px .6rem;display:flex;
     gap:1rem;align-items:flex-start;flex-wrap:wrap}
@@ -76,12 +149,6 @@
   .ctx .meta span b{color:var(--fg);font-weight:500}
   .ctx .acts{margin-left:auto;display:flex;gap:.5rem;align-items:center;position:relative}
   .exp{color:var(--muted);font-size:.82rem;margin-right:.35rem;white-space:nowrap}
-  .btn{border:1px solid var(--border);background:var(--bg);border-radius:var(--radius);
-    padding:.42rem .85rem;font-size:.9rem;font-weight:600;cursor:pointer;white-space:nowrap;
-    color:var(--fg);display:inline-flex;align-items:center;gap:.4rem}
-  .btn:hover{background:var(--surface)}
-  .btn.primary{background:var(--accent);border-color:var(--accent);color:var(--accent-fg)}
-  .btn.primary:hover{filter:brightness(.95)}
   .pop{position:absolute;right:0;top:calc(100% + .35rem);min-width:15rem;background:var(--bg);
     border:1px solid var(--border);border-radius:10px;box-shadow:0 10px 30px rgba(0,0,0,.14);
     padding:.35rem;z-index:30}
@@ -92,100 +159,61 @@
   .pop .sep{border-top:1px solid var(--border);margin:.3rem 0}
   .pop .danger{color:var(--bad)}
   .pop small{color:var(--muted);margin-left:auto;font-size:.75rem}
-
-  /* verdict pill next to the device name */
-  .pill{display:inline-flex;align-items:center;gap:.35rem;border-radius:999px;
-    padding:.12rem .6rem;font-size:.78rem;font-weight:600;border:1px solid transparent}
-  .pill.warn{color:var(--warn);background:var(--warn-bg)}
-  .pill.bad{color:var(--bad);background:var(--bad-bg)}
-  .pill.ok{color:var(--ok);background:var(--ok-bg)}
-  .pill.unk{color:var(--muted);background:var(--unk-bg)}
-  .pill.src{color:var(--muted);background:var(--surface);border-color:var(--border);font-weight:500}
-
-  /* ---- tabs: overview / timeline / files under one header ---- */
-  .tabs{max-width:1180px;margin:0 auto;padding:0 16px;display:flex;gap:.25rem;
-    overflow-x:auto;scrollbar-width:none}
+  .tabs{max-width:1180px;margin:0 auto;padding:0 16px;display:flex;gap:.25rem;overflow-x:auto;scrollbar-width:none}
   .tabs::-webkit-scrollbar{display:none}
   .tab{border:0;background:none;padding:.6rem .8rem .55rem;font-size:.92rem;font-weight:600;
     color:var(--muted);border-bottom:2px solid transparent;cursor:pointer;white-space:nowrap;
     display:inline-flex;align-items:center;gap:.45rem}
   .tab:hover{color:var(--fg)}
   .tab[aria-selected="true"]{color:var(--fg);border-bottom-color:var(--accent)}
-  .tab .n{font-size:.72rem;font-weight:600;padding:.05rem .45rem;border-radius:999px;
-    background:var(--surface-2);color:var(--muted)}
-  .tab .n.warn{background:var(--warn-bg);color:var(--warn)}
-  .tab .n.bad{background:var(--bad-bg);color:var(--bad)}
-  .tab .n.ok{background:var(--ok-bg);color:var(--ok)}
+  .n{font-size:.72rem;font-weight:600;padding:.05rem .45rem;border-radius:999px;background:var(--surface-2);color:var(--muted)}
+  .n.warn{background:var(--warn-bg);color:var(--warn)} .n.bad{background:var(--bad-bg);color:var(--bad)} .n.ok{background:var(--ok-bg);color:var(--ok)}
 
-  main{max-width:1180px;margin:0 auto;padding:1.1rem 16px 3rem}
-  .panel[hidden]{display:none}
-
-  /* ---- overview: findings first ---- */
+  /* overview */
   .verdict{display:grid;grid-template-columns:1fr auto;gap:1rem;align-items:center;
     padding:.9rem 1.1rem;border:1px solid var(--border);border-radius:12px;background:var(--surface)}
   .verdict h2{font-size:1.05rem}
   .verdict p{margin:.15rem 0 0;color:var(--muted);font-size:.88rem}
-  .bar{display:flex;height:.55rem;width:16rem;max-width:100%;border-radius:999px;overflow:hidden;
-    background:var(--unk-bg)}
+  .bar{display:flex;height:.55rem;width:16rem;max-width:100%;border-radius:999px;overflow:hidden;background:var(--unk-bg)}
   .bar i{display:block;height:100%}
   .bar .w{background:var(--warn)} .bar .o{background:var(--ok)} .bar .u{background:var(--unk)}
-  .legend{display:flex;gap:.9rem;font-size:.78rem;color:var(--muted);margin-top:.35rem;
-    justify-content:flex-end;flex-wrap:wrap}
+  .legend{display:flex;gap:.9rem;font-size:.78rem;color:var(--muted);margin-top:.35rem;justify-content:flex-end;flex-wrap:wrap}
   .legend i{display:inline-block;width:.6rem;height:.6rem;border-radius:2px;margin-right:.3rem;vertical-align:-1px}
-
-  .sec{margin-top:1.4rem}
-  .sec-h{display:flex;align-items:baseline;gap:.6rem;margin-bottom:.6rem}
-  .sec-h h2{font-size:.82rem;letter-spacing:.06em;text-transform:uppercase;color:var(--muted)}
-  .sec-h .cnt{color:var(--faint);font-size:.8rem}
-  .sec-h a{margin-left:auto;font-size:.82rem}
-
   .finding{display:grid;grid-template-columns:auto 1fr auto;gap:.75rem 1rem;align-items:start;
     padding:.9rem 1rem;border:1px solid var(--border);border-left-width:4px;border-radius:10px;
     background:var(--bg);margin-bottom:.6rem}
   .finding.warn{border-left-color:var(--warn)} .finding.bad{border-left-color:var(--bad)}
-  .st{width:.7rem;height:.7rem;border-radius:50%;margin-top:.45rem;flex:none}
-  .st.warn{background:var(--warn)} .st.bad{background:var(--bad)} .st.ok{background:var(--ok)} .st.unk{background:var(--unk)}
+  .finding>.st{margin-top:.45rem}
   .finding h3{font-size:.98rem;display:flex;gap:.5rem;align-items:center;flex-wrap:wrap}
   .finding .grp{font-size:.72rem;font-weight:600;color:var(--muted);letter-spacing:.04em;text-transform:uppercase}
-  .finding .val{margin:.1rem 0 0;color:var(--fg)}
-  .finding .adv{margin:.45rem 0 0;padding:.45rem .6rem;background:var(--surface);border-radius:6px;
-    font-size:.86rem;color:var(--fg)}
+  .finding .val{margin:.1rem 0 0}
+  .finding .adv{margin:.45rem 0 0;padding:.45rem .6rem;background:var(--surface);border-radius:6px;font-size:.86rem}
   .finding .adv b{font-weight:600;color:var(--muted);margin-right:.3rem}
   .finding .ev{display:flex;flex-direction:column;gap:.35rem;align-items:flex-end}
-  .finding .ev a.btn{font-size:.82rem;padding:.3rem .6rem}
   .finding .ev .file{font-family:var(--mono);font-size:.74rem;color:var(--muted);white-space:nowrap}
-  .why{grid-column:2/4;font-size:.84rem;color:var(--muted);border-top:1px dashed var(--border);
-    padding-top:.5rem;margin-top:.1rem}
+  .why{grid-column:2/4;font-size:.84rem;color:var(--muted);border-top:1px dashed var(--border);padding-top:.5rem;margin-top:.1rem}
   .why summary{cursor:pointer;color:var(--accent);list-style:none;display:inline}
   .why summary::-webkit-details-marker{display:none}
   .why p{margin:.35rem 0 0}
-
   .healthy{border:1px solid var(--border);border-radius:10px;overflow:hidden}
-  .healthy .row{display:grid;grid-template-columns:8.5rem 1fr;gap:.25rem 1rem;padding:.6rem 1rem;
-    border-top:1px solid var(--border);align-items:baseline}
+  .healthy .row{display:grid;grid-template-columns:8.5rem 1fr;gap:.25rem 1rem;padding:.6rem 1rem;border-top:1px solid var(--border);align-items:baseline}
   .healthy .row:first-child{border-top:0}
   .healthy .g{font-size:.78rem;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.04em;padding-top:.15rem}
   .healthy ul{list-style:none;margin:0;padding:0;display:flex;flex-wrap:wrap;gap:.35rem .9rem}
   .healthy li{display:inline-flex;align-items:center;gap:.4rem;font-size:.9rem}
-  .healthy li .st{margin-top:0;width:.55rem;height:.55rem}
-  .healthy li span{color:var(--muted)}
-  .healthy li code{color:var(--muted);font-size:.8rem}
-
+  .healthy li .st{width:.55rem;height:.55rem}
+  .healthy li span,.healthy li code{color:var(--muted)} .healthy li code{font-size:.8rem}
   details.notc{border:1px dashed var(--border);border-radius:10px;padding:.55rem .9rem;color:var(--muted);font-size:.9rem}
   details.notc summary{cursor:pointer;font-weight:600;color:var(--fg)}
   details.notc summary small{color:var(--muted);font-weight:400;margin-left:.4rem}
   .chips{display:flex;flex-wrap:wrap;gap:.35rem;margin-top:.55rem}
-  .chip{border:1px solid var(--border);border-radius:999px;padding:.08rem .6rem;font-size:.78rem;
-    background:var(--unk-bg);color:var(--muted)}
-
-  /* detail tables: real sections, no nested scrollboxes */
+  .chip{border:1px solid var(--border);border-radius:999px;padding:.08rem .6rem;font-size:.78rem;background:var(--unk-bg);color:var(--muted)}
   .dt{border:1px solid var(--border);border-radius:10px;margin-bottom:.6rem;background:var(--bg)}
   .dt summary{cursor:pointer;padding:.65rem 1rem;font-weight:600;display:flex;gap:.6rem;align-items:center;list-style:none}
   .dt summary::-webkit-details-marker{display:none}
-  .dt summary::before{content:"";width:.4rem;height:.4rem;border-right:2px solid var(--muted);
-    border-bottom:2px solid var(--muted);transform:rotate(-45deg);transition:.12s;margin-right:.2rem}
+  .dt summary::before{content:"";width:.4rem;height:.4rem;border-right:2px solid var(--muted);border-bottom:2px solid var(--muted);transform:rotate(-45deg);transition:.12s;margin-right:.2rem}
   .dt[open] summary::before{transform:rotate(45deg)}
-  .dt summary .n{color:var(--muted);font-weight:500;font-size:.85rem}
+  .dt summary .n{font-weight:500;font-size:.8rem}
   .dt summary .src{margin-left:auto;font-size:.8rem;font-weight:500}
   .dt .tw{overflow-x:auto;border-top:1px solid var(--border)}
   table{border-collapse:collapse;width:100%;font-size:.86rem;font-variant-numeric:tabular-nums}
@@ -193,25 +221,22 @@
   thead th{border-top:0;color:var(--muted);font-weight:600;font-size:.78rem;text-transform:uppercase;letter-spacing:.04em;background:var(--surface)}
   tbody tr:first-child td{border-top:0}
   td.mono{font-family:var(--mono);font-size:.8rem}
-  td .st{display:inline-block;margin:0 .35rem 0 0;width:.55rem;height:.55rem;vertical-align:1px}
+  td .st{width:.55rem;height:.55rem;margin-right:.35rem;vertical-align:1px}
 
-  /* ---- timeline tab ---- */
+  /* timeline */
   .stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(11rem,1fr));gap:.6rem}
   .stat{border:1px solid var(--border);border-radius:10px;padding:.7rem .9rem;background:var(--bg)}
   .stat .k{font-size:.78rem;color:var(--muted);text-transform:uppercase;letter-spacing:.04em}
   .stat .v{font-size:1.35rem;font-weight:700;font-variant-numeric:tabular-nums;margin-top:.1rem}
   .stat .v small{font-size:.85rem;font-weight:500;color:var(--muted);margin-left:.3rem}
   .stat.warn .v{color:var(--warn)} .stat.bad .v{color:var(--bad)} .stat.ok .v{color:var(--ok)}
-  .frame{border:1px solid var(--border);border-radius:10px;background:var(--surface);
-    height:14rem;display:flex;align-items:center;justify-content:center;color:var(--muted);font-size:.9rem}
+  .frame{border:1px solid var(--border);border-radius:10px;background:var(--surface);height:14rem;display:flex;align-items:center;justify-content:center;color:var(--muted);font-size:.9rem;text-align:center;padding:1rem}
 
-  /* ---- files tab: the browser gets the whole viewport ---- */
-  .files{display:grid;grid-template-columns:18rem 1fr;border:1px solid var(--border);border-radius:10px;
-    overflow:hidden;min-height:34rem;background:var(--bg)}
+  /* files */
+  .files{display:grid;grid-template-columns:18rem 1fr;border:1px solid var(--border);border-radius:10px;overflow:hidden;min-height:34rem;background:var(--bg)}
   .tree{border-right:1px solid var(--border);background:var(--surface);font-size:.86rem;display:flex;flex-direction:column}
   .search{padding:.6rem;border-bottom:1px solid var(--border);display:flex;flex-direction:column;gap:.45rem}
-  .search input{width:100%;padding:.45rem .6rem;border:1px solid var(--border);border-radius:6px;
-    background:var(--bg);color:var(--fg);font:inherit;font-size:.86rem}
+  .search input,.vbar input,.vbar select,.keybar input,.ecsearch input{width:100%;padding:.45rem .6rem;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--fg);font:inherit;font-size:.86rem}
   .hits{font-size:.78rem;color:var(--muted)}
   .hit{padding:.35rem .5rem;border-radius:6px;cursor:pointer;background:var(--bg);border:1px solid var(--border);margin-top:.3rem}
   .hit b{font-family:var(--mono);font-size:.74rem;color:var(--fg);display:block}
@@ -225,280 +250,522 @@
   .tree li:not(.dir):not(.cur):hover{background:var(--bg);color:var(--fg)}
   .viewer{display:flex;flex-direction:column;min-width:0}
   .vbar{display:flex;align-items:center;gap:.6rem;padding:.5rem .8rem;border-bottom:1px solid var(--border);flex-wrap:wrap}
+  .vbar input,.vbar select{width:auto;font-size:.82rem;padding:.3rem .5rem}
   .crumb{font-family:var(--mono);font-size:.8rem;color:var(--muted);display:flex;gap:.35rem;align-items:center;min-width:0;flex:1}
   .crumb b{color:var(--fg);font-weight:600}
-  .vbar select,.vbar input{font:inherit;font-size:.82rem;padding:.3rem .5rem;border:1px solid var(--border);
-    border-radius:6px;background:var(--bg);color:var(--fg)}
-  .vbar .btn{font-size:.82rem;padding:.3rem .6rem}
   .log{font-family:var(--mono);font-size:.78rem;overflow:auto;flex:1}
-  .log table{font-size:inherit}
   .log th,.log td{padding:.3rem .8rem;white-space:nowrap}
   .log td.m{white-space:normal;min-width:22rem}
   .log tr.w td{background:var(--warn-bg)} .log tr.e td{background:var(--bad-bg)}
   .log tr.hl td:first-child{box-shadow:inset 3px 0 0 var(--accent)}
   .log td.t,.log td.c{color:var(--muted)}
 
+  /* ---- INBOX ---- */
+  .keybar{display:flex;gap:.6rem;align-items:center;flex-wrap:wrap;padding:.75rem 1rem;border:1px solid var(--border);border-radius:10px;background:var(--surface)}
+  .keybar label{font-size:.86rem;font-weight:600;white-space:nowrap}
+  .keybar input{flex:1;min-width:14rem;font-family:var(--mono);font-size:.82rem}
+  .keybar .btn{white-space:nowrap}
+  .banner{display:flex;gap:.8rem;align-items:center;flex-wrap:wrap;padding:.65rem .9rem;border-radius:10px;
+    border:1px solid var(--warn);background:var(--warn-bg);color:var(--fg);font-size:.88rem;margin-top:.9rem}
+  .banner .btn{margin-left:auto}
+  .fleet{border:1px solid var(--border);border-radius:10px;overflow:hidden}
+  .fleet .hd,.fleet .dev{display:grid;grid-template-columns:1.4rem 1fr 7rem 9rem 10rem 8rem;gap:.8rem;align-items:center;padding:.6rem 1rem}
+  .fleet .hd{background:var(--surface);color:var(--muted);font-size:.78rem;font-weight:600;text-transform:uppercase;letter-spacing:.04em}
+  .fleet .dev{border-top:1px solid var(--border);cursor:pointer}
+  .fleet .dev:hover{background:var(--surface)}
+  .fleet .dev b{font-weight:600}
+  .fleet .dev .m{color:var(--muted);font-size:.85rem;font-variant-numeric:tabular-nums}
+  .fleet .delta{font-size:.82rem}
+  .fleet .delta.bad{color:var(--bad)} .fleet .delta.ok{color:var(--ok)}
+  .fleet .acts{display:flex;gap:.4rem;justify-content:flex-end}
+  .fleet .ups{border-top:1px solid var(--border);background:var(--surface);padding:.3rem 1rem .5rem 3.2rem}
+  .fleet .up{display:grid;grid-template-columns:1fr 9rem 10rem 8rem;gap:.8rem;align-items:center;padding:.35rem 0;font-size:.86rem;color:var(--muted)}
+  .fleet .up .acts a{font-size:.82rem}
+  .wizard{display:grid;grid-template-columns:repeat(3,1fr);gap:1rem;margin-top:.6rem}
+  .step{border:1px solid var(--border);border-radius:10px;padding:1rem;background:var(--bg)}
+  .step .n{width:1.5rem;height:1.5rem;border-radius:50%;background:var(--accent);color:#fff;display:inline-flex;align-items:center;justify-content:center;font-weight:700;font-size:.8rem;padding:0}
+  .step h3{font-size:.95rem;margin:.5rem 0 .3rem}
+  .step p{color:var(--muted);font-size:.86rem;margin:0 0 .6rem}
+  .tokval{font-family:var(--mono);font-size:.78rem;word-break:break-all;background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:.4rem .6rem;display:block;margin:.4rem 0}
+  .step .row{display:flex;gap:.4rem;flex-wrap:wrap;align-items:center}
+  .step label{font-size:.82rem;display:inline-flex;gap:.35rem;align-items:center;color:var(--muted)}
+  .step ol{margin:.2rem 0 0;padding-left:1.1rem;font-size:.86rem;color:var(--muted)}
+  .step ol li{margin:.2rem 0}
+
+  /* ---- ERROR CODES ---- */
+  .ecsearch{position:sticky;top:calc(3.25rem + env(safe-area-inset-top,0px));background:var(--bg);padding:.6rem 0;z-index:5;display:flex;gap:.6rem;align-items:center;flex-wrap:wrap}
+  .ecsearch input{flex:1;min-width:14rem}
+  .ecsearch .fam{display:flex;gap:.3rem;flex-wrap:wrap}
+  .ecsearch .fam a{font-size:.78rem;padding:.15rem .55rem;border-radius:999px;border:1px solid var(--border);color:var(--muted)}
+  .ecsearch .fam a:hover{text-decoration:none;border-color:var(--accent);color:var(--fg)}
+  .ec{border:1px solid var(--border);border-radius:10px;overflow:hidden;margin-top:1rem}
+  .ec .fh{display:flex;gap:.6rem;align-items:baseline;padding:.6rem 1rem;background:var(--surface);border-bottom:1px solid var(--border)}
+  .ec .fh h2{font-size:.95rem}
+  .ec .fh span{color:var(--muted);font-size:.82rem}
+  .ec .r{display:grid;grid-template-columns:9rem auto 1fr;gap:.8rem;align-items:start;padding:.55rem 1rem;border-top:1px solid var(--border);font-size:.9rem}
+  .ec .r:nth-child(2){border-top:0}
+  .ec .r code{font-size:.84rem;font-weight:600}
+  .ec .r .cp{border:1px solid var(--border);background:var(--bg);border-radius:5px;font-size:.72rem;padding:.05rem .4rem;cursor:pointer;color:var(--muted)}
+  .ec .r .cp:hover{color:var(--fg)}
+  .ec .r .mean{color:var(--fg)}
+  .ec .r .mean a{font-size:.8rem;margin-left:.4rem}
+
   /* ---- responsive ---- */
   @media (max-width:820px){
-    .shell nav{display:none}
-    .menu-btn{display:inline-flex}
+    .shell nav{display:none} .menu-btn{display:inline-flex}
+    .hero,.two{grid-template-columns:1fr;gap:1.25rem}
+    .hero h1{font-size:1.8rem}
+    .stepper,.wizard{grid-template-columns:1fr}
     .ctx .acts{margin-left:0;width:100%}
-    .verdict{grid-template-columns:1fr}
-    .legend{justify-content:flex-start}
+    .verdict{grid-template-columns:1fr} .legend{justify-content:flex-start}
     .finding{grid-template-columns:auto 1fr}
     .finding .ev{grid-column:2;align-items:flex-start;flex-direction:row;flex-wrap:wrap}
     .healthy .row{grid-template-columns:1fr}
     .files{grid-template-columns:1fr;min-height:0}
-    .tree{border-right:0;border-bottom:1px solid var(--border);max-height:16rem}
-    .tree ul{max-height:10rem}
+    .tree{border-right:0;border-bottom:1px solid var(--border);max-height:16rem} .tree ul{max-height:10rem}
+    .fleet .hd{display:none}
+    .fleet .dev{grid-template-columns:1.4rem 1fr auto;grid-auto-rows:auto}
+    .fleet .dev .m,.fleet .delta{grid-column:2}
+    .fleet .up{grid-template-columns:1fr auto}
+    .fleet .ups{padding-left:1rem}
+    .ec .r{grid-template-columns:1fr auto} .ec .r .mean{grid-column:1/3}
   }
   @media (prefers-reduced-motion:reduce){ *{transition:none!important;animation:none!important} }
 </style>
 
 </head><body>
 <div class="note" id="note">
-  <span><b>Mockup</b> bij <code>docs/gui-voorstel.md</code>: de voorgestelde resultaatpagina als werkblad met tabs. Voorbeelddata is het testpakket <code>TESTPC-01</code>.</span>
-  <button type="button" id="notex" aria-label="Sluiten">&times;</button>
+  <span><b>Mockup</b> for <code>docs/gui-voorstel.md</code>. Screens:</span>
+  <span class="sw" id="sw"><a href="#home" data-s="home">Home</a><a href="#result" data-s="result">Result</a><a href="#inbox" data-s="inbox">Inbox</a><a href="#errorcodes" data-s="errorcodes">Error codes</a></span>
+  <span style="color:var(--muted)">Sample data: test package TESTPC-01.</span>
+  <button type="button" id="notex" aria-label="Close">&times;</button>
 </div>
 
 <header class="shell">
-  <a class="brand" href="#overview"><span class="dot"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.5" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.5" y2="16.5"/></svg></span> Sherlog</a>
-  <nav aria-label="Hoofdmenu">
-    <a href="#overview">Upload</a>
-    <a href="#overview">Inbox</a>
-    <a href="#overview">Error codes</a>
+  <a class="brand" href="#home"><span class="dot"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.5" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.5" y2="16.5"/></svg></span> Sherlog</a>
+  <nav aria-label="Main" id="mainnav">
+    <a href="#home" data-s="home">Upload</a>
+    <a href="#inbox" data-s="inbox">Inbox</a>
+    <a href="#errorcodes" data-s="errorcodes">Error codes</a>
   </nav>
   <span class="sp"></span>
-  <button class="icobtn" type="button" title="Thema" id="theme" aria-label="Thema wisselen"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg></button>
+  <button class="icobtn" type="button" id="theme" aria-label="Toggle dark mode" title="Toggle dark mode"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg></button>
   <button class="icobtn menu-btn" type="button" aria-label="Menu"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 7h16M4 12h16M4 17h16"/></svg></button>
 </header>
 
-<div class="ctx">
-  <div class="ctx-in">
-    <div>
-      <h1>TESTPC-01 <span class="pill warn">2 warnings</span> <span class="pill src">via inbox</span></h1>
-      <div class="meta">
-        <span>Tenant <b>Contoso</b></span>
-        <span>Verzameld <b>11 jun 2026 10:00</b></span>
-        <span>Collector <b>1.4 · profiel Remote</b></span>
-        <span>Windows <b>22631.4037</b></span>
-      </div>
-    </div>
-    <div class="acts">
-      <span class="exp">verloopt over ~24 u</span>
-      <button class="btn" type="button" id="copy">Copy findings</button>
-      <button class="btn" type="button" id="more" aria-haspopup="true" aria-expanded="false">Meer <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M6 9l6 6 6-6"/></svg></button>
-      <div class="pop" id="pop" hidden>
-        <a href="#files">Download pakket <small>.zip</small></a>
-        <a href="#files">Download dit bestand <small>IntuneManagementExtension.log</small></a>
-        <a href="#overview">Open in inbox</a>
-        <a href="#overview">dashboard.json <small>export</small></a>
-        <div class="sep"></div>
-        <a href="#overview">Nieuwe upload</a>
-        <button type="button" class="danger">Verwijder van server</button>
-      </div>
-    </div>
-  </div>
-  <div class="tabs" role="tablist" aria-label="Weergave">
-    <button class="tab" role="tab" id="t-overview" aria-controls="overview" aria-selected="true">Overzicht <span class="n warn">2</span></button>
-    <button class="tab" role="tab" id="t-timeline" aria-controls="timeline" aria-selected="false">Timeline <span class="n bad">1 failed</span></button>
-    <button class="tab" role="tab" id="t-files" aria-controls="files" aria-selected="false">Bestanden <span class="n">14</span></button>
-  </div>
-</div>
-
-<main>
-  <!-- ================= OVERZICHT ================= -->
-  <section class="panel" id="overview" role="tabpanel" aria-labelledby="t-overview">
-    <div class="verdict">
+<!-- ======================= HOME ======================= -->
+<section class="screen" id="home">
+  <div class="wrap">
+    <div class="hero">
       <div>
-        <h2>2 waarschuwingen, geen blokkerende problemen</h2>
-        <p>4 checks gezond · 12 niet verzameld in het Remote-profiel. Elke bevinding linkt naar de bewijsregel in het pakket.</p>
+        <h1>Troubleshoot Intune-managed Windows devices</h1>
+        <p class="lead">Upload IME logs or a full diagnostics package and see what actually happened: app installs, scripts, errors, device health and applied policies. Nothing touches the device or Intune.</p>
+        <div class="badges"><span>No account</span><span>Browser-only</span><span>Deleted after 24h</span></div>
+        <p class="count">1,284 uploads analysed so far</p>
       </div>
       <div>
-        <div class="bar" aria-hidden="true"><i class="w" style="width:11%"></i><i class="o" style="width:22%"></i><i class="u" style="width:67%"></i></div>
-        <div class="legend"><span><i style="background:var(--warn)"></i>2 warn</span><span><i style="background:var(--ok)"></i>4 ok</span><span><i style="background:var(--unk)"></i>12 niet verzameld</span></div>
+        <div class="drop"><strong>Drag &amp; drop</strong> a diagnostics <code>.zip</code>, <code>.log</code> files or a whole folder, or <a href="#home">choose files</a> &middot; <a href="#home">choose a folder</a></div>
+        <div class="droprow"><span class="b">.log</span><span class="b">.zip</span> Max <strong>100 MB</strong> <a class="btn primary" href="#result">Open</a></div>
+        <p class="route">A <code>.zip</code> opens the device health dashboard. Loose <code>.log</code> files open the CMTrace viewer; you can run the timeline analysis from there.</p>
+        <div class="recent">
+          <div class="h"><h2>Recent uploads</h2><span style="color:var(--faint);font-size:.8rem">stored in this browser only</span><a href="#home">Delete all</a></div>
+          <ul>
+            <li><span class="pill warn">2 warnings</span><a class="f" href="#result">IntuneDiag-TESTPC-01.zip</a><span class="w">12 min ago</span><span class="x" title="Remove from history">&times;</span></li>
+            <li><span class="pill bad">1 problem</span><a class="f" href="#result">IntuneDiag-LAPTOP-0042.zip</a><span class="w">3 h ago</span><span class="x">&times;</span></li>
+            <li><span class="pill unk">Logs</span><a class="f" href="#files">IntuneManagementExtension.log, AgentExecutor.log</a><span class="w">1 d ago</span><span class="x">&times;</span></li>
+          </ul>
+        </div>
+      </div>
+    </div>
+
+    <div class="two">
+      <div class="card">
+        <h2>Don't have a package yet?</h2>
+        <p>Run <code>Collect-IntuneDiagnostics.ps1</code> in an elevated PowerShell on the device. It writes <code>IntuneDiag-&lt;device&gt;-&lt;timestamp&gt;.zip</code> to <code>%ProgramData%\Sherlog\Collect</code>. Upload that zip above.</p>
+        <a class="btn" href="#home">Download Collect-IntuneDiagnostics.ps1</a>
+      </div>
+      <div class="card">
+        <h2>Collect straight from Intune</h2>
+        <p>Deploy the collector as an Intune remediation and let devices upload here automatically. Review each device in your inbox, no manual zipping.</p>
+        <a class="btn" href="#inbox">Open inbox</a>
       </div>
     </div>
 
     <div class="sec">
-      <div class="sec-h"><h2>Bevindingen</h2><span class="cnt">ernst eerst</span></div>
-
-      <article class="finding warn">
-        <span class="st warn"></span>
-        <div>
-          <h3>Machine certificates <span class="grp">Identity</span></h3>
-          <p class="val">1 van 2 verlopen</p>
-          <p class="adv"><b>Wat nu</b> Vernieuw of ruim de verlopen certificaten op; een verlopen MDM-certificaat breekt de sync geruisloos.</p>
-        </div>
-        <div class="ev">
-          <a class="btn" href="#files">Open bewijs &rarr;</a>
-          <span class="file">Identity/certs-machine-overview.txt:14</span>
-        </div>
-        <details class="why"><summary>Waarom controleren we dit?</summary><p>Intune bindt de enrollment aan een machinecertificaat. Als dat verloopt blijven check-ins "lukken" terwijl policies en apps niet meer binnenkomen (het zombie-device-patroon).</p></details>
-      </article>
-
-      <article class="finding warn">
-        <span class="st warn"></span>
-        <div>
-          <h3>Intune/Entra endpoints <span class="grp">Network</span></h3>
-          <p class="val">onbereikbaar: <code>graph.microsoft.com</code></p>
-          <p class="adv"><b>Wat nu</b> Sta de onbereikbare endpoints toe in firewall of proxy; TLS-inspectie breekt Intune-verkeer ook.</p>
-        </div>
-        <div class="ev">
-          <a class="btn" href="#files">Open bewijs &rarr;</a>
-          <span class="file">Network/endpoint-connectivity.txt:7</span>
-        </div>
-        <details class="why"><summary>Waarom controleren we dit?</summary><p>De collector doet een TCP/TLS-test naar de Microsoft-endpoints die IME en de MDM-client nodig hebben. Eén geblokkeerd endpoint verklaart vaak "content download failed" in de timeline.</p></details>
-      </article>
+      <div class="sec-h"><h2>How it works</h2></div>
+      <ol class="stepper">
+        <li><span class="n">1</span><div><strong>Get the logs.</strong> From <code>%ProgramData%\Microsoft\IntuneManagementExtension\Logs</code>, the Intune <em>Collect diagnostics</em> export, or the collector script.</div></li>
+        <li><span class="n">2</span><div><strong>Upload here.</strong> Drop a zip, loose logs or a folder. Nothing leaves your browser until you click Open.</div></li>
+        <li><span class="n">3</span><div><strong>Read it in the browser.</strong> Findings first, the timeline next, and every file in the package one click away, with each finding linking back to its evidence line.</div></li>
+      </ol>
     </div>
+  </div>
+  <footer><span>Sherlog &middot; sherlog.nl</span><span class="sp"></span><a href="#home">About</a><a href="#home">PayloadKit &#8599;</a><a href="#home">Source on GitHub</a></footer>
+</section>
 
-    <div class="sec">
-      <div class="sec-h"><h2>Gezond</h2><span class="cnt">4 checks</span></div>
-      <div class="healthy">
-        <div class="row"><span class="g">Identity</span>
-          <ul><li><span class="st ok"></span>Entra joined <span>YES</span></li><li><span class="st ok"></span>Entra PRT <span>YES</span></li></ul></div>
-        <div class="row"><span class="g">Enrollment</span>
-          <ul><li><span class="st ok"></span>MDM enrollment <code>enrollment.manage.microsoft.com</code></li></ul></div>
-        <div class="row"><span class="g">Apps</span>
-          <ul><li><span class="st ok"></span>IME service <span>Running</span></li></ul></div>
+<!-- ======================= RESULT ======================= -->
+<section class="screen" id="result" hidden>
+  <div class="ctx">
+    <div class="ctx-in">
+      <div>
+        <h1>TESTPC-01 <span class="pill warn">2 warnings</span> <span class="pill src">via inbox</span></h1>
+        <div class="meta">
+          <span>Tenant <b>Contoso</b></span>
+          <span>Collected <b>11 Jun 2026 10:00</b></span>
+          <span>Collector <b>1.4 &middot; Remote profile</b></span>
+          <span>Windows <b>22631.4037</b></span>
+        </div>
+      </div>
+      <div class="acts">
+        <span class="exp">expires in ~24h</span>
+        <button class="btn" type="button" id="copy">Copy findings</button>
+        <button class="btn" type="button" id="more" aria-haspopup="true" aria-expanded="false">More <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M6 9l6 6 6-6"/></svg></button>
+        <div class="pop" id="pop" hidden>
+          <a href="#files">Download package <small>.zip</small></a>
+          <a href="#files">Download this file <small>IntuneManagementExtension.log</small></a>
+          <a href="#inbox">Open in inbox</a>
+          <a href="#overview">dashboard.json <small>export</small></a>
+          <a href="#overview">summary.json <small>export</small></a>
+          <div class="sep"></div>
+          <a href="#home">New upload</a>
+          <button type="button" class="danger">Delete from server</button>
+        </div>
       </div>
     </div>
+    <div class="tabs" role="tablist" aria-label="View">
+      <button class="tab" role="tab" id="t-overview" aria-controls="overview" aria-selected="true">Overview <span class="n warn">2</span></button>
+      <button class="tab" role="tab" id="t-timeline" aria-controls="timeline" aria-selected="false">Timeline <span class="n bad">1 failed</span></button>
+      <button class="tab" role="tab" id="t-files" aria-controls="files" aria-selected="false">Files <span class="n">14</span></button>
+    </div>
+  </div>
 
-    <div class="sec">
-      <details class="notc">
-        <summary>Niet verzameld <small>12 checks · dit pakket is met het Remote-profiel gemaakt</small></summary>
-        <p style="margin:.5rem 0 0">Deze checks tonen nu geen grijze kaart meer, alleen deze regel. Draai de collector zonder <code>-Remote</code> om ze mee te nemen.</p>
-        <div class="chips"><span class="chip">Installed apps</span><span class="chip">Win32 apps</span><span class="chip">WinHTTP proxy</span><span class="chip">Firewall</span><span class="chip">TLS inspection</span><span class="chip">TPM</span><span class="chip">BitLocker</span><span class="chip">Secure Boot</span><span class="chip">Pending reboot</span><span class="chip">Windows Update</span><span class="chip">Disk space</span><span class="chip">Time sync</span></div>
-      </details>
-    </div>
+  <main class="wrap">
+    <!-- overview -->
+    <div class="panel" id="overview" role="tabpanel" aria-labelledby="t-overview">
+      <div class="verdict">
+        <div>
+          <h2>2 warnings, no blocking problems</h2>
+          <p>4 checks healthy &middot; 12 not collected in the Remote profile. Every finding links to its evidence line in the package.</p>
+        </div>
+        <div>
+          <div class="bar" aria-hidden="true"><i class="w" style="width:11%"></i><i class="o" style="width:22%"></i><i class="u" style="width:67%"></i></div>
+          <div class="legend"><span><i style="background:var(--warn)"></i>2 warnings</span><span><i style="background:var(--ok)"></i>4 ok</span><span><i style="background:var(--unk)"></i>12 not collected</span></div>
+        </div>
+      </div>
 
-    <div class="sec">
-      <div class="sec-h"><h2>Details</h2><span class="cnt">tabellen uit het pakket</span></div>
-      <details class="dt" open>
-        <summary>Win32 app deployments <span class="n">3 apps · 1 failed</span><a class="src" href="#files">bron &rarr;</a></summary>
-        <div class="tw"><table>
-          <thead><tr><th>App</th><th>Status</th><th>Foutcode</th><th>Uitleg</th><th>Laatste poging</th></tr></thead>
-          <tbody>
-            <tr><td>7-Zip 24.08 (x64)</td><td><span class="st bad"></span>Failed</td><td class="mono">0x87D1041C</td><td>Applicatie succesvol geïnstalleerd, maar de detectieregels vinden hem niet.</td><td class="mono">2026-06-11 09:52</td></tr>
-            <tr><td>Company Portal</td><td><span class="st ok"></span>Installed</td><td class="mono">0x0</td><td></td><td class="mono">2026-06-11 09:41</td></tr>
-            <tr><td>Adobe Reader DC</td><td><span class="st ok"></span>Installed</td><td class="mono">0x0</td><td></td><td class="mono">2026-06-10 17:03</td></tr>
-          </tbody></table></div>
-      </details>
-      <details class="dt">
-        <summary>Herkende foutcodes <span class="n">2 codes in alle logs</span></summary>
-        <div class="tw"><table><thead><tr><th>Code</th><th>Aantal</th><th>Betekenis</th></tr></thead>
-          <tbody><tr><td class="mono">0x87D1041C</td><td>3&times;</td><td>Detectieregel matcht niet na installatie.</td></tr>
-          <tr><td class="mono">0x80072EE7</td><td>1&times;</td><td>Servernaam kon niet worden opgelost (DNS).</td></tr></tbody></table></div>
-      </details>
-      <details class="dt">
-        <summary>Policy settings (RSOP) <span class="n">48 settings</span><a class="src" href="#files">bron &rarr;</a></summary>
-        <div class="tw"><table><thead><tr><th>Setting</th><th>OMA-URI</th><th>Waarde</th></tr></thead>
-          <tbody><tr><td>Require Device Encryption</td><td class="mono">./Device/Vendor/MSFT/BitLocker/RequireDeviceEncryption</td><td class="mono">1</td></tr>
-          <tr><td>Allow Cortana</td><td class="mono">./Device/Vendor/MSFT/Policy/Config/Experience/AllowCortana</td><td class="mono">0</td></tr></tbody></table></div>
-      </details>
-    </div>
-  </section>
-
-  <!-- ================= TIMELINE ================= -->
-  <section class="panel" id="timeline" role="tabpanel" aria-labelledby="t-timeline" hidden>
-    <div class="stats">
-      <div class="stat ok"><div class="k">Win32App</div><div class="v">5 ok <small>1 failed</small></div></div>
-      <div class="stat ok"><div class="k">PowerShell-scripts</div><div class="v">3 ok <small>0 failed</small></div></div>
-      <div class="stat warn"><div class="k">Waarschuwingen</div><div class="v">1</div></div>
-      <div class="stat"><div class="k">Downloads</div><div class="v">412 MB <small>in 6 min</small></div></div>
-    </div>
-    <div class="sec">
-      <div class="sec-h"><h2>Mislukte items</h2><span class="cnt">klik een regel voor de logregel</span></div>
-      <div class="dt" style="margin:0"><div class="tw" style="border-top:0"><table>
-        <thead><tr><th>Type</th><th>Naam</th><th>Status</th><th>Foutcode</th><th>Tijd</th></tr></thead>
-        <tbody><tr><td>Win32App</td><td>7-Zip 24.08 (x64)</td><td><span class="st bad"></span>Failed</td><td class="mono">0x87D1041C</td><td class="mono">09:52:14</td></tr></tbody></table></div></div>
-    </div>
-    <div class="sec">
-      <div class="sec-h"><h2>Origineel rapport</h2><span class="cnt">Get-IntuneManagementExtensionDiagnostics, in sandbox</span></div>
-      <div class="frame">Het bestaande HTML-timelinerapport laadt hier in de sandboxed iframe (ongewijzigd).</div>
-    </div>
-  </section>
-
-  <!-- ================= BESTANDEN ================= -->
-  <section class="panel" id="files" role="tabpanel" aria-labelledby="t-files" hidden>
-    <div class="files">
-      <aside class="tree">
-        <div class="search">
-          <input type="search" id="pkgq" value="0x87D1041C" aria-label="Zoek in alle bestanden">
-          <div class="hits">3 treffers in 2 bestanden
-            <div class="hit"><b>IntuneManagementExtension.log:1842</b><span>[Win32App] Detection rule not satisfied after install, 0x87D1041C</span></div>
-            <div class="hit"><b>AppWorkload.log:311</b><span>ExitCode 0x87D1041C for app 7-Zip 24.08</span></div>
+      <div class="sec">
+        <div class="sec-h"><h2>Findings</h2><span class="cnt">most severe first</span></div>
+        <article class="finding warn">
+          <span class="st warn"></span>
+          <div>
+            <h3>Machine certificates <span class="grp">Identity</span></h3>
+            <p class="val">1 of 2 expired</p>
+            <p class="adv"><b>What now</b> Renew or clean up the expired certificates; an expired MDM certificate silently kills sync.</p>
           </div>
+          <div class="ev">
+            <a class="btn sm" href="#files">Open evidence &rarr;</a>
+            <span class="file">Identity/certs-machine-overview.txt:14</span>
+          </div>
+          <details class="why"><summary>Why does this matter?</summary><p>Intune binds the enrollment to a machine certificate. When it expires, check-ins keep "succeeding" while policies and apps stop arriving (the zombie-device pattern).</p></details>
+        </article>
+        <article class="finding warn">
+          <span class="st warn"></span>
+          <div>
+            <h3>Intune/Entra endpoints <span class="grp">Network</span></h3>
+            <p class="val">unreachable: <code>graph.microsoft.com</code></p>
+            <p class="adv"><b>What now</b> Allow the unreachable endpoints through firewall/proxy; TLS inspection also breaks Intune traffic.</p>
+          </div>
+          <div class="ev">
+            <a class="btn sm" href="#files">Open evidence &rarr;</a>
+            <span class="file">Network/endpoint-connectivity.txt:7</span>
+          </div>
+          <details class="why"><summary>Why does this matter?</summary><p>The collector runs a TCP/TLS test against the Microsoft endpoints IME and the MDM client need. One blocked endpoint often explains "content download failed" in the timeline.</p></details>
+        </article>
+      </div>
+
+      <div class="sec">
+        <div class="sec-h"><h2>Healthy</h2><span class="cnt">4 checks</span></div>
+        <div class="healthy">
+          <div class="row"><span class="g">Identity</span><ul><li><span class="st ok"></span>Entra joined <span>YES</span></li><li><span class="st ok"></span>Entra PRT <span>YES</span></li></ul></div>
+          <div class="row"><span class="g">Enrollment</span><ul><li><span class="st ok"></span>MDM enrollment <code>enrollment.manage.microsoft.com</code></li></ul></div>
+          <div class="row"><span class="g">Apps</span><ul><li><span class="st ok"></span>IME service <span>Running</span></li></ul></div>
         </div>
-        <ul>
-          <li class="dir">Apps-IME</li>
-          <li class="dir l1">Logs</li>
-          <li class="l2">AgentExecutor.log</li>
-          <li class="l2 cur">IntuneManagementExtension.log</li>
-          <li class="l2">AppWorkload.log</li>
-          <li class="l1">service-status.txt</li>
-          <li class="dir">Identity</li>
-          <li class="l1">certs-machine-overview.txt</li>
-          <li class="l1">dsregcmd-status.txt</li>
-          <li class="dir">Network</li>
-          <li class="l1">endpoint-connectivity.txt</li>
-          <li class="dir">Defender</li>
-          <li class="l1 dis">MpSupportFiles.cab</li>
-          <li class="dir">Registry</li>
-          <li class="l1">Enrollments.reg</li>
-        </ul>
-      </aside>
-      <div class="viewer">
-        <div class="vbar">
-          <div class="crumb">Apps-IME / Logs / <b>IntuneManagementExtension.log</b></div>
-          <input type="search" placeholder="Filter tekst…" aria-label="Filter">
-          <select aria-label="Ernst"><option>Alle ernst</option><option>Warnings + errors</option></select>
-          <a class="btn" href="#files">Download</a>
-        </div>
-        <div class="log"><table>
-          <thead><tr><th>#</th><th>Logtekst</th><th>Component</th><th>Tijd</th></tr></thead>
-          <tbody>
-            <tr><td class="t">1839</td><td class="m">[Win32App] Completed detectionManager SideCarFileDetectionManager, applicationDetected: False</td><td class="c">IntuneManagementExtension</td><td class="t">09:52:13.114</td></tr>
-            <tr class="w"><td class="t">1840</td><td class="m">[Win32App] App with id 5c9f… is not detected after installation</td><td class="c">IntuneManagementExtension</td><td class="t">09:52:13.201</td></tr>
-            <tr class="hl e"><td class="t">1842</td><td class="m">[Win32App] Detection rule not satisfied after install, mapping to 0x87D1041C</td><td class="c">IntuneManagementExtension</td><td class="t">09:52:14.007</td></tr>
-            <tr><td class="t">1843</td><td class="m">[Win32App] Reporting app state to service: Error</td><td class="c">IntuneManagementExtension</td><td class="t">09:52:14.020</td></tr>
-            <tr><td class="t">1844</td><td class="m">[Win32App] ===Step=== Check applicability</td><td class="c">IntuneManagementExtension</td><td class="t">09:52:20.331</td></tr>
-          </tbody></table></div>
+      </div>
+
+      <div class="sec">
+        <details class="notc">
+          <summary>Not collected <small>12 checks &middot; this package was made with the Remote profile</small></summary>
+          <p style="margin:.5rem 0 0">These checks no longer take up a grey card each. Run the collector without <code>-Remote</code> to include them.</p>
+          <div class="chips"><span class="chip">Installed apps</span><span class="chip">Win32 apps</span><span class="chip">WinHTTP proxy</span><span class="chip">Firewall</span><span class="chip">TLS inspection</span><span class="chip">TPM</span><span class="chip">BitLocker</span><span class="chip">Secure Boot</span><span class="chip">Pending reboot</span><span class="chip">Windows Update</span><span class="chip">Disk space</span><span class="chip">Time sync</span></div>
+        </details>
+      </div>
+
+      <div class="sec">
+        <div class="sec-h"><h2>Details</h2><span class="cnt">tables from the package</span></div>
+        <details class="dt" open>
+          <summary>Win32 app deployments <span class="n">3 apps &middot; 1 failed</span><a class="src" href="#files">source &rarr;</a></summary>
+          <div class="tw"><table>
+            <thead><tr><th>App</th><th>Status</th><th>Error code</th><th>Meaning</th><th>Last attempt</th></tr></thead>
+            <tbody>
+              <tr><td>7-Zip 24.08 (x64)</td><td><span class="st bad"></span>Failed</td><td class="mono">0x87D1041C</td><td>The application was installed but the detection rules do not find it.</td><td class="mono">2026-06-11 09:52</td></tr>
+              <tr><td>Company Portal</td><td><span class="st ok"></span>Installed</td><td class="mono">0x0</td><td></td><td class="mono">2026-06-11 09:41</td></tr>
+              <tr><td>Adobe Reader DC</td><td><span class="st ok"></span>Installed</td><td class="mono">0x0</td><td></td><td class="mono">2026-06-10 17:03</td></tr>
+            </tbody></table></div>
+        </details>
+        <details class="dt">
+          <summary>Known error codes <span class="n">2 codes across all logs</span></summary>
+          <div class="tw"><table><thead><tr><th>Code</th><th>Count</th><th>Meaning</th></tr></thead>
+            <tbody><tr><td class="mono">0x87D1041C</td><td>3&times;</td><td>Detection rule not satisfied after installation.</td></tr>
+            <tr><td class="mono">0x80072EE7</td><td>1&times;</td><td>The server name could not be resolved (DNS).</td></tr></tbody></table></div>
+        </details>
+        <details class="dt">
+          <summary>Policy settings (RSOP) <span class="n">48 settings</span><a class="src" href="#files">source &rarr;</a></summary>
+          <div class="tw"><table><thead><tr><th>Setting</th><th>OMA-URI</th><th>Value</th></tr></thead>
+            <tbody><tr><td>Require Device Encryption</td><td class="mono">./Device/Vendor/MSFT/BitLocker/RequireDeviceEncryption</td><td class="mono">1</td></tr>
+            <tr><td>Allow Cortana</td><td class="mono">./Device/Vendor/MSFT/Policy/Config/Experience/AllowCortana</td><td class="mono">0</td></tr></tbody></table></div>
+        </details>
       </div>
     </div>
-  </section>
-</main>
+
+    <!-- timeline -->
+    <div class="panel" id="timeline" role="tabpanel" aria-labelledby="t-timeline" hidden>
+      <div class="stats">
+        <div class="stat ok"><div class="k">Win32App</div><div class="v">5 ok <small>1 failed</small></div></div>
+        <div class="stat ok"><div class="k">PowerShell scripts</div><div class="v">3 ok <small>0 failed</small></div></div>
+        <div class="stat warn"><div class="k">Warnings</div><div class="v">1</div></div>
+        <div class="stat"><div class="k">Downloads</div><div class="v">412 MB <small>in 6 min</small></div></div>
+      </div>
+      <div class="sec">
+        <div class="sec-h"><h2>Failed items</h2><span class="cnt">click a row to open the log line</span></div>
+        <div class="dt" style="margin:0"><div class="tw" style="border-top:0"><table>
+          <thead><tr><th>Type</th><th>Name</th><th>Status</th><th>Error code</th><th>Time</th></tr></thead>
+          <tbody><tr><td>Win32App</td><td>7-Zip 24.08 (x64)</td><td><span class="st bad"></span>Failed</td><td class="mono">0x87D1041C</td><td class="mono">09:52:14</td></tr></tbody></table></div></div>
+      </div>
+      <div class="sec">
+        <div class="sec-h"><h2>Original report</h2><span class="cnt">Get-IntuneManagementExtensionDiagnostics, sandboxed</span></div>
+        <div class="frame">The existing HTML timeline report loads here in the sandboxed iframe, unchanged.</div>
+      </div>
+    </div>
+
+    <!-- files -->
+    <div class="panel" id="files" role="tabpanel" aria-labelledby="t-files" hidden>
+      <div class="files">
+        <aside class="tree">
+          <div class="search">
+            <input type="search" id="pkgq" value="0x87D1041C" aria-label="Search all files">
+            <div class="hits">3 matches in 2 files
+              <div class="hit"><b>IntuneManagementExtension.log:1842</b><span>[Win32App] Detection rule not satisfied after install, 0x87D1041C</span></div>
+              <div class="hit"><b>AppWorkload.log:311</b><span>ExitCode 0x87D1041C for app 7-Zip 24.08</span></div>
+            </div>
+          </div>
+          <ul>
+            <li class="dir">Apps-IME</li>
+            <li class="dir l1">Logs</li>
+            <li class="l2">AgentExecutor.log</li>
+            <li class="l2 cur">IntuneManagementExtension.log</li>
+            <li class="l2">AppWorkload.log</li>
+            <li class="l1">service-status.txt</li>
+            <li class="dir">Identity</li>
+            <li class="l1">certs-machine-overview.txt</li>
+            <li class="l1">dsregcmd-status.txt</li>
+            <li class="dir">Network</li>
+            <li class="l1">endpoint-connectivity.txt</li>
+            <li class="dir">Defender</li>
+            <li class="l1 dis">MpSupportFiles.cab</li>
+            <li class="dir">Registry</li>
+            <li class="l1">Enrollments.reg</li>
+          </ul>
+        </aside>
+        <div class="viewer">
+          <div class="vbar">
+            <div class="crumb">Apps-IME / Logs / <b>IntuneManagementExtension.log</b></div>
+            <input type="search" placeholder="Filter text…" aria-label="Filter text">
+            <select aria-label="Severity"><option>All severities</option><option>Warnings + errors</option><option>Errors</option><option>Warnings</option></select>
+            <a class="btn sm" href="#files">Download</a>
+          </div>
+          <div class="log"><table>
+            <thead><tr><th>#</th><th>Log text</th><th>Component</th><th>Time</th></tr></thead>
+            <tbody>
+              <tr><td class="t">1839</td><td class="m">[Win32App] Completed detectionManager SideCarFileDetectionManager, applicationDetected: False</td><td class="c">IntuneManagementExtension</td><td class="t">09:52:13.114</td></tr>
+              <tr class="w"><td class="t">1840</td><td class="m">[Win32App] App with id 5c9f… is not detected after installation</td><td class="c">IntuneManagementExtension</td><td class="t">09:52:13.201</td></tr>
+              <tr class="hl e"><td class="t">1842</td><td class="m">[Win32App] Detection rule not satisfied after install, mapping to 0x87D1041C</td><td class="c">IntuneManagementExtension</td><td class="t">09:52:14.007</td></tr>
+              <tr><td class="t">1843</td><td class="m">[Win32App] Reporting app state to service: Error</td><td class="c">IntuneManagementExtension</td><td class="t">09:52:14.020</td></tr>
+              <tr><td class="t">1844</td><td class="m">[Win32App] ===Step=== Check applicability</td><td class="c">IntuneManagementExtension</td><td class="t">09:52:20.331</td></tr>
+            </tbody></table></div>
+        </div>
+      </div>
+    </div>
+  </main>
+</section>
+
+<!-- ======================= INBOX ======================= -->
+<section class="screen" id="inbox" hidden>
+  <div class="wrap">
+    <div class="keybar">
+      <label for="ikey">Inbox key</label>
+      <input id="ikey" type="password" value="shk_d5pr5H2FSfN3hpE0j0-ZVM3V7oLv1vR42b9gDnSaWFY" aria-label="Inbox key">
+      <a class="btn" href="#inbox">Lock</a>
+      <a class="btn primary" href="#setup">Set up a new inbox</a>
+    </div>
+    <div class="banner"><span class="st warn"></span><span><strong>Legacy token.</strong> This inbox still uses one secret for uploading and reading. Anyone who can see the detection script can open it.</span><a class="btn sm" href="#setup">Generate a new key</a></div>
+
+    <div class="sec">
+      <div class="sec-h"><h2>Devices</h2><span class="cnt">4 uploads of 200 &middot; refreshes every 30 s while a collection runs</span><a href="#inbox" style="color:var(--bad)">Delete all</a></div>
+      <div class="fleet">
+        <div class="hd"><span></span><span>Device</span><span>Uploads</span><span>Last upload</span><span>Change since previous</span><span></span></div>
+
+        <div class="dev"><span class="st run"></span><b>NB-KRIS-01</b><span class="m">collecting…</span><span class="m">started 2 min ago</span><span class="delta"></span><span class="acts"></span></div>
+
+        <div class="dev" data-open="ups1"><span class="st bad"></span><b>LAPTOP-0042</b><span class="m">2</span><span class="m">today 12:16</span><span class="delta bad">+1 problem (Entra PRT)</span><span class="acts"><a class="btn sm" href="#result">Open latest</a></span></div>
+        <div class="ups" id="ups1">
+          <div class="up"><span><span class="pill bad">1 problem</span> &nbsp;2 warnings &middot; timeline ready</span><span>today 12:16</span><span>1.4 &middot; Remote &middot; anonymized</span><span class="acts"><a href="#result">open</a> &nbsp; <a href="#inbox" style="color:var(--bad)">delete</a></span></div>
+          <div class="up"><span><span class="pill warn">2 warnings</span> &nbsp;timeline ready</span><span>yesterday 08:02</span><span>1.4 &middot; Remote</span><span class="acts"><a href="#result">open</a> &nbsp; <a href="#inbox" style="color:var(--bad)">delete</a></span></div>
+        </div>
+
+        <div class="dev"><span class="st warn"></span><b>TESTPC-01</b><span class="m">1</span><span class="m">today 10:00</span><span class="delta">first upload</span><span class="acts"><a class="btn sm" href="#result">Open latest</a></span></div>
+        <div class="dev"><span class="st ok"></span><b>DESKTOP-17</b><span class="m">1</span><span class="m">Mon 16:40</span><span class="delta ok">no problems</span><span class="acts"><a class="btn sm" href="#result">Open latest</a></span></div>
+      </div>
+    </div>
+
+    <div class="sec" id="setup">
+      <div class="sec-h"><h2>Set up a new inbox</h2><span class="cnt">three steps, shown together here; in the app step 2 and 3 unfold after step 1</span></div>
+      <div class="wizard">
+        <div class="step">
+          <span class="n">1</span>
+          <h3>Keep the inbox key</h3>
+          <p>Shown once. It is the only way to open or clear this inbox. Never put it in a script.</p>
+          <span class="tokval">shk_d5pr5H2FSfN3hpE0j0-ZVM3V7oLv1vR42b9gDnSaWFY</span>
+          <div class="row"><a class="btn sm" href="#setup">Copy key</a><a class="btn sm" href="#setup">Regenerate</a></div>
+        </div>
+        <div class="step">
+          <span class="n">2</span>
+          <h3>Copy the detection script</h3>
+          <p>The derived upload token is already filled in. It can upload and report status, nothing else.</p>
+          <span class="tokval">shu_zVXsg9YAfnArPM6wT-4XuV6fKWNbYM5fUfEEgnvwNRE</span>
+          <div class="row"><a class="btn sm primary" href="#setup">Copy script</a><a class="btn sm" href="#setup">Download .ps1</a><label><input type="checkbox"> Anonymize tenant/company</label></div>
+          <p style="margin:.6rem 0 0">Pins collector SHA-256 <code>C9022A0D…260B0</code>. After a Sherlog update that changes the collector, copy the script again.</p>
+        </div>
+        <div class="step">
+          <span class="n">3</span>
+          <h3>Deploy in Intune</h3>
+          <ol>
+            <li><strong>Devices &rarr; Scripts and remediations &rarr; Create</strong></li>
+            <li>Paste as the <strong>Detection script</strong>; leave the remediation script empty</li>
+            <li>64-bit PowerShell: <code>Yes</code> &middot; logged-on credentials: <code>No</code></li>
+            <li>Assign to a device group, or pick a device &rarr; <strong>Run remediation</strong></li>
+          </ol>
+          <p style="margin:.6rem 0 0">Devices appear above within minutes, first as "collecting…".</p>
+        </div>
+      </div>
+    </div>
+  </div>
+  <footer><span>Sherlog &middot; sherlog.nl</span><span class="sp"></span><a href="#home">About</a><a href="#home">PayloadKit &#8599;</a></footer>
+</section>
+
+<!-- ======================= ERROR CODES ======================= -->
+<section class="screen" id="errorcodes" hidden>
+  <div class="wrap">
+    <div class="ecsearch">
+      <input type="search" placeholder="Filter by code or text, e.g. 0x87D1041C, detection, proxy…" aria-label="Filter error codes">
+      <span class="fam"><a href="#f-win32">Win32 app</a><a href="#f-mdm">MDM / enrollment</a><a href="#f-http">HTTP / network</a><a href="#f-msi">MSI</a><a href="#f-do">Delivery Optimization</a></span>
+      <span style="color:var(--muted);font-size:.82rem">110 codes</span>
+    </div>
+
+    <div class="ec" id="f-win32">
+      <div class="fh"><h2>Win32 app (IME)</h2><span>0x87D1… &middot; 24 codes</span></div>
+      <div class="r"><code>0x87D1041C</code><button class="cp" type="button">copy</button><span class="mean">The application was successfully installed but is not detected after install. Check the detection rule.</span></div>
+      <div class="r"><code>0x87D13B9F</code><button class="cp" type="button">copy</button><span class="mean">The app is not applicable to this device (requirement rule not met).</span></div>
+      <div class="r"><code>0x87D30067</code><button class="cp" type="button">copy</button><span class="mean">A file hash mismatch was found; the downloaded content does not match the package. Re-upload the .intunewin.</span></div>
+      <div class="r"><code>0x87D300CF</code><button class="cp" type="button">copy</button><span class="mean">Download of the app content timed out. Check proxy, Delivery Optimization and endpoint reachability.</span></div>
+    </div>
+
+    <div class="ec" id="f-mdm">
+      <div class="fh"><h2>MDM enrollment and sync</h2><span>0x8018… &middot; 18 codes</span></div>
+      <div class="r"><code>0x80180001</code><button class="cp" type="button">copy</button><span class="mean">Enrollment failed: invalid data received from the enrollment server.</span></div>
+      <div class="r"><code>0x8018000A</code><button class="cp" type="button">copy</button><span class="mean">The device is already enrolled (MDM enrollment record exists). Remove the stale enrollment first.</span></div>
+      <div class="r"><code>0x80180014</code><button class="cp" type="button">copy</button><span class="mean">The MDM certificate on the device is missing or invalid; the enrollment must be repaired.</span></div>
+    </div>
+
+    <div class="ec" id="f-http">
+      <div class="fh"><h2>HTTP and network</h2><span>0x8007… / 0x80072… &middot; 22 codes</span></div>
+      <div class="r"><code>0x80072EE7</code><button class="cp" type="button">copy</button><span class="mean">The server name or address could not be resolved. DNS or proxy issue.</span></div>
+      <div class="r"><code>0x80072EFD</code><button class="cp" type="button">copy</button><span class="mean">A connection with the server could not be established.</span></div>
+      <div class="r"><code>0x80072F8F</code><button class="cp" type="button">copy</button><span class="mean">A security error occurred: the TLS handshake failed. Check the device clock and TLS inspection.</span></div>
+      <div class="r"><code>0x80190190</code><button class="cp" type="button">copy</button><span class="mean">HTTP 400 Bad Request from the service.</span></div>
+      <div class="r"><code>0x80190191</code><button class="cp" type="button">copy</button><span class="mean">HTTP 401 Unauthorized: the device token was rejected.</span></div>
+    </div>
+
+    <div class="ec" id="f-msi">
+      <div class="fh"><h2>MSI (Windows Installer)</h2><span>16xx / 3010 &middot; 20 codes</span></div>
+      <div class="r"><code>1603</code><button class="cp" type="button">copy</button><span class="mean">Fatal error during installation. Check the application's install log.</span></div>
+      <div class="r"><code>1618</code><button class="cp" type="button">copy</button><span class="mean">Another installation is already in progress. Wait and retry.</span></div>
+      <div class="r"><code>1641</code><button class="cp" type="button">copy</button><span class="mean">The installer initiated a restart; the install succeeded.</span></div>
+      <div class="r"><code>3010</code><button class="cp" type="button">copy</button><span class="mean">A restart is required to complete the install; the install succeeded.</span></div>
+    </div>
+
+    <div class="ec" id="f-do">
+      <div class="fh"><h2>Delivery Optimization</h2><span>0x80D0… &middot; 16 codes</span></div>
+      <div class="r"><code>0x80D02002</code><button class="cp" type="button">copy</button><span class="mean">The download timed out. Check proxy configuration and DO endpoint reachability.</span></div>
+      <div class="r"><code>0x80D03805</code><button class="cp" type="button">copy</button><span class="mean">The download was paused because the device is on a metered connection.</span></div>
+    </div>
+  </div>
+  <footer><span>Sherlog &middot; sherlog.nl</span><span class="sp"></span><a href="#home">About</a><a href="#home">PayloadKit &#8599;</a></footer>
+</section>
 
 <script>
 (function(){
+  var SCREENS=['home','result','inbox','errorcodes'];
+  var TABS=['overview','timeline','files'];
   var tabs=[].slice.call(document.querySelectorAll('.tab'));
-  function show(id){
+  function showTab(id){
     tabs.forEach(function(t){var on=t.getAttribute('aria-controls')===id;
       t.setAttribute('aria-selected',String(on));
       document.getElementById(t.getAttribute('aria-controls')).hidden=!on;});
   }
-  tabs.forEach(function(t){t.addEventListener('click',function(){show(t.getAttribute('aria-controls'));
-    try{history.replaceState(null,'','#'+t.getAttribute('aria-controls'))}catch(e){}});});
+  function showScreen(id){
+    SCREENS.forEach(function(s){document.getElementById(s).hidden=(s!==id);});
+    [].slice.call(document.querySelectorAll('[data-s]')).forEach(function(a){
+      a.classList.toggle('cur',a.getAttribute('data-s')===id||(id==='result'&&a.getAttribute('data-s')==='home'&&a.closest('nav')!==null));});
+  }
+  function go(token){
+    if(TABS.indexOf(token)>=0){showScreen('result');showTab(token);}
+    else if(SCREENS.indexOf(token)>=0){showScreen(token);}
+    else if(token==='setup'){showScreen('inbox');var el=document.getElementById('setup');if(el)el.scrollIntoView({block:'start'});return;}
+    else if(token.indexOf('f-')===0){showScreen('errorcodes');var e2=document.getElementById(token);if(e2)e2.scrollIntoView({block:'start'});return;}
+    else return;
+    window.scrollTo({top:0});
+    try{history.replaceState(null,'','#'+token)}catch(e){}
+  }
+  tabs.forEach(function(t){t.addEventListener('click',function(){go(t.getAttribute('aria-controls'));});});
   document.addEventListener('click',function(e){
     var a=e.target.closest&&e.target.closest('a[href^="#"]');
-    if(a){var id=a.getAttribute('href').slice(1);
-      if(document.getElementById(id)&&document.getElementById(id).classList.contains('panel')){
-        e.preventDefault();show(id);pop.hidden=true;more.setAttribute('aria-expanded','false');
-        window.scrollTo({top:0,behavior:'smooth'});}}
+    if(a){e.preventDefault();closePop();go(a.getAttribute('href').slice(1));}
   });
-  var h=(location.hash||'').replace('#','');
-  if(h&&document.getElementById(h)&&document.getElementById(h).classList.contains('panel'))show(h);
+  try{history.scrollRestoration='manual'}catch(e){}
+  go((location.hash||'#home').replace('#','')||'home');
+  // The browser's own hash jump lands after load; undo it so screens open at the top.
+  setTimeout(function(){window.scrollTo(0,0)},0);
+  window.addEventListener('load',function(){setTimeout(function(){window.scrollTo(0,0)},0)});
 
   var more=document.getElementById('more'),pop=document.getElementById('pop');
-  more.addEventListener('click',function(e){e.stopPropagation();pop.hidden=!pop.hidden;
-    more.setAttribute('aria-expanded',String(!pop.hidden));});
-  document.addEventListener('click',function(e){if(!pop.hidden&&!pop.contains(e.target)){pop.hidden=true;more.setAttribute('aria-expanded','false');}});
+  function closePop(){pop.hidden=true;more.setAttribute('aria-expanded','false');}
+  more.addEventListener('click',function(e){e.stopPropagation();pop.hidden=!pop.hidden;more.setAttribute('aria-expanded',String(!pop.hidden));});
+  document.addEventListener('click',function(e){if(!pop.hidden&&!pop.contains(e.target))closePop();});
 
   var copy=document.getElementById('copy');
   copy.addEventListener('click',function(){
     var txt='# Sherlog findings - TESTPC-01\n- [warn] Machine certificates: 1 of 2 expired\n- [warn] Intune/Entra endpoints: unreachable graph.microsoft.com\n- 4 check(s) ok, 12 not collected';
-    var done=function(){copy.textContent='Gekopieerd';setTimeout(function(){copy.textContent='Copy findings'},1500)};
+    var done=function(){copy.textContent='Copied';setTimeout(function(){copy.textContent='Copy findings'},1500)};
     try{navigator.clipboard.writeText(txt).then(done,done)}catch(e){done()}
+  });
+  [].slice.call(document.querySelectorAll('.cp')).forEach(function(b){
+    b.addEventListener('click',function(){var c=b.previousElementSibling.textContent;
+      var done=function(){b.textContent='copied';setTimeout(function(){b.textContent='copy'},1200)};
+      try{navigator.clipboard.writeText(c).then(done,done)}catch(e){done()}});
+  });
+  [].slice.call(document.querySelectorAll('.dev[data-open]')).forEach(function(d){
+    d.addEventListener('click',function(e){if(e.target.closest('a'))return;
+      var u=document.getElementById(d.getAttribute('data-open'));if(u)u.hidden=!u.hidden;});
   });
   document.getElementById('notex').addEventListener('click',function(){document.getElementById('note').hidden=true});
   document.getElementById('theme').addEventListener('click',function(){
