@@ -49,12 +49,16 @@ PRT-check een echt signaal i.p.v. altijd "unknown" onder SYSTEM), GPO-policies
 (`HKLM\SOFTWARE\Policies`), co-management-status, Defender for
 Endpoint-onboarding, Delivery Optimization, schijfruimte, tijdsynchronisatie,
 TPM-status en een TLS-issuer-check (detecteert TLS-inspectie). Het schrijft
-een `_MANIFEST.json` (collectorversie, profiel, per-stap resultaat) en
-redigeert het upload-token altijd uit alle tekstbestanden — ook zonder
-`-Anonymize` — omdat PowerShell's transcript de volledige commandline
-(inclusief token) vastlegt.
+een `_MANIFEST.json` (collectorversie, profiel, per-stap resultaat en de
+uitkomst van de redactie) en redigeert het upload-token altijd uit alle
+tekstbestanden — ook zonder `-Anonymize` — omdat PowerShell's transcript de
+volledige commandline (inclusief token) vastlegt. Die redactie is
+**fail-closed**: een bestand dat niet geredigeerd kan worden gaat niet mee, en
+na het zippen wordt elk bestand (ook binaries) op het token gescand; bij een
+treffer wordt er niet geüpload. Standalone schrijft de collector naar een
+beveiligde map `%ProgramData%\Sherlog\Collect` (SYSTEM/Administrators).
 
-1. **Diagnose-dashboard** — dertig health checks uit het pakket, met bovenaan
+1. **Diagnose-dashboard** — ruim dertig health checks uit het pakket, met bovenaan
    een **verdict-banner** ("N problems and M warnings found") en de kaarten
    gesorteerd op ernst (rood eerst). Checks o.a.: Entra join- en **PRT-status**
    (bij voorkeur uit `dsregcmd` in **interactieve gebruikerscontext** — de
@@ -134,6 +138,15 @@ Vereist: Docker met Compose.
 docker compose up --build
 ```
 
+Tests en weblaag zonder Docker (Python 3.12, `pwsh` 7.6 optioneel — zonder
+`pwsh` wordt de echte analyse-test overgeslagen):
+
+```bash
+python3 -m venv .venv
+.venv/bin/pip install --require-hashes -r requirements.txt -r requirements-dev.txt
+.venv/bin/python -m pytest tests -q
+```
+
 Open daarna <http://localhost:8080>. De homepage laat je een diagnostics-pakket
 of losse logs uploaden (Diagnostics / CMTrace Viewer). De app draait standaard
 als **publieke tool zonder login**: iedereen kan logs uploaden en het rapport
@@ -166,6 +179,13 @@ Alle configuratie loopt via environment variables met veilige defaults:
 | `UPLOAD_TOKEN_MIN_LEN`   | `24`    | Minimale lengte van een (zelfgekozen) upload-token.                                            |
 | `UPLOAD_API_MAX_JOBS`    | `2000`  | Globale rem op het aantal drop-off-jobs (tegen disk-misbruik); daarboven `429`.                |
 | `UPLOAD_API_MAX_JOBS_PER_TOKEN` | `200` | Per-inbox rem op het aantal drop-off-jobs per token; daarboven `429`. Voorkomt dat één token de globale cap vult. |
+| `MAX_UNCOMPRESSED_MB`    | 20× `MAX_UPLOAD_MB` | Maximale uitgepakte grootte per upload (zip-bomb-budget, gedeeld over geneste zips en cabs). |
+| `MAX_ZIP_MEMBERS`        | `20000` | Maximaal aantal bestanden per upload (zip + geneste zip + cab-inhoud); daarboven `413`. |
+| `MIN_FREE_DISK_MB`       | `1024`  | Vrije-ruimtevloer op het `JOBS_DIR`-volume. Nieuwe uploads krijgen `507` als er minder dan dit plus `MAX_UPLOAD_MB` vrij is; uitpakken stopt ook op deze vloer. |
+| `UPLOAD_RATE_PER_HOUR`   | `60`    | Web-uploads per client-IP per uur (`0` = uit); daarboven `429`. De drop-off API is per token begrensd. |
+| `MAX_PENDING_FILES`      | `5000`  | Maximaal aantal collectie-statusbestanden (één per upload-token). |
+| `HEAVY_WORKERS`          | cpu+1 (max 4) | Threads voor zwaar werk (logs parsen/renderen, zoeken, evtx, uitpakken), los van de pool die `/health` gebruikt. |
+| `FORWARDED_ALLOW_IPS`    | `*` (image) | Welke proxy's `X-Forwarded-For` mogen zetten (uvicorn). `*` past bij Coolify/Traefik; publiceer je de poort direct, zet dan het proxy-adres of `127.0.0.1`, anders kan een client zijn IP spoofen en de rate limits omzeilen. |
 | `COLLECT_PENDING_TTL_MINUTES` | `45` | Hoe lang een "collecting"-melding van een device in de inbox blijft staan zonder dat er een upload volgt. Een gemelde *fout* blijft `JOB_RETENTION_HOURS` staan. |
 
 De Graph-verrijking is **optioneel en uit by default**: zonder de drie `GRAPH_*`
@@ -184,34 +204,52 @@ Een Intune-beheerder kan de collector via Intune op een device draaien en de
 logs automatisch naar Sherlog laten uploaden, om ze daarna in een **inbox** op de
 site door te nemen. Zet hiervoor `ENABLE_UPLOAD_API=1`.
 
-**Self-service tokens.** Het token is de namespace: genereer er één op
-`/inbox` (knop *Generate token*) en bewaar het. Wie het token kent kan ermee
-uploaden én alle bijbehorende packages bekijken: voer het in op `/inbox` (het
-wordt in de **request-body** verstuurd, niet in de URL). Sherlog bewaart alleen
-de **sha256-hash** van het token op elke job — nooit het token zelf — en houdt
-geen token-register bij.
+**Twee geheimen: inbox-sleutel en upload-token.** Genereer op `/inbox` (knop
+*Generate token*) een **inbox-sleutel** (`shk_…`). Sherlog leidt daaruit een
+**upload-token** af (`shu_…` = HMAC-SHA256 van de sleutel) en zet alleen dát
+token in het detection-script. Het upload-token kan uploaden en de
+collectiestatus melden, maar kan de inbox niet openen of leegmaken; alleen de
+inbox-sleutel kan dat. De HMAC is eenrichtingsverkeer: wie het script ziet
+(Intune-console, ScriptBlock-logging, de IME-cache op het device) kan er de
+sleutel niet uit afleiden. Sherlog bewaart alleen de **sha256** van het
+upload-token op elke job — nooit een geheim zelf — en houdt geen register bij.
+Een inbox-sleutel wordt op de upload-endpoints geweigerd, een upload-token op
+de inbox.
 
-> **Token = secret.** Het token reist nooit in de URL-query — niet bij upload
-> (`X-Upload-Token`-header) en niet bij het openen van de inbox (POST-body), dus
-> het komt niet in access-logs, browsergeschiedenis of de `Referer` terecht.
-> Behandel het toch als een wachtwoord: deel het niet en genereer een nieuw token
-> als je vermoedt dat het is uitgelekt (oude uploads verlopen vanzelf na de
-> retentie).
+> **Legacy tokens.** Tokens zonder `shk_`/`shu_`-prefix (van vóór deze
+> splitsing) blijven werken als één geheim voor uploaden én lezen, zodat
+> uitgerolde remediations niet breken. De inbox toont dan een waarschuwing:
+> genereer een nieuwe sleutel en rol het nieuwe script uit.
+
+> **Geheimen reizen nooit in de URL-query** — niet bij upload
+> (`X-Upload-Token`-header) en niet bij het openen van de inbox (POST-body of
+> `X-Inbox-Key`-header), dus ze komen niet in access-logs, browsergeschiedenis
+> of de `Referer` terecht. Behandel de inbox-sleutel als een wachtwoord.
 
 **Uitrollen (aanbevolen: Remediation on-demand):**
 
-1. Genereer een token op `<sherlog>/inbox`.
-2. Open [`Remediate-CollectToSherlog.ps1`](Remediate-CollectToSherlog.ps1), vul
-   `$SherlogBase` en `$UploadToken` in.
+1. Genereer een inbox-sleutel op `<sherlog>/inbox` en bewaar hem.
+2. Kopieer het detection-script dat de pagina toont: `$SherlogBase`,
+   `$UploadToken` (het `shu_`-token) en `$CollectorSha256` zijn al ingevuld.
 3. Intune-admincenter → **Devices → Scripts and remediations** → custom script
    package, **Run in 64-bit PowerShell: Yes**, **logged-on credentials: No**.
-   Plak `Remediate-CollectToSherlog.ps1` als **detection-script** — Intune
-   vereist een detection-script; dit ene script doet de collectie, dus een
+   Plak het script als **detection-script** — Intune vereist een
+   detection-script; dit ene script doet de collectie, dus een
    remediation-script is niet nodig (leeg laten).
 4. Wijs toe aan een device-groep (de detection draait op schema), of selecteer
    een device → **Run remediation** (on-demand). Draait als SYSTEM, verzamelt
    het slimme `-Remote`-profiel en POST't de zip.
-5. Open `<sherlog>/inbox`, voer je token in en klik de device-upload open.
+5. Open `<sherlog>/inbox`, voer je inbox-sleutel in en klik de device-upload open.
+
+**Integriteit van de collector.** Het detection-script downloadt
+`Collect-IntuneDiagnostics.ps1` van `/collect-script` en draait het als SYSTEM.
+Het script bevat de **SHA-256 van de collector** die de server op dat moment
+serveert (ook zichtbaar op `/inbox`) en weigert elke andere versie: bij een
+mismatch wordt het gedownloade bestand verwijderd en eindigt de run met
+exitcode 1. `$SherlogBase` moet `https://` zijn (alleen `localhost` mag `http`).
+**Gevolg:** na een Sherlog-update die de collector wijzigt, moet je het script
+opnieuw van `/inbox` kopiëren en in Intune bijwerken — tot dan melden de
+devices "collector hash mismatch".
 
 > **Live status.** Een collectie duurt minuten. De collector meldt daarom bij
 > het starten "collecting" aan Sherlog (en meldt het ook als hij zelf ziet dat
@@ -221,41 +259,62 @@ geen token-register bij.
 > binnen is, of vanzelf na `COLLECT_PENDING_TTL_MINUTES`. Deze seintjes maken
 > géén job aan en tellen niet mee voor de jobcaps.
 
-> Het detection-script staat ook kant-en-klaar (met je token al ingevuld) op
-> de `/inbox`-pagina nadat je een token genereert.
+**Uitkomst in Intune.** Het script schrijft één korte regel naar de
+remediation-output, bijvoorbeeld `Sherlog: uploaded (id 1a2b3c4d, mode full,
+wrapper 1.4.0).` Exitcode **0** betekent geüpload (of bewust overgeslagen door
+de throttle); elke fout (hash-mismatch, download, collectie, upload) geeft
+**exitcode 1** en toont dus als "With issues" in het Intune-rapport. De
+volledige resultaat-URL komt bewust niet in de Intune-output of het register:
+hij geeft zonder verdere controle toegang tot het pakket.
 
-De detection-output toont nu ook het resultaat (`Sherlog: SHERLOG_RESULT=<url>`
-of `SHERLOG_ERROR=...`) — zichtbaar in het remediation-rapport in Intune. Het
-script slaat het laatste resultaat + tijdstip op in `HKLM\SOFTWARE\Sherlog`
-(`LastRunUtc`/`LastResultUrl`) en slaat een run over als de vorige minder dan
-`$MinHoursBetweenRuns` (default 6u) geleden was, zodat een fleet-brede
-schedule de inbox-caps niet in één klap opsoupeert. Download + zip staan in
-`%ProgramData%\Sherlog` (SYSTEM/Administrators-only), niet meer in het door
-standaardgebruikers beschrijfbare `%TEMP%`.
+**Throttle en backoff.** Het script bewaart in `HKLM\SOFTWARE\Sherlog` per
+modus `LastRunUtc_<mode>` en `LastResultId` (8 tekens), en slaat een run over
+als de vorige geslaagde run minder dan `$MinHoursBetweenRuns` (default 6 u)
+geleden was, zodat een fleet-brede schedule de inbox-caps niet in één klap
+opsoupeert. Na een mislukte run wacht het 1 u, daarna telkens het dubbele (tot
+`$MinHoursBetweenRuns`), zodat een permanent geweigerd device niet elk uur
+opnieuw minutenlang verzamelt. Zet `$Force = $true` om throttle en backoff te
+negeren (handig voor een eenmalige on-demand run). Een tijdstempel in de
+toekomst (klok teruggezet) telt als verlopen.
+
+**Werkmap.** Download en zip staan in een nieuwe, willekeurige submap van
+`%ProgramData%\Sherlog`. De ACL wordt op SID's gebouwd (SYSTEM en
+Administrators, geen overerving, eigenaar Administrators) en gecontroleerd;
+heeft een standaardgebruiker de map vooraf aangemaakt, dan wordt hij opnieuw
+opgebouwd of stopt de run. Opruimen volgt nooit junctions of symlinks.
 
 Direct vanaf de commandline kan ook:
 
 ```powershell
 .\Collect-IntuneDiagnostics.ps1 -Remote `
-    -UploadUrl 'https://sherlog.nl/api/diagnostics' -UploadToken '<token>'
+    -UploadUrl 'https://sherlog.nl/api/diagnostics' -UploadToken '<shu_-token>'
 ```
 
 **Anonimiseren (best-effort).** Voeg `-Anonymize` toe (of zet de toggle aan op
-`/inbox`) om tenant- en company-gegevens te redigeren: tenant-id/naam, domein(en),
-UPN/e-mail, device- en username worden in **alle tekstbestanden** vervangen door
-placeholders, en de zip-naam + upload-`X-Device-Name` worden geanonimiseerd. Dit
-is **best-effort, geen garantie**: binaries (event logs `.evtx`, Defender `.cab`,
-de geneste mdmdiag-zip) worden **niet** gescrubd en kunnen nog identifiers
-bevatten — controleer het pakket vóór delen.
+`/inbox`) om tenant- en company-gegevens te redigeren in **alle
+tekstbestanden** (herkend op inhoud, niet op extensie): tenant-id/naam,
+domein(en), UPN/e-mail, device- en gebruikersnaam (ook de interactieve
+gebruiker als de collector onder SYSTEM draait), profielmappen, SID's,
+device-id's (Entra `DeviceId`, Intune `EntDMID`), Defender `OrgId`,
+serienummer, Wi-Fi-SSID's, IPv4/IPv6- en MAC-adressen. Namen worden alleen als
+heel woord vervangen (`CORP` raakt `Corporation` niet), ook in `.reg`-hexwaarden
+en in PowerShell-JSON-escapes. De zip-naam en `X-Device-Name` worden een
+gezouten hash (`anon-<16 hex>`, zout per device in het register). Dit is
+**best-effort, geen garantie**: binaries (event logs `.evtx`, Defender `.cab`,
+de geneste mdmdiag-zip, `.etl`) worden **niet** gescrubd en kunnen nog
+identifiers bevatten — controleer het pakket vóór delen. `_MANIFEST.json`
+vermeldt of de anonimisering volledig lukte; de dashboard-kaart *Collection*
+waarschuwt als er bestanden zijn weggelaten.
 
 ```powershell
 .\Collect-IntuneDiagnostics.ps1 -Remote -Anonymize
 ```
 
 **Opslag & retentie.** Drop-off packages worden net als alle andere logs in
-`JOBS_DIR` opgeslagen en na `JOB_RETENTION_HOURS` (default 24u) opgeruimd. Wil je
-ze langer bewaren én over redeploys behouden: mount `JOBS_DIR` op een persistent
-Coolify-volume en zet `JOB_RETENTION_HOURS` hoger (bijv. `720` voor 30 dagen).
+`JOBS_DIR` opgeslagen en na `JOB_RETENTION_HOURS` (default 24u, gerekend vanaf
+het uploadmoment) opgeruimd. Wil je ze langer bewaren én over redeploys
+behouden: mount `JOBS_DIR` op een persistent Coolify-volume en zet
+`JOB_RETENTION_HOURS` hoger (bijv. `720` voor 30 dagen).
 
 **Maprechten.** De container draait als niet-root (uid 10001). De entrypoint
 ([`scripts/docker-entrypoint.sh`](scripts/docker-entrypoint.sh)) chownt `JOBS_DIR`
@@ -265,11 +324,11 @@ voor root bij het starten (standaard zo).
 
 **Security & privacy.** Diagnostics-packages bevatten vertrouwelijke gegevens
 (IME-logs, identity, certificaten). Voor vertrouwelijke logs heeft een
-**self-hosted** Sherlog de voorkeur boven het publieke `sherlog.nl`. Het token
-is een device-secret (in het remediation-script leesbaar voor wie de policy kan
-inzien). Jobs worden na `JOB_RETENTION_HOURS` (default 24 u) opgeruimd. Microsoft
-adviseert geen persoonsgegevens via scripts te verzamelen — beoordeel zelf wat je
-ophaalt.
+**self-hosted** Sherlog de voorkeur boven het publieke `sherlog.nl`. Het
+upload-token staat leesbaar in het detection-script, maar geeft alleen
+upload-rechten. Jobs worden na `JOB_RETENTION_HOURS` (default 24 u) opgeruimd.
+Microsoft adviseert geen persoonsgegevens via scripts te verzamelen — beoordeel
+zelf wat je ophaalt.
 
 ## Coolify-deployment
 
@@ -294,6 +353,11 @@ Stap voor stap:
 7. **Resource limits.** Aanbevolen: **1 CPU / 1–2 GB RAM**. Het parsen van grote
    logbestanden is geheugenintensief; te krap zetten leidt tot OOM-kills tijdens
    de analyse.
+8. **Eén instantie per volume.** De app draait bewust met één uvicorn-worker
+   (`--workers 1`): caps, de analyse-semafoor, de teller en het herstel na een
+   herstart gaan uit van één proces per `JOBS_DIR`. Een tweede proces op
+   hetzelfde volume weigert te starten (lockfile `JOBS_DIR/.worker.lock`).
+   Schaal dus niet horizontaal op één volume.
 
 ## Publieke deployment (zonder login)
 
@@ -320,19 +384,42 @@ Beveiligingen die al in de code zitten (geen config nodig):
   zodat kwaadaardige scripts in een geüploade log géén toegang krijgen tot de
   app-origin. Diezelfde sandbox-respons (en elke `.html` uit een diagnostics-
   pakket) krijgt bovendien `default-src 'none'`, zodat een kwaadaardig script de
-  inhoud ook niet naar buiten kan exfiltreren. De app-pagina's sturen
-  restrictieve security-headers (`CSP`, `X-Content-Type-Options`,
-  `Referrer-Policy`, `X-Frame-Options`).
+  inhoud ook niet naar buiten kan exfiltreren. Onvertrouwde HTML (het rapport,
+  `.html` uit een pakket) wordt alleen in een iframe geserveerd: wie de URL
+  direct opent wordt teruggestuurd naar de resultaatpagina, zodat een pakket
+  geen phishing- of redirectpagina op dit domein kan zijn.
+- **CSP met nonces.** App-pagina's staan alleen scripts toe met een per
+  respons willekeurige nonce (geen `'unsafe-inline'`), dus een escape-fout in
+  een template leidt niet meer tot code-executie. Verder `HSTS`,
+  `X-Content-Type-Options`, `Referrer-Policy`, `X-Frame-Options`,
+  `Cross-Origin-Opener-Policy` en `Cache-Control: no-store` op `/inbox`.
 - **Concurrency-limiet.** `JOB_CONCURRENCY` (default 2) begrenst hoeveel
   analyses tegelijk draaien, zodat veel gelijktijdige uploads de container niet
   uitputten. Stem af op de toegewezen CPU/RAM.
-- **Upload-validatie.** Alleen `.log`/`.zip`, harde groottelimiet (streaming),
-  zip-slip- en zip-bom-bescherming.
+- **Upload-validatie.** Alleen `.log`/`.zip`. De groottelimiet wordt per route
+  afgedwongen terwijl de body binnenkomt (ook bij chunked uploads zonder
+  `Content-Length`), plus zip-slip-, zip-bom- en bestandsaantalbescherming.
+  Een upload die om welke reden dan ook faalt laat niets op schijf achter.
+- **Rate limits.** Per client-IP op web-uploads (`UPLOAD_RATE_PER_HOUR`),
+  inbox-lookups en mislukte basic-auth-pogingen.
 - **Disk-limiet.** `MAX_LOCAL_JOBS` (default 200) begrenst hoeveel interactieve
   upload-jobs er tegelijk op schijf staan; daarboven krijgen nieuwe uploads
   `429` tot oude jobs verlopen. De drop-off API heeft zijn eigen caps
   (`UPLOAD_API_MAX_JOBS`, `UPLOAD_API_MAX_JOBS_PER_TOKEN`). Samen met korte
-  retentie voorkomt dit dat anonieme uploads de schijf vullen.
+  retentie voorkomt dit dat anonieme uploads de schijf vullen. Omdat caps
+  jobs tellen en geen bytes, weigert de app bovendien nieuwe uploads (`507`)
+  zodra het volume onder `MIN_FREE_DISK_MB` vrije ruimte zakt.
+
+## Dependencies bijwerken
+
+- **Python:** pas `requirements.in` / `requirements-dev.in` aan en compileer de
+  hash-locks opnieuw:
+  `uv pip compile requirements.in --python-version 3.12 --generate-hashes --universal -o requirements.txt`
+  (idem voor `requirements-dev.in`). Draai daarna `pip-audit -r requirements.txt`.
+- **Base image:** `ubuntu:24.04` staat op digest in `Dockerfile` en
+  `Dockerfile.test`; werk de digest bewust bij.
+- **PowerShell:** `PWSH_VERSION` en `PWSH_SHA256` in beide Dockerfiles
+  (package pool `packages.microsoft.com/ubuntu/24.04/prod/pool/main/p/powershell/`).
 
 ## Beperkingen
 

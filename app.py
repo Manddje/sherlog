@@ -6747,7 +6747,8 @@ def render_collect_script_panel() -> str:
     <strong>elevated</strong> PowerShell on the device. It collects MDM logs,
     event logs, registry exports, identity/network info and the IME logs, and
     writes <code>IntuneDiag-&lt;device&gt;-&lt;timestamp&gt;.zip</code> to
-    <code>C:\\Temp</code>. Upload that zip above.</p>
+    <code>%ProgramData%\\Sherlog\\Collect</code> (readable by administrators
+    only). Upload that zip above.</p>
   <p><a class="btn btn-ghost" href="/collect-script" download>
     Download Collect-IntuneDiagnostics.ps1</a></p>
   <details><summary>View script source</summary>
@@ -6968,11 +6969,19 @@ class RateLimiter:
         self.max_keys = max_keys
         self._hits: "dict[str, list]" = {}
 
+    def _live(self, key: str, now: float) -> list:
+        return [t for t in self._hits.get(key, []) if now - t < self.window]
+
+    def blocked(self, key: str) -> bool:
+        """At the limit already (without recording a new hit)."""
+        return self.limit > 0 and len(self._live(key, time.monotonic())) >= self.limit
+
     def allow(self, key: str) -> bool:
+        """Record a hit unless the key is at its limit."""
         if self.limit <= 0:
             return True
         now = time.monotonic()
-        hits = [t for t in self._hits.get(key, []) if now - t < self.window]
+        hits = self._live(key, now)
         if len(hits) >= self.limit:
             self._hits[key] = hits
             return False
@@ -6992,8 +7001,10 @@ def client_ip(request: Request) -> str:
 
 
 _upload_limiter = RateLimiter(UPLOAD_RATE_PER_HOUR, 3600)
-# Opening an inbox with a wrong key is the only online guessing oracle.
-_inbox_limiter = RateLimiter(120, 3600)
+# Opening an inbox with a wrong key is the only online guessing oracle, so
+# only lookups that find NOTHING count (the page's own 30 s auto-refresh while
+# a device collects must never trip it).
+_inbox_limiter = RateLimiter(60, 3600)
 _auth_fail_limiter = RateLimiter(20, 900)
 
 _job_create_lock: Optional[asyncio.Lock] = None
@@ -7665,9 +7676,10 @@ async def inbox(request: Request) -> HTMLResponse:
         token = str(form.get("token") or "").strip()
     error = ""
     if token:
-        if not _inbox_limiter.allow(client_ip(request)):
-            return notice_response("Too many inbox lookups from your address. "
-                                   "Please try again later.", 429, title="Slow down")
+        if _inbox_limiter.blocked(client_ip(request)):
+            return notice_response("Too many empty inbox lookups from your "
+                                   "address. Please try again later.", 429,
+                                   title="Slow down")
         problem = token_problem(token, "inbox")
         if problem:
             error = f'<p class="anon-note">{html_escape(problem)}</p>'
@@ -7684,6 +7696,8 @@ async def inbox(request: Request) -> HTMLResponse:
 
     rows = await asyncio.to_thread(list_inbox_jobs, token)
     pending = await asyncio.to_thread(list_pending, token)
+    if not rows and not pending:
+        _inbox_limiter.allow(client_ip(request))   # count a miss
     if rows or pending:
         # Group per device (rows are newest-first, so groups are ordered by
         # each device's latest upload) and diff the newest upload against its

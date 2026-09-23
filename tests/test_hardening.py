@@ -590,3 +590,17 @@ def test_collection_card_reports_redaction_outcome(monkeypatch, tmp_path):
     card = {c["label"]: c for c in dash["checks"]}["Collection"]
     assert card["status"] == "warn"
     assert "2 file(s) removed" in card["detail"]
+
+
+def test_inbox_limit_counts_only_empty_lookups(mk):
+    mod, c = mk()
+    mod._inbox_limiter.limit = 3
+    pkg = _zip({"Identity/dsregcmd-status.txt": "AzureAdJoined : YES\n"})
+    c.post("/api/diagnostics", content=pkg, headers={"X-Upload-Token": LEGACY_TOK})
+    # A real inbox can be refreshed as often as it likes...
+    assert all(c.post("/inbox", data={"token": LEGACY_TOK}).status_code == 200
+               for _ in range(10))
+    # ...but guessing (empty results) is throttled.
+    codes = [c.post("/inbox", data={"token": "g" * 30 + str(i)}).status_code
+             for i in range(5)]
+    assert codes[:3] == [200, 200, 200] and codes[-1] == 429

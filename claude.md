@@ -15,8 +15,13 @@ sherlog.nl, publiek zonder login (basic auth optioneel via
 ## Commands
 
 ```bash
-# Tests (volledige suite; de echte-analyse-test wordt geskipt zonder pwsh)
-.venv/bin/python -m pytest tests/test_e2e.py -q
+# Setup (hash-locked deps; Python 3.12 = de image-runtime)
+python3 -m venv .venv
+.venv/bin/pip install --require-hashes -r requirements.txt -r requirements-dev.txt
+
+# Tests (volledige suite; de echte-analyse-test en de pwsh-gebaseerde
+# PowerShell-tests worden geskipt zonder pwsh)
+.venv/bin/python -m pytest tests -q
 
 # Eén test
 .venv/bin/python -m pytest tests/test_e2e.py::test_extract_zip_members_nested_and_policy -q
@@ -37,7 +42,7 @@ Win32App-events uit de testlogs, zonder errors.
 
 ## Architectuur
 
-Alles zit in **`app.py`** (~5400 regels, één module, geen templates-map —
+Alles zit in **`app.py`** (~8500 regels, één module, geen templates-map —
 alle HTML is inline `%`-format string templates). Globale volgorde: config
 (env vars) → parsers → job-runner → upload/extractie → auth/middleware →
 HTML-rendering → routes.
@@ -45,7 +50,11 @@ HTML-rendering → routes.
 **State = bestandssysteem** (geen DB/Redis): `<JOBS_DIR>/<uuid>/` met
 `input/` (geüpload), `output/` (rapport, `summary.json`, `dashboard.json`) en
 `job.json` (status). `JOBS_DIR` default `/data/jobs`. Retentie via
-achtergrondtaak (`JOB_RETENTION_HOURS`, default 24). Twee soorten niet-job-
+achtergrondtaak (`JOB_RETENTION_HOURS`, default 24), gerekend vanaf de
+`created`-stempel in job.json (`job_created_at`; mtime alleen als fallback —
+statusupdates bumpen de mtime). Alle JSON-state gaat via
+`atomic_write_json` (unieke tmp + `os.replace`). Precies **één proces** per
+`JOBS_DIR`: `acquire_worker_lock()` (flock op `.worker.lock`) in de lifespan. Twee soorten niet-job-
 bestanden staan in de root, allebei **bestanden i.p.v. dirs** en daarmee
 onzichtbaar voor `iter_job_dirs` (en dus voor de retentie-sweep, de jobcaps en
 `fail_interrupted_jobs`): `upload-count.json` — de cumulatieve upload-teller
@@ -99,11 +108,16 @@ een diagnostics-job:
    tree, nooit een upload-fout); `.etl` → niet uitgepakt, wel disabled in de
    tree.
 3. **Device drop-off** (`POST /api/diagnostics` + `/inbox`, alleen met
-   `ENABLE_UPLOAD_API`) — zelfde diag-jobvorm, maar token-scoped: een
-   Intune-collector POST't een zip met een self-chosen secret in de
-   `X-Upload-Token`-header; alleen `sha256(token)` belandt op schijf. De inbox
-   leest het token uit de header of POST-body, **nooit uit de URL-query**
-   (lekt anders in access-logs/history/Referer).
+   `ENABLE_UPLOAD_API`) — zelfde diag-jobvorm, maar token-scoped. **Twee
+   geheimen:** de admin houdt een inbox-sleutel (`shk_…`); devices krijgen het
+   afgeleide upload-token (`shu_…` = `derive_upload_token()`, HMAC-SHA256 van de
+   sleutel). Jobs dragen `sha256(upload-token)`; de inbox rekent via
+   `inbox_namespace(key)` terug. `token_problem(token, purpose)` weigert een
+   `shk_` op upload-routes en een `shu_` op inbox-routes. Legacy tokens zonder
+   prefix = één geheim voor beide (compat, in de inbox gemarkeerd). De
+   generator haalt het upload-token op via `POST /inbox/upload-token`. De inbox
+   leest de sleutel uit `X-Inbox-Key`/`X-Upload-Token` of de POST-body, **nooit
+   uit de URL-query** (lekt anders in access-logs/history/Referer).
    **Collectie-status** (`POST /api/collect-status`, zelfde token, ook vrij van
    basic auth): de collector pingt `phase=start` bij aanvang en `phase=failed`
    als hij zelf ziet dat de run mislukte, zodat de inbox het device meteen als
@@ -188,7 +202,21 @@ zonder allow-same-origin sturen ze geen credentials mee en zou de link onder
 basic auth 401'en. Het dark-mode bootstrap-script staat één keer in `_THEME_JS`
 en wordt via string-concatenatie in elke template gezet.
 
-**Collector-contract:** `_DASH_SOURCES` (paden) en een paar hardcoded
+**Collector-contract (v1.4):** `load_remediation_template()` vult
+`<COLLECTOR-SHA256>` in met de SHA-256 van exact de bytes die
+`/collect-script` serveert; de wrapper weigert elke andere collector (exit 1)
+en eist `https://`. Een collectorwijziging breekt dus bewust alle uitgerolde
+wrappers tot de admin het script opnieuw kopieert. De collector meldt succes
+als `SHERLOG_RESULT=uploaded id=<8 hex>` (nooit de volle URL: bearer-link) en
+alleen als de response een `job_id` van 32 hex bevat; de wrapper eindigt met
+exit 0 alleen dan. Redactie is fail-closed (onredigeerbare bestanden eruit,
+post-zip tokenscan incl. binaries/base64) en `_MANIFEST.json` wordt ná de
+redactie geschreven met `Redaction{…}`/`Anonymized`/`WrapperVersion` (de
+Collection-kaart toont weggelaten bestanden). Proxy-, ACL-, TLS- en
+redactiehelpers staan byte-identiek in collector én wrapper
+(`tests/test_powershell.py` bewaakt dat, plus parse-, PS 5.1-syntax- en
+functionele tests die de functies in pwsh draaien).
+`_DASH_SOURCES` (paden) en een paar hardcoded
 `rglob`-namen (`Apps-IME/Logs`, `*-ErrorsWarnings.txt`,
 `PushNotification-Platform`) moeten letterlijk overeenkomen met wat
 `Collect-IntuneDiagnostics.ps1` schrijft — anders wordt een check stilletjes
@@ -242,31 +270,62 @@ CertificateServicesClient (SCEP) en LAPS. Het `-Remote`-profiel kopieert IME-log
 alleen van de laatste 14 dagen tot ~40 MB, zodat chatty devices onder de
 uploadlimiet blijven.
 
-**Achtergrondjobs:** start via `spawn_job()` — houdt een sterke referentie
-vast (asyncio houdt alleen weak refs; anders kan een job mid-run GC'd worden
-en blijft "running" hangen). Bij appstart markeert `fail_interrupted_jobs()`
-jobs die door een restart zijn afgebroken als failed, incl. de
-diag-`analysis`-substate.
+**Achtergrondjobs:** start via `start_analysis(job_id, coro)` (→ `spawn_job`
+→ `spawn_background`, houdt een sterke referentie vast; asyncio houdt alleen
+weak refs). `_job_tasks`/`_running_procs` per job-id: `remove_job()` blokkeert
+statuswrites (`_deleting_jobs`), killt de process group, wacht tot de task
+afgewikkeld is en verwijdert pas dan de map (anders schreef de geannuleerde
+task job.json terug tijdens `rmtree`). `update_status` is een no-op voor een
+verdwenen of te verwijderen job. Subprocess-output is een begrensde tail
+(`_PROC_OUTPUT_TAIL`), subprocessen krijgen een allow-listed env
+(`subprocess_env()`, zonder `GRAPH_CLIENT_SECRET`/`APP_PASSWORD`). De lifespan
+cancelt bij shutdown alle taken en processen. Bij appstart markeert
+`fail_interrupted_jobs()` afgebroken jobs als failed (incl. de
+diag-`analysis`-substate) en verwijdert `state="uploading"`-reserveringen.
+Zwaar CPU-werk (parsen/renderen, evtx, zoeken, uitpakken, dashboard) loopt via
+`run_heavy()` in een eigen begrensde pool (`HEAVY_WORKERS`), zodat `/health`
+en kleine I/O in de default pool nooit uitgehongerd raken.
 
-**Zip-extractie** (`extract_zip_members`): zip-slip-guard, gedeeld
-zip-bomb-budget over geneste zips (precies één niveau diep, voor de
-mdmdiagnosticstool-output), en normalisatie van backslash-entrynamen
+**Uploads:** elke upload-route roept eerst `reserve_job()` aan (cap-check +
+vrije-ruimtecheck + `job.json` met `state="uploading"`, samen onder één
+asyncio-lock → geen TOCTOU op de caps), en ruimt bij **elke** fout de hele
+jobmap op (`ok`-vlag + `finally`). `BodyLimitMiddleware` (buitenste ASGI-laag)
+telt body-bytes tijdens het ontvangen en geeft 413 (`body_limit_for(path)`),
+ook voor chunked uploads; `RequestTooLarge` is een `UploadError(413)`. Na
+`request.form()` altijd `await form.close()`. Per-IP `RateLimiter`s op
+web-uploads, inbox-lookups en mislukte basic-auth.
+
+**Zip-extractie** (`extract_zip_members`): zip-slip-guard, gedeeld budget
+`[bytes, members]` (`new_budget()`) over zip, geneste zips (precies één niveau
+diep, voor de mdmdiagnosticstool-output) en cabs (`MAX_UNCOMPRESSED_MB`,
+`MAX_ZIP_MEMBERS`); een member die niet uit te pakken is (deflate64, encrypted,
+corrupt, naamconflict `a` + `a/b`, te lange naam) wordt **overgeslagen**, een
+volle schijf geeft 507. Normalisatie van backslash-entrynamen
 (Windows PowerShell 5.1 `Compress-Archive` schrijft `\` als separator —
 zonder normalisatie extraheert het pakket plat en missen alle path-lookups).
 
 **Security-model:** alle untrusted content (rapport, loginhoud, html uit
 pakketten) wordt in een **sandboxed iframe** geserveerd
-(`Content-Security-Policy: sandbox`). Bestandskeuze in viewers via
+(`Content-Security-Policy: sandbox`, met `default-src 'none'`). Rapport en
+pakket-`.html` alleen bij `Sec-Fetch-Dest: iframe` (`_top_level_block`),
+anders een redirect naar de resultpagina. **CSP-nonces:** elke eigen inline
+`<script>` krijgt `nonce="<_CSP_NONCE_SENTINEL>"` (module-strings via de loop
+onderaan app.py, functie-strings via `_SCRIPT_OPEN`);
+`SecurityHeadersMiddleware` (ASGI) vervangt de sentinel per respons door een
+verse nonce van dezelfde lengte, in body én CSP-header. Geen inline
+event-handlers (`onclick=`) — gebruik `data-act` + de gedelegeerde listener in
+`_THEME_JS`. `test_every_inline_script_has_a_fresh_nonce` bewaakt dit.
+`html_escape` escapet ook `"` en `'` (veilig in attributen). Logs: exceptions
+alleen via `log_exception_safely` (type + stack, geen message — die kan
+loginhoud citeren); de uvicorn-access-log maskeert job-id's en query strings. Bestandskeuze in viewers via
 membership-check tegen de echte bestandslijst (geen path traversal).
 Upload-limiet streaming afgedwongen (`MAX_UPLOAD_MB`). `/health` valt altijd
 buiten auth en checkt of `pwsh` beschikbaar is. JSON die in een **niet**-
 sandboxed inline `<script>` belandt (app-chrome) moet via `js_json()` —
 escapet `< > & U+2028 U+2029` — nooit kale `json.dumps()` (alleen voor
-on-disk). Footgun: de U+2028/U+2029-`replace()`-args in `js_json` moeten
-ASCII-escapes blijven (de tekst `\u2028`/`\u2029`), niet de letterlijke
-tekens; die renderen als blanks en verdwijnen bij paste → `replace("", …)`
-inserteert tussen elk teken en corrumpeert álle js_json-output (regressie:
-`test_js_json_neutralises_script_breakout`).
+on-disk). `js_json` gebruikt expliciet `ensure_ascii=True`: dat escapet
+U+2028/U+2029 (en alle andere non-ASCII) al; verwijder die optie nooit
+(regressie: `test_js_json_neutralises_script_breakout`).
 
 ## Harde kaders
 
@@ -285,7 +344,11 @@ inserteert tussen elk teken en corrumpeert álle js_json-output (regressie:
 ## Conventies
 
 - Python: type hints; dependencies beperkt tot FastAPI, uvicorn,
-  python-multipart, python-evtx (en httpx/pytest voor tests).
-- Tests in `tests/test_e2e.py` gebruiken een fixture die env vars zet en
-  `app` herlaadt (module-level config), met `TestClient`.
+  python-multipart, python-evtx (en httpx2/pytest/pip-audit voor tests).
+  `requirements.txt` is een hash-lock uit `requirements.in` (zie README
+  "Dependencies bijwerken"); nooit met de hand bewerken.
+- Tests: `tests/test_e2e.py` (end-to-end), `tests/test_hardening.py`
+  (security/robuustheid: parser-DoS, uploads, jobs, tokens, CSP) en
+  `tests/test_powershell.py` (device-scripts via pwsh). Fixtures zetten env
+  vars en herladen `app` (module-level config), met `TestClient`.
 - Logging naar stdout. Commit per afgeronde fase met duidelijke message.
