@@ -64,6 +64,7 @@ import urllib.request
 import uuid
 import xml.etree.ElementTree as ET
 import zipfile
+import zlib
 from collections import Counter
 from contextlib import asynccontextmanager
 from datetime import datetime
@@ -77,7 +78,6 @@ from fastapi import FastAPI, Request
 from fastapi.responses import (FileResponse, HTMLResponse, JSONResponse,
                                RedirectResponse, Response)
 from starlette.datastructures import UploadFile
-from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.staticfiles import StaticFiles
 
 try:  # optional: .evtx viewing degrades gracefully when python-evtx is absent
@@ -90,13 +90,37 @@ log = logging.getLogger("ime-analyzer")
 
 # --- Configuration -----------------------------------------------------------
 
+# CSP nonces. Every inline <script> the app itself writes carries
+# nonce="<sentinel>"; SecurityHeadersMiddleware swaps the sentinel for a fresh
+# random nonce per response (same length, so Content-Length stays valid) in the
+# body and in the CSP header. The sentinel is random per process and never
+# reaches a client, so injected markup can't guess it — an escaping mistake no
+# longer means script execution, which 'unsafe-inline' allowed.
+_CSP_NONCE_SENTINEL = secrets.token_hex(16)
+_SCRIPT_OPEN = f'<script nonce="{_CSP_NONCE_SENTINEL}">'
+
 APP_DIR = Path(__file__).resolve().parent
 RUN_SCRIPT = APP_DIR / "scripts" / "run-analysis.sh"
 
 MAX_UPLOAD_MB = int(os.environ.get("MAX_UPLOAD_MB", "100"))
 MAX_UPLOAD_BYTES = MAX_UPLOAD_MB * 1024 * 1024
-# Defence against zip bombs: cap total uncompressed bytes extracted.
-MAX_UNCOMPRESSED_BYTES = MAX_UPLOAD_BYTES * 20
+# Defence against zip bombs: cap total uncompressed bytes extracted per upload
+# (default 20x the upload limit, i.e. 2 GB).
+MAX_UNCOMPRESSED_BYTES = max(1, int(os.environ.get(
+    "MAX_UNCOMPRESSED_MB", str(MAX_UPLOAD_MB * 20)))) * 1024 * 1024
+# Cap on archive entries per upload (outer zip + nested zip + cab contents).
+# Empty members cost nothing against the byte budget, so without this a
+# 100 MB zip could create ~1M files (inodes, and every viewer rglob's them).
+MAX_ZIP_MEMBERS = max(1, int(os.environ.get("MAX_ZIP_MEMBERS", "20000")))
+MAX_MEMBER_NAME_LEN = 400
+MAX_MEMBER_DEPTH = 32
+# Refuse new uploads when the JOBS_DIR filesystem has less free space than
+# this (plus the upload itself); extraction also stops at this floor. Job caps
+# count jobs, not bytes — this is the byte-level guard against a full disk.
+MIN_FREE_DISK_MB = max(0, int(os.environ.get("MIN_FREE_DISK_MB", "1024")))
+# Per-client-IP rate limit on the web upload routes (uploads per hour; 0 =
+# off). The drop-off API is limited per token instead: a fleet shares one IP.
+UPLOAD_RATE_PER_HOUR = max(0, int(os.environ.get("UPLOAD_RATE_PER_HOUR", "60")))
 JOB_RETENTION_HOURS = int(os.environ.get("JOB_RETENTION_HOURS", "24"))
 SCRIPT_TIMEOUT_SECONDS = int(os.environ.get("SCRIPT_TIMEOUT_SECONDS", "300"))
 # Cap parallel analysis subprocesses so a public deployment can't be exhausted
@@ -183,6 +207,64 @@ def token_hash(raw: str) -> str:
     """Stable sha256 hex of an upload token. Only this hash is persisted (on the
     job) and compared for the inbox; the token itself never touches disk."""
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+# --- Drop-off credentials ------------------------------------------------------
+# Two secrets, so a device can never read the inbox:
+#   * INBOX KEY  (shk_…): kept by the admin; opens / deletes on /inbox.
+#   * UPLOAD TOKEN (shu_…) = "shu_" + base64url(HMAC-SHA256(key, label)):
+#     deployed in the detection script; can only upload and ping.
+# The HMAC is one-way, so the upload token (readable by anyone who can see
+# the Intune script, ScriptBlock logs, …) does not reveal the key. Jobs store
+# sha256(upload token); the inbox derives the same value from the key.
+# Legacy tokens without a prefix keep working as before (one secret for
+# both) so deployed remediations don't break; the inbox flags them.
+INBOX_KEY_PREFIX = "shk_"
+UPLOAD_TOKEN_PREFIX = "shu_"
+_TOKEN_MAX_LEN = 256
+_PREFIXED_TOKEN_RE = re.compile(r"^sh[ku]_[A-Za-z0-9_-]+$")
+_UPLOAD_TOKEN_LABEL = b"sherlog-upload-token-v1"
+
+
+def derive_upload_token(inbox_key: str) -> str:
+    mac = hmac.new(inbox_key.encode("utf-8"), _UPLOAD_TOKEN_LABEL,
+                   hashlib.sha256).digest()
+    return UPLOAD_TOKEN_PREFIX + base64.urlsafe_b64encode(mac).rstrip(b"=").decode()
+
+
+def is_legacy_token(token: str) -> bool:
+    return not token.startswith((INBOX_KEY_PREFIX, UPLOAD_TOKEN_PREFIX))
+
+
+def token_problem(token: str, purpose: str) -> Optional[str]:
+    """Why `token` can't be used for `purpose` ("upload" or "inbox"), or None."""
+    if not token or len(token) < UPLOAD_TOKEN_MIN_LEN:
+        return f"missing or too-short token (min {UPLOAD_TOKEN_MIN_LEN})"
+    if len(token) > _TOKEN_MAX_LEN:
+        return "token too long"
+    if any(not (0x21 <= ord(c) <= 0x7E) for c in token):
+        return "token contains invalid characters"
+    if not is_legacy_token(token) and not _PREFIXED_TOKEN_RE.match(token):
+        return "token contains invalid characters"
+    if purpose == "upload" and token.startswith(INBOX_KEY_PREFIX):
+        return ("this is an inbox key; deploy the derived upload token "
+                f"({UPLOAD_TOKEN_PREFIX}…) on devices instead")
+    if purpose == "inbox" and token.startswith(UPLOAD_TOKEN_PREFIX):
+        return ("this is a device upload token; open the inbox with your "
+                f"inbox key ({INBOX_KEY_PREFIX}…)")
+    return None
+
+
+def upload_token_for(inbox_key: str) -> str:
+    """The token devices upload with for this inbox key (legacy: itself)."""
+    if inbox_key.startswith(INBOX_KEY_PREFIX):
+        return derive_upload_token(inbox_key)
+    return inbox_key
+
+
+def inbox_namespace(inbox_key: str) -> str:
+    """sha256 stored on the jobs this inbox key may list and delete."""
+    return token_hash(upload_token_for(inbox_key))
 
 
 def job_dir(job_id: str) -> Path:
@@ -314,7 +396,18 @@ def bump_upload_count() -> None:
 # devices" and a write error is swallowed — a status ping must never be able
 # to break an upload or the inbox.
 _PENDING_MAX_DEVICES = 200
+# Every distinct token creates its own pending file; bound how many can exist.
+MAX_PENDING_FILES = max(1, int(os.environ.get("MAX_PENDING_FILES", "5000")))
 _pending_lock = threading.Lock()
+
+
+def _pending_file_count() -> int:
+    try:
+        with os.scandir(JOBS_DIR) as it:
+            return sum(1 for e in it
+                       if e.name.startswith("pending-") and e.name.endswith(".json"))
+    except OSError:
+        return 0
 
 
 def pending_path(hash_hex: str) -> Path:
@@ -357,12 +450,17 @@ def _pending_expired(entry: dict, now: float) -> bool:
     return age > COLLECT_PENDING_TTL_MINUTES * 60
 
 
-def set_pending(token: str, device: str, **fields) -> None:
-    """Create or update one device entry. Held under a lock because several
-    devices can ping the same token concurrently and the file is shared."""
+def set_pending(token: str, device: str, **fields) -> bool:
+    """Create or update one device entry (`token` is the upload token). Held
+    under a lock because several devices can ping the same token concurrently
+    and the file is shared. Returns False when a new file would exceed
+    MAX_PENDING_FILES."""
     hash_hex = token_hash(token)
     now = time.time()
     with _pending_lock:
+        if (not pending_path(hash_hex).exists()
+                and _pending_file_count() >= MAX_PENDING_FILES):
+            return False
         devices = {d: e for d, e in read_pending(hash_hex).items()
                    if isinstance(e, dict) and not _pending_expired(e, now)}
         entry = dict(devices.get(device) or {})
@@ -377,6 +475,7 @@ def set_pending(token: str, device: str, **fields) -> None:
                                   key=lambda kv: kv[1].get("updated", 0),
                                   reverse=True)[:_PENDING_MAX_DEVICES])
         _write_pending(hash_hex, devices)
+    return True
 
 
 def clear_pending(token: str, device: str) -> None:
@@ -391,18 +490,18 @@ def clear_pending(token: str, device: str) -> None:
         _write_pending(hash_hex, devices)
 
 
-def clear_all_pending(token: str) -> None:
-    """Drop the whole pending file for a token (inbox 'Delete all')."""
+def clear_all_pending(inbox_key: str) -> None:
+    """Drop the whole pending file for an inbox (inbox 'Delete all')."""
     with _pending_lock:
         try:
-            pending_path(token_hash(token)).unlink(missing_ok=True)
+            pending_path(inbox_namespace(inbox_key)).unlink(missing_ok=True)
         except OSError:
             pass
 
 
-def list_pending(token: str) -> List[dict]:
-    """Live entries for a token, newest first, pruning expired ones on the way."""
-    hash_hex = token_hash(token)
+def list_pending(inbox_key: str) -> List[dict]:
+    """Live entries for an inbox, newest first, pruning expired ones on the way."""
+    hash_hex = inbox_namespace(inbox_key)
     now = time.time()
     with _pending_lock:
         devices = read_pending(hash_hex)
@@ -3267,6 +3366,26 @@ class UploadError(Exception):
         self.message = message
 
 
+def _safe_upload_name(name: str) -> str:
+    """Leaf name of a client-supplied upload name, without path parts or the
+    control/HTML characters extract_zip_members also refuses."""
+    leaf = Path(name.replace("\\", "/")).name
+    leaf = _UNSAFE_MEMBER_RE.sub("_", leaf)[:MAX_MEMBER_NAME_LEN]
+    return leaf if leaf not in ("", ".", "..") else "upload.log"
+
+
+def _unique_path(target: Path) -> Path:
+    """`x.log`, then `x (2).log`, … — two uploaded files with the same name
+    (e.g. from different folders) must not overwrite each other."""
+    if not target.exists():
+        return target
+    for i in range(2, 10000):
+        cand = target.with_name(f"{target.stem} ({i}){target.suffix}")
+        if not cand.exists():
+            return cand
+    raise UploadError(400, "Too many files with the same name.")
+
+
 async def save_uploads(files: List[UploadFile], input_dir: Path) -> int:
     """Validate + store uploads into input_dir. Returns count of .log files staged.
 
@@ -3282,7 +3401,7 @@ async def save_uploads(files: List[UploadFile], input_dir: Path) -> int:
     tmp_dir.mkdir(parents=True, exist_ok=True)
     # One zip-bomb budget for the whole upload: without sharing, N zips would
     # each get a fresh MAX_UNCOMPRESSED_BYTES allowance.
-    budget = [0]
+    budget = new_budget()
 
     for up in files:
         name = up.filename or ""
@@ -3291,22 +3410,18 @@ async def save_uploads(files: List[UploadFile], input_dir: Path) -> int:
             continue  # skip non-log files (e.g. extras from a folder selection)
 
         dest = tmp_dir / f"{uuid.uuid4().hex}{ext}"
-        with dest.open("wb") as fh:
-            while True:
-                chunk = await up.read(CHUNK)
-                if not chunk:
-                    break
-                total += len(chunk)
-                if total > MAX_UPLOAD_BYTES:
-                    raise UploadError(413, f"Upload exceeds {MAX_UPLOAD_MB} MB limit.")
-                fh.write(chunk)
+        total = await _copy_upload(up, dest, total)
 
         if ext == ".zip":
             # Extraction can stream gigabytes; keep it off the event loop.
-            log_count += await asyncio.to_thread(
-                extract_zip_logs, dest, input_dir, budget)
+            try:
+                log_count += await asyncio.to_thread(
+                    extract_zip_logs, dest, input_dir, budget)
+            except zipfile.BadZipFile:
+                raise UploadError(400, f"{Path(name).name!r} is not a valid zip archive.")
         else:  # .log
-            target = input_dir / Path(name).name
+            _count_member(budget)
+            target = _unique_path(input_dir / _safe_upload_name(name))
             shutil.move(str(dest), str(target))
             log_count += 1
 
@@ -3328,7 +3443,13 @@ async def save_diag_upload(files: List[UploadFile], input_dir: Path) -> tuple[in
     tmp_dir = input_dir.parent / "tmp"
     tmp_dir.mkdir(parents=True, exist_ok=True)
     dest = tmp_dir / f"{uuid.uuid4().hex}.zip"
-    total = 0
+    await _copy_upload(up, dest, 0)
+    return await _extract_diag_zip(dest, input_dir)
+
+
+async def _copy_upload(up: UploadFile, dest: Path, total: int) -> int:
+    """Copy one spooled multipart file to `dest`, enforcing MAX_UPLOAD_BYTES
+    across the whole request (`total` carries the running count)."""
     with dest.open("wb") as fh:
         while True:
             chunk = await up.read(CHUNK)
@@ -3337,9 +3458,8 @@ async def save_diag_upload(files: List[UploadFile], input_dir: Path) -> tuple[in
             total += len(chunk)
             if total > MAX_UPLOAD_BYTES:
                 raise UploadError(413, f"Upload exceeds {MAX_UPLOAD_MB} MB limit.")
-            fh.write(chunk)
-
-    return await _extract_diag_zip(dest, input_dir)
+            await asyncio.to_thread(fh.write, chunk)
+    return total
 
 
 async def _extract_diag_zip(dest_zip: Path, input_dir: Path) -> tuple[int, list]:
@@ -3349,7 +3469,7 @@ async def _extract_diag_zip(dest_zip: Path, input_dir: Path) -> tuple[int, list]
     # Keep .cab members only when cabextract can expand them afterwards;
     # otherwise they are skipped (and listed disabled) as before.
     keep_exts = DIAG_KEEP_EXTS | ({".cab"} if CABEXTRACT else set())
-    budget = [0]
+    budget = new_budget()
     try:
         # Extraction can stream gigabytes; keep it off the event loop.
         count, skipped = await asyncio.to_thread(
@@ -3374,20 +3494,75 @@ async def _extract_diag_zip(dest_zip: Path, input_dir: Path) -> tuple[int, list]
 _UNSAFE_MEMBER_RE = re.compile(r'[\x00-\x1f<>"]')
 
 
+def new_budget() -> list:
+    """Shared extraction budget for one upload: [bytes, members]."""
+    return [0, 0]
+
+
+def _budget(budget: Optional[list]) -> list:
+    if budget is None:
+        return new_budget()
+    while len(budget) < 2:  # accept a legacy one-element [bytes] budget
+        budget.append(0)
+    return budget
+
+
+def _count_member(budget: list, n: int = 1) -> None:
+    budget[1] += n
+    if budget[1] > MAX_ZIP_MEMBERS:
+        raise UploadError(413, f"Archive has too many files (max {MAX_ZIP_MEMBERS}).")
+
+
+_DISK_CHECK_EVERY = 64 * 1024 * 1024
+
+
+def disk_free_bytes() -> Optional[int]:
+    try:
+        return shutil.disk_usage(JOBS_DIR).free
+    except OSError:
+        return None
+
+
+def check_disk_floor() -> None:
+    """UploadError(507) when the jobs filesystem is at the free-space floor."""
+    free = disk_free_bytes()
+    if free is not None and free < MIN_FREE_DISK_MB * 1024 * 1024:
+        raise UploadError(507, "The server is low on disk space. Please try again later.")
+
+
+def _is_disk_full(e: OSError) -> bool:
+    return e.errno in (errno.ENOSPC, errno.EDQUOT)
+
+
+def _copy_member(zf: zipfile.ZipFile, info: zipfile.ZipInfo, target: Path) -> None:
+    written_since_check = 0
+    with zf.open(info) as src, target.open("wb") as dst:
+        while True:
+            chunk = src.read(CHUNK)
+            if not chunk:
+                break
+            dst.write(chunk)
+            written_since_check += len(chunk)
+            if written_since_check >= _DISK_CHECK_EVERY:
+                written_since_check = 0
+                check_disk_floor()
+
+
 def extract_zip_members(zip_path: Path, dest_dir: Path, keep_exts: set,
                         depth: int = 0,
                         budget: Optional[list] = None) -> tuple[int, list]:
     """Safely extract members with a kept extension from a zip.
 
-    Zip-slip protected; `budget` is a single-element mutable byte counter
-    shared across the outer zip and any nested zips so nesting cannot reset
-    the zip-bomb cap. Nested .zip members are extracted one level deep into
-    `<dest>/<zipname-stem>/`; deeper nesting is skipped. Returns
-    (kept_count, skipped) where skipped lists {"name", "size"} of members
-    that were not extracted.
+    Zip-slip protected; `budget` ([bytes, members], see new_budget) is shared
+    across the outer zip, nested zips and cabs so nesting cannot reset the
+    zip-bomb or member caps. Nested .zip members are extracted one level deep
+    into `<dest>/<zipname-stem>/`; deeper nesting is skipped. A member that
+    can't be extracted (unsupported compression, encrypted, corrupt data, a
+    name clash like `a` + `a/b`, a too-long name) is skipped — never a 500.
+    A full disk raises UploadError(507). Returns (kept_count, skipped) where
+    skipped lists {"name", "size"} of members that were not extracted.
     """
-    if budget is None:
-        budget = [0]
+    budget = _budget(budget)
     base = dest_dir.resolve()
     count = 0
     skipped: list = []
@@ -3395,6 +3570,7 @@ def extract_zip_members(zip_path: Path, dest_dir: Path, keep_exts: set,
         for info in zf.infolist():
             if info.is_dir():
                 continue
+            _count_member(budget)
             # Windows PowerShell 5.1 Compress-Archive writes backslash
             # separators in entry names (against the zip spec); without
             # normalisation the package extracts as flat files with literal
@@ -3405,6 +3581,11 @@ def extract_zip_members(zip_path: Path, dest_dir: Path, keep_exts: set,
             # the inline-script JSON sink.
             if _UNSAFE_MEMBER_RE.search(member):
                 skipped.append({"name": member, "size": info.file_size})
+                continue
+            if (len(member) > MAX_MEMBER_NAME_LEN
+                    or member.count("/") >= MAX_MEMBER_DEPTH):
+                skipped.append({"name": member[:MAX_MEMBER_NAME_LEN],
+                                "size": info.file_size})
                 continue
             ext = Path(member).suffix.lower()
             nested_zip = ext == ".zip" and depth == 0
@@ -3418,15 +3599,32 @@ def extract_zip_members(zip_path: Path, dest_dir: Path, keep_exts: set,
             budget[0] += info.file_size
             if budget[0] > MAX_UNCOMPRESSED_BYTES:
                 raise UploadError(413, "Zip contents too large (possible zip bomb).")
-            target.parent.mkdir(parents=True, exist_ok=True)
-            with zf.open(info) as src, target.open("wb") as dst:
-                shutil.copyfileobj(src, dst, CHUNK)
+            try:
+                target.parent.mkdir(parents=True, exist_ok=True)
+                _copy_member(zf, info, target)
+            except OSError as e:
+                if _is_disk_full(e):
+                    raise UploadError(507, "The server ran out of disk space "
+                                           "while extracting.") from None
+                _unlink_quietly(target)
+                skipped.append({"name": member, "size": info.file_size})
+                continue
+            except (RuntimeError, NotImplementedError, EOFError, ValueError,
+                    zipfile.BadZipFile, zlib.error):
+                # Encrypted, unsupported method (deflate64, lzma variants),
+                # CRC mismatch or truncated data: skip just this member.
+                _unlink_quietly(target)
+                skipped.append({"name": member, "size": info.file_size})
+                continue
             if nested_zip:
                 nested_dest = target.parent / Path(member).stem
                 try:
                     sub_count, sub_skipped = extract_zip_members(
                         target, nested_dest, keep_exts, depth + 1, budget)
-                except zipfile.BadZipFile:
+                except (zipfile.BadZipFile, OSError, ValueError, EOFError) as e:
+                    if isinstance(e, OSError) and _is_disk_full(e):
+                        raise UploadError(507, "The server ran out of disk "
+                                               "space while extracting.") from None
                     sub_count, sub_skipped = 0, [{"name": member,
                                                   "size": info.file_size}]
                 finally:
@@ -3438,6 +3636,14 @@ def extract_zip_members(zip_path: Path, dest_dir: Path, keep_exts: set,
             else:
                 count += 1
     return count, skipped
+
+
+def _unlink_quietly(p: Path) -> None:
+    try:
+        if p.is_file() or p.is_symlink():
+            p.unlink()
+    except OSError:
+        pass
 
 
 def _cab_member_sizes(cab: Path) -> Optional[List[int]]:
@@ -3475,6 +3681,7 @@ def expand_cab_files(root: Path, keep_exts: set,
     bad cab cannot sink the diagnostics job. Returns
     (kept_count, cab_count, skipped).
     """
+    budget = _budget(budget)
     base = root.resolve()
     kept = 0
     cabs = 0
@@ -3489,7 +3696,11 @@ def expand_cab_files(root: Path, keep_exts: set,
             skipped.append(cab_entry)
             cab.unlink(missing_ok=True)
             continue
+        free = disk_free_bytes()
+        if free is not None and free - sum(sizes) < MIN_FREE_DISK_MB * 1024 * 1024:
+            raise UploadError(507, "The server is low on disk space. Please try again later.")
         budget[0] += sum(sizes)
+        _count_member(budget, len(sizes))
         try:
             proc = subprocess.run(
                 [CABEXTRACT, "-q", "-d", str(dest), str(cab)],
@@ -3541,57 +3752,186 @@ def extract_zip_logs(zip_path: Path, input_dir: Path,
 AUTH_ENABLED = bool(APP_USER and APP_PASSWORD)
 
 
-class SecurityHeadersMiddleware(BaseHTTPMiddleware):
-    """Baseline hardening headers for a public deployment.
+APP_CSP = (
+    "default-src 'none'; "
+    f"script-src 'nonce-{_CSP_NONCE_SENTINEL}'; "
+    "style-src 'self' 'unsafe-inline'; img-src 'self' data:; "
+    "connect-src 'self'; frame-src 'self'; form-action 'self'; "
+    "base-uri 'none'; frame-ancestors 'self'"
+)
+_NO_STORE_PREFIXES = ("/inbox", "/api/")
 
-    The raw report (untrusted, built from log content) is served at
-    /result/{id}/report and framed by a sandboxed <iframe>, so it does NOT
-    get a permissive CSP here — that route sets its own sandbox header.
+
+class SecurityHeadersMiddleware:
+    """Baseline hardening headers for a public deployment, plus per-response
+    CSP nonces (see _CSP_NONCE_SENTINEL).
+
+    Routes that serve untrusted content (the report, package .html, the
+    sandboxed viewers) set their own Content-Security-Policy; it is kept, with
+    the nonce sentinel filled in.
     """
 
-    async def dispatch(self, request: Request, call_next):
-        resp = await call_next(request)
-        resp.headers.setdefault("X-Content-Type-Options", "nosniff")
-        resp.headers.setdefault("Referrer-Policy", "no-referrer")
-        resp.headers.setdefault("X-Frame-Options", "SAMEORIGIN")
-        # App chrome only frames its own same-origin report iframe.
-        resp.headers.setdefault(
-            "Content-Security-Policy",
-            "default-src 'none'; script-src 'unsafe-inline'; "
-            "style-src 'self' 'unsafe-inline'; img-src 'self' data:; "
-            "connect-src 'self'; frame-src 'self'; form-action 'self'; "
-            "base-uri 'none'; frame-ancestors 'self'",
-        )
-        return resp
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            return await self.app(scope, receive, send)
+        nonce = secrets.token_hex(16).encode()
+        sentinel = _CSP_NONCE_SENTINEL.encode()
+        path = scope.get("path", "")
+        state = {"html": False}
+
+        async def send_wrapper(message):
+            if message["type"] == "http.response.start":
+                headers = [(k, v.replace(sentinel, nonce)) for k, v in message.get("headers", [])]
+                names = {k.lower() for k, _ in headers}
+                ctype = dict((k.lower(), v) for k, v in headers).get(b"content-type", b"")
+                state["html"] = ctype.startswith(b"text/html")
+                extra = [
+                    (b"x-content-type-options", b"nosniff"),
+                    (b"referrer-policy", b"no-referrer"),
+                    (b"x-frame-options", b"SAMEORIGIN"),
+                    (b"strict-transport-security", b"max-age=31536000"),
+                    (b"cross-origin-opener-policy", b"same-origin"),
+                    (b"permissions-policy", b"camera=(), microphone=(), geolocation=()"),
+                    (b"content-security-policy", APP_CSP.encode().replace(sentinel, nonce)),
+                ]
+                if path.startswith(_NO_STORE_PREFIXES):
+                    extra.append((b"cache-control", b"no-store"))
+                for k, v in extra:
+                    if k not in names:
+                        headers.append((k, v))
+                message = dict(message, headers=headers)
+            elif message["type"] == "http.response.body" and state["html"]:
+                body = message.get("body", b"")
+                if sentinel in body:
+                    message = dict(message, body=body.replace(sentinel, nonce))
+            await send(message)
+
+        await self.app(scope, receive, send_wrapper)
 
 
-class BasicAuthMiddleware(BaseHTTPMiddleware):
-    async def dispatch(self, request: Request, call_next):
-        # /health and the token-authenticated drop-off API carry their own
-        # auth (or none), so they bypass basic auth — a device collector can't
-        # do the interactive basic-auth challenge. /collect-script must be
-        # reachable too: the Intune remediation wrapper downloads it as
-        # SYSTEM with Invoke-WebRequest, which also can't answer a Basic
-        # challenge, and the script itself is meant to be publicly served.
-        if (request.url.path in ("/health", "/api/diagnostics",
-                                 "/api/collect-status", "/collect-script")
-                or not AUTH_ENABLED):
-            return await call_next(request)
+class RequestTooLarge(UploadError):
+    """Raised from the wrapped `receive` once a body passes its cap. It is an
+    UploadError(413), so routes that catch UploadError clean up their job dir
+    and answer 413; anything else bubbles up to BodyLimitMiddleware."""
 
-        header = request.headers.get("Authorization", "")
-        if header.startswith("Basic "):
-            try:
-                decoded = base64.b64decode(header[6:]).decode("utf-8")
-                user, _, pwd = decoded.partition(":")
-            except Exception:
-                user = pwd = ""
-            if secrets.compare_digest(user, APP_USER) and secrets.compare_digest(pwd, APP_PASSWORD):
-                return await call_next(request)
+    def __init__(self):
+        super().__init__(413, "Request body too large.")
 
-        return Response(
-            "Authentication required.", status_code=401,
-            headers={"WWW-Authenticate": 'Basic realm="Sherlog"'},
-        )
+
+def body_limit_for(path: str) -> int:
+    """Hard cap on request-body bytes per route, enforced while streaming."""
+    if path in ("/cmtrace-view", "/diagnostics-analyze", "/api/diagnostics"):
+        return MAX_UPLOAD_BYTES + 2 * 1024 * 1024  # + multipart framing
+    if path == "/api/collect-status":
+        return _COLLECT_STATUS_MAX_BODY
+    return 64 * 1024
+
+
+class BodyLimitMiddleware:
+    """Abort any request whose body exceeds body_limit_for(path) with 413 —
+    counting the bytes as they arrive, so a chunked upload without (or with a
+    lying) Content-Length can't be spooled to disk/memory without bound before
+    a route gets to count it. Covers request.form() and request.body() too."""
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http" or scope["method"] in ("GET", "HEAD", "OPTIONS"):
+            return await self.app(scope, receive, send)
+        limit = body_limit_for(scope.get("path", ""))
+        for k, v in scope.get("headers", []):
+            if k == b"content-length":
+                try:
+                    too_big = int(v) > limit
+                except ValueError:
+                    too_big = False
+                if too_big:
+                    return await _send_413(send)
+        received = 0
+        started = False
+
+        async def limited_receive():
+            nonlocal received
+            message = await receive()
+            if message["type"] == "http.request":
+                received += len(message.get("body", b""))
+                if received > limit:
+                    raise RequestTooLarge()
+            return message
+
+        async def tracking_send(message):
+            nonlocal started
+            if message["type"] == "http.response.start":
+                started = True
+            await send(message)
+
+        try:
+            await self.app(scope, limited_receive, tracking_send)
+        except RequestTooLarge:
+            if not started:
+                await _send_413(send)
+
+
+async def _send_413(send) -> None:
+    body = b"Request body too large."
+    await send({"type": "http.response.start", "status": 413,
+                "headers": [(b"content-type", b"text/plain; charset=utf-8"),
+                            (b"content-length", str(len(body)).encode()),
+                            (b"connection", b"close")]})
+    await send({"type": "http.response.body", "body": body})
+
+
+# Routes that carry their own auth (or none) and bypass basic auth: /health,
+# and the token-authenticated drop-off API — a device collector can't do the
+# interactive basic-auth challenge. /collect-script must be reachable too:
+# the Intune remediation wrapper downloads it as SYSTEM with Invoke-WebRequest,
+# which also can't answer a Basic challenge (the wrapper pins its SHA-256).
+_AUTH_EXEMPT = ("/health", "/api/diagnostics", "/api/collect-status",
+                "/collect-script")
+
+
+def check_basic_auth(header: str) -> bool:
+    """Constant-time check of an `Authorization: Basic …` header. Compares
+    UTF-8 bytes (secrets.compare_digest raises on non-ASCII str) and always
+    evaluates both comparisons, so timing doesn't reveal a correct username."""
+    if not header.startswith("Basic "):
+        return False
+    try:
+        decoded = base64.b64decode(header[6:], validate=True)
+    except (ValueError, TypeError):
+        return False
+    user, _, pwd = decoded.partition(b":")
+    ok_user = secrets.compare_digest(user, APP_USER.encode("utf-8"))
+    ok_pwd = secrets.compare_digest(pwd, APP_PASSWORD.encode("utf-8"))
+    return ok_user & ok_pwd
+
+
+class BasicAuthMiddleware:
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if (scope["type"] != "http" or not AUTH_ENABLED
+                or scope.get("path", "") in _AUTH_EXEMPT):
+            return await self.app(scope, receive, send)
+        headers = {k.lower(): v for k, v in scope.get("headers", [])}
+        header = headers.get(b"authorization", b"").decode("latin-1")
+        if check_basic_auth(header):
+            return await self.app(scope, receive, send)
+        client = scope.get("client") or ("?", 0)
+        if header and not _auth_fail_limiter.allow(client[0]):
+            resp = Response("Too many failed logins. Try again later.",
+                            status_code=429)
+        else:
+            resp = Response(
+                "Authentication required.", status_code=401,
+                headers={"WWW-Authenticate": 'Basic realm="Sherlog", charset="UTF-8"'},
+            )
+        await resp(scope, receive, send)
 
 
 # --- Background cleanup ------------------------------------------------------
@@ -3799,6 +4139,8 @@ app = FastAPI(title="Sherlog", lifespan=lifespan)
 # and security headers should be applied to every response (incl. 401s).
 app.add_middleware(BasicAuthMiddleware)
 app.add_middleware(SecurityHeadersMiddleware)
+# Outermost: the body cap must wrap the raw `receive` before anything reads it.
+app.add_middleware(BodyLimitMiddleware)
 
 # Screenshots shown on the landing page. Guarded so a build without the
 # assets still boots; the homepage then just shows broken images.
@@ -4013,10 +4355,9 @@ NAV = ("""<header><nav class="nav">
        rel="noopener" title="PayloadKit &mdash; browse &amp; build Apple
        Configuration Profiles for macOS, iOS and tvOS, by the maker of
        Sherlog">PayloadKit&nbsp;&#8599;</a>
-    <a class="navlink" href="#about"
-       onclick="document.getElementById('about').showModal();return false">About</a>
+    <a class="navlink" href="#about" data-act="about">About</a>
     <button class="navlink theme" type="button" aria-label="Toggle dark mode"
-            onclick="sherlogTheme()"><svg class="moon" width="14" height="14"
+            data-act="theme"><svg class="moon" width="14" height="14"
         viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
         stroke-linecap="round" stroke-linejoin="round"><path
         d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg><svg
@@ -4028,8 +4369,7 @@ NAV = ("""<header><nav class="nav">
   </span>
 </nav>
 <dialog id="about" class="about" aria-label="About the maintainer of Sherlog">
-  <button class="close" aria-label="Close"
-          onclick="this.closest('dialog').close()">&times;</button>
+  <button class="close" aria-label="Close" data-act="close-dialog">&times;</button>
   <div class="head">
     <img src="/static/kris.jpeg" alt="Kris Mandemaker">
     <h2>Kris Mandemaker</h2>
@@ -4162,7 +4502,7 @@ def history_record_js(job_id: str, tool: str, state: str, files: List[str]) -> s
     timestamp on update so a busy->done transition doesn't bump the order."""
     entry = js_json({"id": job_id, "tool": tool, "state": state,
                      "files": files[:5]})
-    return ("""<script>
+    return (_SCRIPT_OPEN + """
 (function () {
   const KEY = 'sherlog.history';
   const e = """ + entry + """;
@@ -4181,7 +4521,7 @@ def history_record_js(job_id: str, tool: str, state: str, files: List[str]) -> s
 # first paint and keeps sandboxed iframes (no localStorage) in sync via a
 # postMessage handshake. Must contain no literal '%' (pages are %-format
 # templates).
-_THEME_JS = """<script>(function(){var de=document.documentElement;function a(d){de.classList.toggle('dark',d);de.style.colorScheme=d?'dark':'light'}function cur(){return de.classList.contains('dark')}function tell(w){try{w.postMessage({sherlogTheme:cur()?'dark':'light'},'*')}catch(e){}}var t=null;try{t=localStorage.getItem('sherlog.theme')}catch(e){}a(t==='dark'||(t!=='light'&&matchMedia('(prefers-color-scheme: dark)').matches));window.sherlogTheme=function(){a(!cur());try{localStorage.setItem('sherlog.theme',cur()?'dark':'light')}catch(e){}var fs=document.querySelectorAll('iframe');for(var i=0;i<fs.length;i++)tell(fs[i].contentWindow)};try{if(parent&&parent!==window)parent.postMessage({sherlogThemeReq:1},'*')}catch(e){}window.addEventListener('load',function(e){if(e.target&&e.target.tagName==='IFRAME')tell(e.target.contentWindow)},true);window.addEventListener('message',function(e){var d=e.data||{};if(d.sherlogThemeReq&&e.source){tell(e.source);return}var v=d.sherlogTheme;if(v==='dark'||v==='light')a(v==='dark')})})()</script>"""
+_THEME_JS = """<script>(function(){var de=document.documentElement;function a(d){de.classList.toggle('dark',d);de.style.colorScheme=d?'dark':'light'}function cur(){return de.classList.contains('dark')}function tell(w){try{w.postMessage({sherlogTheme:cur()?'dark':'light'},'*')}catch(e){}}var t=null;try{t=localStorage.getItem('sherlog.theme')}catch(e){}a(t==='dark'||(t!=='light'&&matchMedia('(prefers-color-scheme: dark)').matches));window.sherlogTheme=function(){a(!cur());try{localStorage.setItem('sherlog.theme',cur()?'dark':'light')}catch(e){}var fs=document.querySelectorAll('iframe');for(var i=0;i<fs.length;i++)tell(fs[i].contentWindow)};try{if(parent&&parent!==window)parent.postMessage({sherlogThemeReq:1},'*')}catch(e){}window.addEventListener('load',function(e){if(e.target&&e.target.tagName==='IFRAME')tell(e.target.contentWindow)},true);window.addEventListener('message',function(e){var d=e.data||{};if(d.sherlogThemeReq&&e.source){tell(e.source);return}var v=d.sherlogTheme;if(v==='dark'||v==='light')a(v==='dark')});document.addEventListener('click',function(e){var el=e.target&&e.target.closest?e.target.closest('[data-act]'):null;if(!el)return;var k=el.getAttribute('data-act');if(k==='about'){e.preventDefault();var d=document.getElementById('about');if(d&&d.showModal)d.showModal()}else if(k==='theme'){window.sherlogTheme()}else if(k==='close-dialog'){var g=el.closest('dialog');if(g)g.close()}})})()</script>"""
 
 LANDING_PAGE = """<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
@@ -5894,7 +6234,7 @@ def _render_records_page(filename: str, head: str, rows: List[str],
     """Shared sandboxed record-table page (CMTrace + EVTX viewers): filter bar,
     severity legend, colored rows and the click-for-detail panel with error
     code explanations."""
-    return """<!doctype html><html lang="en"><head><meta charset="utf-8">
+    return ("""<!doctype html><html lang="en"><head><meta charset="utf-8">
 """ + _THEME_JS + """
 <title>%(file)s</title><style>%(css)s</style></head><body>
   <div class="bar">
@@ -5933,7 +6273,7 @@ def _render_records_page(filename: str, head: str, rows: List[str],
     <div id="d-meta" class="d-meta"></div>
     <div id="d-explain"></div>
   </div>
-<script>
+""" + _SCRIPT_OPEN + """
   const q = document.getElementById('q');
   const comp = document.getElementById('comp');
   const sev = document.getElementById('sev');
@@ -6092,7 +6432,7 @@ def _render_records_page(filename: str, head: str, rows: List[str],
     } catch(e){}
   })();
 </script>
-</body></html>""" % {
+</body></html>""") % {
         "file": html_escape(filename), "css": _CMTRACE_CSS, "comp": comp_sel,
         "head": head, "note": note, "rows": "\n".join(rows),
         "codes": js_json(ERROR_CODES), "meta": js_json(meta_labels),
@@ -6188,9 +6528,23 @@ COLLECT_SCRIPT = APP_DIR / "Collect-IntuneDiagnostics.ps1"
 REMEDIATE_SCRIPT = APP_DIR / "Remediate-CollectToSherlog.ps1"
 
 
+_COLLECTOR_SHA_PLACEHOLDER = "<COLLECTOR-SHA256>"
+
+
+def collector_sha256() -> str:
+    """Uppercase hex SHA-256 of the exact bytes /collect-script serves; the
+    remediation wrapper refuses to run a collector with any other hash."""
+    try:
+        return hashlib.sha256(COLLECT_SCRIPT.read_bytes()).hexdigest().upper()
+    except OSError:
+        return ""
+
+
 def load_remediation_template() -> str:
     try:
-        return REMEDIATE_SCRIPT.read_text(encoding="utf-8", errors="replace")
+        text = REMEDIATE_SCRIPT.read_text(encoding="utf-8", errors="replace")
+        sha = collector_sha256()
+        return text.replace(_COLLECTOR_SHA_PLACEHOLDER, sha) if sha else text
     except OSError:
         return ("# Remediate-CollectToSherlog.ps1 was not found in this image.\n"
                 "# Download it from the project repository and paste it into\n"
@@ -6417,50 +6771,183 @@ def _content_length_error(request: Request) -> Optional[HTMLResponse]:
     return None
 
 
+class RateLimiter:
+    """Sliding-window counter per key (client IP). In-memory, single process
+    (see acquire_worker_lock); bounded number of tracked keys."""
+
+    def __init__(self, limit: int, window_seconds: float, max_keys: int = 20000):
+        self.limit = limit
+        self.window = window_seconds
+        self.max_keys = max_keys
+        self._hits: "dict[str, list]" = {}
+
+    def allow(self, key: str) -> bool:
+        if self.limit <= 0:
+            return True
+        now = time.monotonic()
+        hits = [t for t in self._hits.get(key, []) if now - t < self.window]
+        if len(hits) >= self.limit:
+            self._hits[key] = hits
+            return False
+        hits.append(now)
+        self._hits[key] = hits
+        if len(self._hits) > self.max_keys:
+            # Drop the stalest keys; a flood of spoofed/rotating IPs must not
+            # grow this without bound.
+            for k in sorted(self._hits, key=lambda k: self._hits[k][-1] if self._hits[k] else 0)[
+                    :len(self._hits) - self.max_keys]:
+                self._hits.pop(k, None)
+        return True
+
+
+def client_ip(request: Request) -> str:
+    return request.client.host if request.client else "?"
+
+
+_upload_limiter = RateLimiter(UPLOAD_RATE_PER_HOUR, 3600)
+# Opening an inbox with a wrong key is the only online guessing oracle.
+_inbox_limiter = RateLimiter(120, 3600)
+_auth_fail_limiter = RateLimiter(20, 900)
+
+_job_create_lock: Optional[asyncio.Lock] = None
+
+
+def _create_lock() -> asyncio.Lock:
+    global _job_create_lock
+    if _job_create_lock is None:
+        _job_create_lock = asyncio.Lock()
+    return _job_create_lock
+
+
+def _api_job_counts(token: str) -> tuple[int, int]:
+    """One pass over the job dirs: (total drop-off jobs, jobs for this upload
+    token). Upload reservations in flight count too."""
+    return _api_job_counts_by_hash(token_hash(token))
+
+
+def _api_job_counts_by_hash(want: str) -> tuple[int, int]:
+    total = 0
+    mine = 0
+    for child in iter_job_dirs():
+        st = read_status(child.name)
+        if not st or st.get("source") != "api":
+            continue
+        total += 1
+        if secrets.compare_digest(str(st.get("upload_token_hash", "")), want):
+            mine += 1
+    return total, mine
+
+
+def _count_local_jobs() -> int:
+    """Interactive (non-drop-off) jobs currently on disk, including uploads
+    still in progress. Drop-off jobs have their own cap (UPLOAD_API_MAX_JOBS);
+    this bounds the web-upload path."""
+    n = 0
+    for child in iter_job_dirs():
+        st = read_status(child.name)
+        if st and st.get("source") != "api":
+            n += 1
+    return n
+
+
+async def reserve_job(source: str, upload_hash: str = "") -> str:
+    """Check the caps and free disk space and create the job directory with a
+    `state="uploading"` placeholder — atomically w.r.t. other uploads, so N
+    concurrent requests can't all pass a cap check that none of them has
+    counted yet. Raises UploadError (429/507)."""
+    async with _create_lock():
+        if source == "api":
+            total_api, mine = await asyncio.to_thread(_api_job_counts_by_hash,
+                                                      upload_hash)
+            if total_api >= UPLOAD_API_MAX_JOBS:
+                raise UploadError(429, "server inbox full, try later")
+            if mine >= UPLOAD_API_MAX_JOBS_PER_TOKEN:
+                raise UploadError(429, "this inbox is full, try later")
+        elif await asyncio.to_thread(_count_local_jobs) >= MAX_LOCAL_JOBS:
+            log.info("upload rejected: local job cap reached (%d)", MAX_LOCAL_JOBS)
+            raise UploadError(
+                429, "The server has too many recent analyses. Please try again later.")
+        free = disk_free_bytes()
+        if free is not None and free < (MIN_FREE_DISK_MB + MAX_UPLOAD_MB) * 1024 * 1024:
+            log.warning("upload rejected: low disk space (%d MB free)", free // 2**20)
+            raise UploadError(507, "The server is low on disk space. Please try again later.")
+        job_id = uuid.uuid4().hex
+        base = job_dir(job_id)
+        (base / "input").mkdir(parents=True, exist_ok=True)
+        (base / "output").mkdir(parents=True, exist_ok=True)
+        fields = {"state": "uploading", "created": time.time(), "source": source}
+        if upload_hash:
+            fields["upload_token_hash"] = upload_hash
+        write_status(job_id, **fields)
+        return job_id
+
+
+def _upload_error_page(e: UploadError) -> HTMLResponse:
+    if e.status_code in (429, 507):
+        return notice_response(e.message, e.status_code, title="Server is busy")
+    return notice_response(e.message, e.status_code)
+
+
+async def _discard_job(job_id: str) -> None:
+    await asyncio.to_thread(shutil.rmtree, job_dir(job_id), True)
+
+
+async def _web_upload_files(request: Request) -> list:
+    form = await request.form(max_files=MAX_ZIP_MEMBERS, max_fields=100)
+    return [v for v in form.getlist("files")
+            if isinstance(v, UploadFile) and v.filename]
+
+
+def _web_upload_gate(request: Request) -> Optional[HTMLResponse]:
+    err = _content_length_error(request)
+    if err is not None:
+        return err
+    if not _upload_limiter.allow(client_ip(request)):
+        return notice_response("Too many uploads from your address. "
+                               "Please try again later.", 429,
+                               title="Slow down")
+    return None
+
+
 async def stage_upload(request: Request):
     """Validate + stage an upload into a fresh job dir.
 
     Returns (job_id, input_dir, output_dir, upload_names) on success, or an
     HTMLResponse error to return to the client. Used by /cmtrace-view.
     `upload_names` are the original (client-side) file names, kept for the
-    browser-side history list.
+    browser-side history list. Any failure removes the job directory — an
+    unexpected error must never leave uncounted data on disk.
     """
-    err = _content_length_error(request)
-    if err is not None:
-        return err
-    if await asyncio.to_thread(_count_local_jobs) >= MAX_LOCAL_JOBS:
-        log.info("upload rejected: local job cap reached (%d)", MAX_LOCAL_JOBS)
-        return notice_response(
-            "The server has too many recent analyses. Please try again later.",
-            429, title="Server is busy")
-
-    form = await request.form()
-    files = [v for v in form.getlist("files") if isinstance(v, UploadFile) and v.filename]
-    if not files:
-        return notice_response("No files uploaded.", 400)
-
-    job_id = uuid.uuid4().hex
-    base = job_dir(job_id)
-    input_dir = base / "input"
-    output_dir = base / "output"
-    input_dir.mkdir(parents=True, exist_ok=True)
-    output_dir.mkdir(parents=True, exist_ok=True)
-
+    gate = _web_upload_gate(request)
+    if gate is not None:
+        return gate
     try:
-        staged = await save_uploads(files, input_dir)
+        job_id = await reserve_job("web")
     except UploadError as e:
-        shutil.rmtree(base, ignore_errors=True)
+        return _upload_error_page(e)
+    base = job_dir(job_id)
+    ok = False
+    try:
+        files = await _web_upload_files(request)
+        if not files:
+            return notice_response("No files uploaded.", 400)
+        staged = await save_uploads(files, base / "input")
+        if staged == 0:
+            return notice_response("No .log files found in the upload.", 400)
+        ok = True
+    except UploadError as e:
         log.warning("upload rejected (%d): %s", e.status_code, e.message)
-        return notice_response(e.message, e.status_code)
+        return _upload_error_page(e)
+    except Exception:
+        log.exception("upload %s failed", job_id)
+        return notice_response("The upload could not be processed.", 500)
     finally:
-        shutil.rmtree(base / "tmp", ignore_errors=True)
-
-    if staged == 0:
-        shutil.rmtree(base, ignore_errors=True)
-        return notice_response("No .log files found in the upload.", 400)
+        await asyncio.to_thread(shutil.rmtree, base / "tmp", True)
+        if not ok:
+            await _discard_job(job_id)
 
     names = [Path(f.filename or "").name for f in files if f.filename]
-    return job_id, input_dir, output_dir, names
+    return job_id, base / "input", base / "output", names
 
 
 @app.post("/cmtrace-view")
@@ -6482,130 +6969,101 @@ async def cmtrace_view_upload(request: Request) -> Response:
 _MAX_SKIPPED_LISTED = 200
 
 
-@app.post("/diagnostics-analyze")
-async def diagnostics_analyze(request: Request) -> Response:
-    """Stage a diagnostics package: extract, build the dashboard, kick off the
-    timeline analysis on the IME logs inside (when present)."""
-    err = _content_length_error(request)
-    if err is not None:
-        return err
-    if await asyncio.to_thread(_count_local_jobs) >= MAX_LOCAL_JOBS:
-        log.info("upload rejected: local job cap reached (%d)", MAX_LOCAL_JOBS)
-        return notice_response(
-            "The server has too many recent analyses. Please try again later.",
-            429, title="Server is busy")
-
-    form = await request.form()
-    files = [v for v in form.getlist("files")
-             if isinstance(v, UploadFile) and v.filename]
-    if not files:
-        return notice_response("No files uploaded.", 400)
-
-    job_id = uuid.uuid4().hex
+async def _finalize_diag_job(job_id: str, skipped: list, **status_fields) -> None:
+    """Shared tail of both diagnostics upload paths: dashboard, job.json,
+    counter, analysis. A parser crash must never lose the upload: the job is
+    created regardless, just without a dashboard (result/inbox pages
+    tolerate a missing one)."""
     base = job_dir(job_id)
-    input_dir = base / "input"
-    output_dir = base / "output"
-    input_dir.mkdir(parents=True, exist_ok=True)
-    output_dir.mkdir(parents=True, exist_ok=True)
-
-    try:
-        _count, skipped = await save_diag_upload(files, input_dir)
-    except UploadError as e:
-        shutil.rmtree(base, ignore_errors=True)
-        log.warning("diag upload rejected (%d): %s", e.status_code, e.message)
-        return notice_response(e.message, e.status_code)
-    finally:
-        shutil.rmtree(base / "tmp", ignore_errors=True)
-
-    # A parser crash must never lose the upload: create the job regardless,
-    # just without a dashboard (result/inbox pages tolerate a missing one).
+    input_dir, output_dir = base / "input", base / "output"
     try:
         dashboard = await asyncio.to_thread(build_dashboard, input_dir)
-        (output_dir / "dashboard.json").write_text(json.dumps(dashboard),
-                                                   encoding="utf-8")
+        await asyncio.to_thread(atomic_write_json,
+                                output_dir / "dashboard.json", dashboard)
     except Exception:
         log.exception("build_dashboard failed for %s; storing job without dashboard", job_id)
-
-    ime_dir = find_ime_log_dir(input_dir)
+    ime_dir = await asyncio.to_thread(find_ime_log_dir, input_dir)
     write_status(job_id, kind="diag", state="ready", created=time.time(),
-                 uploads=[Path(files[0].filename or "").name],
                  skipped=skipped[:_MAX_SKIPPED_LISTED],
-                 analysis={"state": "queued" if ime_dir else "none"})
+                 analysis={"state": "queued" if ime_dir else "none"},
+                 **status_fields)
     bump_upload_count()
     if ime_dir is not None:
         start_analysis(job_id, run_job(job_id, ime_dir, output_dir,
                                        _diag_state_writer(job_id)))
+
+
+@app.post("/diagnostics-analyze")
+async def diagnostics_analyze(request: Request) -> Response:
+    """Stage a diagnostics package: extract, build the dashboard, kick off the
+    timeline analysis on the IME logs inside (when present)."""
+    gate = _web_upload_gate(request)
+    if gate is not None:
+        return gate
+    try:
+        job_id = await reserve_job("web")
+    except UploadError as e:
+        return _upload_error_page(e)
+    base = job_dir(job_id)
+    ok = False
+    try:
+        files = await _web_upload_files(request)
+        if not files:
+            return notice_response("No files uploaded.", 400)
+        _count, skipped = await save_diag_upload(files, base / "input")
+        await _finalize_diag_job(job_id, skipped,
+                                 uploads=[Path(files[0].filename or "").name])
+        ok = True
+    except UploadError as e:
+        log.warning("diag upload rejected (%d): %s", e.status_code, e.message)
+        return _upload_error_page(e)
+    except Exception:
+        log.exception("diag upload %s failed", job_id)
+        return notice_response("The upload could not be processed.", 500)
+    finally:
+        await asyncio.to_thread(shutil.rmtree, base / "tmp", True)
+        if not ok:
+            await _discard_job(job_id)
     return RedirectResponse(url=f"/result/{job_id}", status_code=303)
 
 
-def _api_job_counts(token: str) -> tuple[int, int]:
-    """One pass over the job dirs: (total drop-off jobs, jobs for this token).
-
-    Both caps are checked per upload, so counting them in a single scan avoids
-    reading every job.json twice on the drop-off path.
-    """
-    want = token_hash(token)
-    total = 0
-    mine = 0
-    for child in iter_job_dirs():
-        st = read_status(child.name)
-        if not st or st.get("source") != "api":
-            continue
-        total += 1
-        if secrets.compare_digest(str(st.get("upload_token_hash", "")), want):
-            mine += 1
-    return total, mine
+def _request_token(request: Request) -> str:
+    return (request.headers.get("X-Upload-Token")
+            or request.headers.get("Authorization", "").removeprefix("Bearer ").strip())
 
 
-def _count_local_jobs() -> int:
-    """Interactive (non-drop-off) jobs currently on disk. Drop-off jobs have
-    their own cap (UPLOAD_API_MAX_JOBS); this bounds the web-upload path."""
-    n = 0
-    for child in iter_job_dirs():
-        st = read_status(child.name)
-        if st and st.get("source") != "api":
-            n += 1
-    return n
+def _device_name(request: Request) -> str:
+    raw = (request.headers.get("X-Device-Name") or "device").strip()
+    return "".join(ch for ch in raw if ch.isprintable())[:128] or "device"
 
 
 @app.post("/api/diagnostics")
 async def api_diagnostics(request: Request) -> Response:
     """Unattended drop-off: a device collector POSTs a diagnostics zip as the raw
-    request body with a self-chosen secret in X-Upload-Token. The package is
+    request body with its upload token in X-Upload-Token. The package is
     staged like a normal diagnostics job and tagged with the token hash so the
     matching /inbox can list it. Off unless ENABLE_UPLOAD_API is set."""
     if not ENABLE_UPLOAD_API:
         return JSONResponse({"error": "upload api disabled"}, status_code=404)
 
-    token = (request.headers.get("X-Upload-Token")
-             or request.headers.get("Authorization", "").removeprefix("Bearer ").strip())
-    if not token or len(token) < UPLOAD_TOKEN_MIN_LEN:
-        return JSONResponse(
-            {"error": f"missing or too-short token (min {UPLOAD_TOKEN_MIN_LEN})"},
-            status_code=401)
+    token = _request_token(request)
+    problem = token_problem(token, "upload")
+    if problem:
+        return JSONResponse({"error": problem}, status_code=401)
 
-    err = _content_length_error(request)
-    if err is not None:
+    if _content_length_error(request) is not None:
         return JSONResponse({"error": "upload too large"}, status_code=413)
-    total_api, mine = await asyncio.to_thread(_api_job_counts, token)
-    if total_api >= UPLOAD_API_MAX_JOBS:
-        return JSONResponse({"error": "server inbox full, try later"},
-                            status_code=429)
-    if mine >= UPLOAD_API_MAX_JOBS_PER_TOKEN:
-        return JSONResponse({"error": "this inbox is full, try later"},
-                            status_code=429)
+    try:
+        job_id = await reserve_job("api", token_hash(token))
+    except UploadError as e:
+        return JSONResponse({"error": e.message}, status_code=e.status_code)
 
-    device = (request.headers.get("X-Device-Name") or "device").strip()[:128]
-    job_id = uuid.uuid4().hex
+    device = _device_name(request)
     base = job_dir(job_id)
-    input_dir = base / "input"
-    output_dir = base / "output"
     tmp_dir = base / "tmp"
-    input_dir.mkdir(parents=True, exist_ok=True)
-    output_dir.mkdir(parents=True, exist_ok=True)
     tmp_dir.mkdir(parents=True, exist_ok=True)
     dest = tmp_dir / f"{uuid.uuid4().hex}.zip"
-
+    ok = False
     try:
         total = 0
         with dest.open("wb") as fh:
@@ -6613,39 +7071,29 @@ async def api_diagnostics(request: Request) -> Response:
                 total += len(chunk)
                 if total > MAX_UPLOAD_BYTES:
                     raise UploadError(413, f"Upload exceeds {MAX_UPLOAD_MB} MB limit.")
-                fh.write(chunk)
+                await asyncio.to_thread(fh.write, chunk)
         if total == 0:
             raise UploadError(400, "Empty request body.")
-        _count, skipped = await _extract_diag_zip(dest, input_dir)
+        _count, skipped = await _extract_diag_zip(dest, base / "input")
+        await _finalize_diag_job(job_id, skipped, source="api",
+                                 upload_token_hash=token_hash(token),
+                                 device=device, uploads=[f"{device}.zip"])
+        ok = True
     except UploadError as e:
-        shutil.rmtree(base, ignore_errors=True)
         log.warning("api upload rejected (%d): %s", e.status_code, e.message)
         return JSONResponse({"error": e.message}, status_code=e.status_code)
-    finally:
-        shutil.rmtree(tmp_dir, ignore_errors=True)
-
-    # A parser crash must never lose the upload: create the job regardless,
-    # just without a dashboard (result/inbox pages tolerate a missing one).
-    try:
-        dashboard = await asyncio.to_thread(build_dashboard, input_dir)
-        (output_dir / "dashboard.json").write_text(json.dumps(dashboard),
-                                                   encoding="utf-8")
     except Exception:
-        log.exception("build_dashboard failed for %s; storing job without dashboard", job_id)
+        log.exception("api upload %s failed", job_id)
+        return JSONResponse({"error": "upload could not be processed"},
+                            status_code=500)
+    finally:
+        await asyncio.to_thread(shutil.rmtree, tmp_dir, True)
+        if not ok:
+            await _discard_job(job_id)
 
-    ime_dir = find_ime_log_dir(input_dir)
-    write_status(job_id, kind="diag", state="ready", created=time.time(),
-                 source="api", upload_token_hash=token_hash(token), device=device,
-                 uploads=[f"{device}.zip"],
-                 skipped=skipped[:_MAX_SKIPPED_LISTED],
-                 analysis={"state": "queued" if ime_dir else "none"})
-    bump_upload_count()
     # The package landed, so whatever this device last reported (collecting, or
     # a failed earlier attempt) is history.
     await asyncio.to_thread(clear_pending, token, device)
-    if ime_dir is not None:
-        start_analysis(job_id, run_job(job_id, ime_dir, output_dir,
-                                       _diag_state_writer(job_id)))
     return JSONResponse({"job_id": job_id, "url": f"/result/{job_id}"})
 
 
@@ -6663,6 +7111,17 @@ def _clean_reason(raw: str) -> str:
     return text.strip()[:_COLLECT_REASON_MAX]
 
 
+async def read_body_capped(request: Request, limit: int) -> Optional[bytes]:
+    """The request body, or None as soon as it exceeds `limit` bytes — never
+    buffers more than `limit` (request.body() would read everything first)."""
+    buf = bytearray()
+    async for chunk in request.stream():
+        buf += chunk
+        if len(buf) > limit:
+            return None
+    return bytes(buf)
+
+
 @app.post("/api/collect-status")
 async def api_collect_status(request: Request) -> Response:
     """Collection heartbeat from the device collector.
@@ -6676,15 +7135,19 @@ async def api_collect_status(request: Request) -> Response:
     if not ENABLE_UPLOAD_API:
         return JSONResponse({"error": "upload api disabled"}, status_code=404)
 
-    token = (request.headers.get("X-Upload-Token")
-             or request.headers.get("Authorization", "").removeprefix("Bearer ").strip())
-    if not token or len(token) < UPLOAD_TOKEN_MIN_LEN:
-        return JSONResponse(
-            {"error": f"missing or too-short token (min {UPLOAD_TOKEN_MIN_LEN})"},
-            status_code=401)
+    token = _request_token(request)
+    problem = token_problem(token, "upload")
+    if problem:
+        return JSONResponse({"error": problem}, status_code=401)
 
-    raw = await request.body()
-    if len(raw) > _COLLECT_STATUS_MAX_BODY:
+    try:
+        declared = int(request.headers.get("content-length") or 0)
+    except ValueError:
+        return JSONResponse({"error": "invalid content-length"}, status_code=400)
+    if declared > _COLLECT_STATUS_MAX_BODY:
+        return JSONResponse({"error": "body too large"}, status_code=413)
+    raw = await read_body_capped(request, _COLLECT_STATUS_MAX_BODY)
+    if raw is None:
         return JSONResponse({"error": "body too large"}, status_code=413)
     try:
         body = json.loads(raw or b"{}")
@@ -6698,10 +7161,10 @@ async def api_collect_status(request: Request) -> Response:
         return JSONResponse({"error": "phase must be start or failed"},
                             status_code=400)
 
-    device = (request.headers.get("X-Device-Name") or "device").strip()[:128]
+    device = _device_name(request)
     fields = {
         "phase": "collecting" if phase == "start" else "failed",
-        "version": (request.headers.get("X-Collector-Version") or "").strip()[:32],
+        "version": _clean_reason(request.headers.get("X-Collector-Version") or "")[:32],
         "profile": _clean_reason(body.get("profile") or "")[:16],
     }
     if phase == "start":
@@ -6710,7 +7173,8 @@ async def api_collect_status(request: Request) -> Response:
         fields["reason"] = ""
     else:
         fields["reason"] = _clean_reason(body.get("reason") or "")
-    await asyncio.to_thread(set_pending, token, device, **fields)
+    if not await asyncio.to_thread(set_pending, token, device, **fields):
+        return JSONResponse({"error": "too many inboxes, try later"}, status_code=429)
     # No echo: the response must not reflect the token, device or reason back.
     return Response(status_code=204)
 
@@ -6734,18 +7198,23 @@ def inbox_device_diff(newer_id: str, older_id: str) -> dict:
     return {"worse": worse, "better": better}
 
 
-def list_inbox_jobs(token: str) -> List[dict]:
-    """Drop-off jobs whose stored token hash matches `token`, newest first."""
-    want = token_hash(token)
+def list_inbox_jobs(inbox_key: str) -> List[dict]:
+    """Drop-off jobs belonging to this inbox key, newest upload first.
+
+    Ordered by the job's `created` stamp: job.json is rewritten when the
+    analysis finishes, so its mtime is the *analysis* end time, and with
+    concurrent analyses an older upload could sort first and invert the
+    device diff."""
+    want = inbox_namespace(inbox_key)
     rows = []
     for child in iter_job_dirs():
         st = read_status(child.name)
-        if not st or st.get("source") != "api":
+        if not st or st.get("source") != "api" or st.get("state") == "uploading":
             continue
         if not secrets.compare_digest(str(st.get("upload_token_hash", "")), want):
             continue
         try:
-            mtime = (child / "job.json").stat().st_mtime
+            mtime = job_created_at(child)
         except OSError:
             mtime = 0
         analysis = (st.get("analysis") or {}).get("state", "none")
@@ -6759,7 +7228,7 @@ def list_inbox_jobs(token: str) -> List[dict]:
                      "n_bad": sum(1 for s in smap.values() if s == "bad"),
                      "n_warn": sum(1 for s in smap.values() if s == "warn")})
     rows.sort(key=lambda r: r["mtime"], reverse=True)
-    return rows[:200]
+    return rows
 
 
 INBOX_PAGE = """<!doctype html>
@@ -6822,28 +7291,37 @@ INBOX_PAGE = """<!doctype html>
 # reveals the ready-to-paste Intune remediation script with the token already
 # filled in, plus a short Intune deployment guide.
 _INBOX_FORM = """
-      <p>Enter your upload token to open this device inbox, or generate a new one
-         to use in your Intune detection script.</p>
+      <p>Enter your <strong>inbox key</strong> to open this device inbox, or
+         generate a new one. Devices never get the inbox key: the detection
+         script carries a separate <em>upload token</em> derived from it, which
+         can upload but can't read or delete anything.</p>
       <p class="muted">Each inbox holds up to %(cap)d upload(s) at a time. Once
          full, new uploads are refused until older ones are removed
          (<em>Delete all</em>) or expire after the retention window.</p>
+      %(error)s
       <form method="post" action="/inbox" class="tokrow">
-        <input name="token" id="tok" type="text" placeholder="upload token"
-               autocomplete="off" minlength="%(min)d" required>
+        <input name="token" id="tok" type="text" placeholder="inbox key (shk_&hellip;)"
+               autocomplete="off" minlength="%(min)d" maxlength="256" required>
         <button class="btn" type="submit">Open inbox</button>
         <button class="btn btn-ghost" type="button" id="gen">Generate token</button>
       </form>
       <p class="muted" id="genout" hidden></p>
 
       <section id="result" hidden>
-        <h2>Your token</h2>
+        <h2>Your inbox key</h2>
         <p><span class="tokval" id="tokshow"></span></p>
-        <p class="muted">Store it safely &mdash; it is shown once and is both your
-           upload secret <em>and</em> your inbox key. Open the inbox by entering
-           it in the form above; it is sent in the request body, never in the URL,
-           so it can't leak into logs or browser history.</p>
+        <p class="muted">Store it safely &mdash; it is shown once and it is the
+           only way to open or clear this inbox. It is sent in the request body,
+           never in the URL, so it can't leak into logs or browser history.
+           Never put it in a script.</p>
+        <p class="muted anon-note" id="legacy-note" hidden>This is a legacy
+           token without the <code>shk_</code> prefix: the same secret uploads
+           <em>and</em> reads the inbox, so anyone who can see the detection
+           script can read every package. Generate a new inbox key and redeploy.</p>
+        <h3>Device upload token</h3>
+        <p><span class="tokval" id="upshow"></span></p>
 
-        <h2>Detection script (token filled in)</h2>
+        <h2>Detection script (upload token filled in)</h2>
         <div class="tokrow">
           <button class="btn btn-ghost" type="button" id="copy">Copy script</button>
           <button class="btn btn-ghost" type="button" id="dl">Download .ps1</button>
@@ -6856,10 +7334,14 @@ _INBOX_FORM = """
           a guarantee. Binaries (event logs, cab) are not scrubbed; review
           the package before sharing.</p>
         <pre class="scriptbox" id="script"></pre>
+        <p class="muted">The script pins the SHA-256 of the collector this
+          server currently serves (<code>%(collector_sha)s</code>) and refuses
+          to run anything else. After a Sherlog update that changes the
+          collector, copy the script again.</p>
 
         <h2>Deploy in Intune</h2>
         <ol class="guide">
-          <li>Copy or download the script above (your token is already in it).</li>
+          <li>Copy or download the script above (the upload token is already in it).</li>
           <li>Intune admin center &rarr; <strong>Devices</strong> &rarr;
               <strong>Scripts and remediations</strong> &rarr; <strong>Create</strong>.</li>
           <li>Paste the script above as the <strong>Detection script</strong>.
@@ -6882,52 +7364,71 @@ _INBOX_FORM = """
 
       <script>
         var SCRIPT_TPL = %(script)s;
-        var lastToken = '';
-        function fillScript(token) {
-          lastToken = token;
+        var MIN_LEN = %(min)d;
+        var lastKey = '', lastUpload = '';
+        // Value for a PowerShell single-quoted string literal.
+        function psq(v) { return String(v).replace(/'/g, "''"); }
+        // Replacer functions, not strings: "$&" / "$'" in a value must stay literal.
+        function setVar(s, name, value) {
+          var re = new RegExp('\\\\$' + name + "\\\\s*=\\\\s*'[^']*'");
+          return s.replace(re, function () { return '$' + name + " = '" + psq(value) + "'"; });
+        }
+        function fillScript(key, upload) {
+          lastKey = key; lastUpload = upload;
           var base = window.location.origin;
-          var s = SCRIPT_TPL
-            .replace(/\\$SherlogBase\\s*=\\s*'[^']*'/, "$SherlogBase = '" + base + "'")
-            .replace(/\\$UploadToken\\s*=\\s*'[^']*'/, "$UploadToken = '" + token + "'");
+          var s = setVar(setVar(SCRIPT_TPL, 'SherlogBase', base), 'UploadToken', upload);
           // Also fill the placeholders in the comment text so the shown script
           // is fully concrete.
-          s = s.split('<SherlogBase>').join(base).split('<token>').join(token);
+          s = s.split('<SherlogBase>').join(base).split('<token>').join(upload);
           // Flip $CollectionMode when the toggle is on; the wrapper derives
           // -Anonymize (and the throttle key) from that single variable.
           var anon = document.getElementById('anon').checked;
           document.getElementById('anon-note').hidden = !anon;
-          if (anon) s = s.replace(/\\$CollectionMode\\s*=\\s*'[^']*'/, "$CollectionMode = 'anon'");
+          if (anon) s = setVar(s, 'CollectionMode', 'anon');
           document.getElementById('script').textContent = s;
-          document.getElementById('tokshow').textContent = token;
-          document.getElementById('inboxtok').value = token;
+          document.getElementById('tokshow').textContent = key;
+          document.getElementById('upshow').textContent = upload;
+          document.getElementById('legacy-note').hidden = key.indexOf('shk_') === 0;
+          document.getElementById('inboxtok').value = key;
           document.getElementById('result').hidden = !s;
           return s;
         }
+        // The upload token is derived server-side (HMAC of the key), so the
+        // page works on plain-http self-hosted installs without WebCrypto.
+        function derive(key) {
+          return fetch('/inbox/upload-token', {method: 'POST',
+              headers: {'X-Inbox-Key': key}})
+            .then(function (r) { return r.ok ? r.json() : Promise.reject(r); })
+            .then(function (d) { fillScript(key, d.upload_token); })
+            .catch(function () { document.getElementById('result').hidden = true; });
+        }
         document.getElementById('anon').addEventListener('change', function () {
-          if (lastToken) fillScript(lastToken);
+          if (lastKey) fillScript(lastKey, lastUpload);
         });
         document.getElementById('gen').addEventListener('click', function () {
           var b = new Uint8Array(32); crypto.getRandomValues(b);
-          var s = btoa(String.fromCharCode.apply(null, b))
+          var s = 'shk_' + btoa(String.fromCharCode.apply(null, b))
                     .replace(/\\+/g, '-').replace(/\\//g, '_').replace(/=+$/, '');
           document.getElementById('tok').value = s;
           var o = document.getElementById('genout');
           o.hidden = false;
-          o.textContent = 'New token generated and filled into the script below.';
-          fillScript(s);
-          document.getElementById('result').scrollIntoView({behavior: 'smooth', block: 'start'});
+          o.textContent = 'New inbox key generated; its upload token is filled into the script below.';
+          derive(s).then(function () {
+            document.getElementById('result').scrollIntoView({behavior: 'smooth', block: 'start'});
+          });
         });
         document.getElementById('tok').addEventListener('input', function () {
           var v = this.value.trim();
-          if (v.length >= %(min)d) { fillScript(v); }
+          if (v.length >= MIN_LEN) { derive(v); }
           else { document.getElementById('result').hidden = true; }
         });
         document.getElementById('copy').addEventListener('click', function () {
-          if (navigator.clipboard) {
-            navigator.clipboard.writeText(document.getElementById('script').textContent);
-            this.textContent = 'Copied!';
-            var b = this; setTimeout(function(){ b.textContent = 'Copy script'; }, 1500);
-          }
+          var b = this, text = document.getElementById('script').textContent;
+          function done(msg) { b.textContent = msg; setTimeout(function(){ b.textContent = 'Copy script'; }, 1500); }
+          if (navigator.clipboard && navigator.clipboard.writeText) {
+            navigator.clipboard.writeText(text).then(function () { done('Copied!'); },
+              function () { done('Copy failed \u2014 use Download'); });
+          } else { done('Copy not available \u2014 use Download'); }
         });
         document.getElementById('dl').addEventListener('click', function () {
           var blob = new Blob([document.getElementById('script').textContent],
@@ -6937,7 +7438,7 @@ _INBOX_FORM = """
           a.download = 'Remediate-CollectToSherlog.ps1';
           a.click();
         });
-        // Tab-scoped convenience: remember the token so the 'Inbox' link on a
+        // Tab-scoped convenience: remember the key so the 'Inbox' link on a
         // drop-off result page lands here pre-filled (sessionStorage only —
         // never the URL, never persisted to disk beyond this tab).
         try {
@@ -6963,16 +7464,28 @@ async def inbox(request: Request) -> HTMLResponse:
     only access secret."""
     if not ENABLE_UPLOAD_API:
         return notice_response("Inbox is not enabled on this server.", 404)
-    token = request.headers.get("X-Upload-Token", "")
+    token = _inbox_key(request)
     if not token and request.method == "POST":
         form = await request.form()
         token = str(form.get("token") or "").strip()
+    error = ""
+    if token:
+        if not _inbox_limiter.allow(client_ip(request)):
+            return notice_response("Too many inbox lookups from your address. "
+                                   "Please try again later.", 429, title="Slow down")
+        problem = token_problem(token, "inbox")
+        if problem:
+            error = f'<p class="anon-note">{html_escape(problem)}</p>'
+            token = ""
     if not token:
         body = _INBOX_FORM % {"min": UPLOAD_TOKEN_MIN_LEN,
                               "cap": UPLOAD_API_MAX_JOBS_PER_TOKEN,
+                              "error": error,
+                              "collector_sha": html_escape(collector_sha256() or "unavailable"),
                               "script": js_json(load_remediation_template())}
         return HTMLResponse(INBOX_PAGE % {
-            "css": PAGE_CSS, "nav": NAV, "footer": FOOTER, "body": body})
+            "css": PAGE_CSS, "nav": NAV, "footer": FOOTER, "body": body},
+            status_code=400 if error else 200)
 
     rows = await asyncio.to_thread(list_inbox_jobs, token)
     pending = await asyncio.to_thread(list_pending, token)
@@ -7097,7 +7610,13 @@ async def inbox(request: Request) -> HTMLResponse:
                      'delete some or they expire' if len(rows) >= cap else '')
         busy = sum(1 for e in pend.values() if e.get("phase") == "collecting")
         busy_note = f' {busy} device(s) collecting now.' if busy else ''
-        body = (f'<div class="tokrow"><p class="muted" style="flex:1">'
+        legacy_note = ('<p class="muted anon-note">This inbox uses a legacy '
+                       'token: the same secret uploads and reads. Anyone who can '
+                       'see the detection script can open this inbox. Generate a '
+                       'new inbox key on <a href="/inbox">/inbox</a> and redeploy.'
+                       '</p>' if is_legacy_token(token) else '')
+        body = (legacy_note +
+                f'<div class="tokrow"><p class="muted" style="flex:1">'
                 f'{len(rows)} of {cap} upload(s) for this token.{full_note}'
                 f'{busy_note}</p>'
                 '<button class="linkbtn danger" id="delall" type="button">'
@@ -7105,34 +7624,34 @@ async def inbox(request: Request) -> HTMLResponse:
                 '<table class="inbox"><thead><tr><th>Device</th><th>Uploaded</th>'
                 '<th>Status</th><th></th></tr></thead><tbody>'
                 f'{trs}</tbody></table>'
-                '<script>'
+                + _SCRIPT_OPEN +
                 'document.getElementById("delall").addEventListener("click",function(){'
                 'if(!confirm("Delete all uploads for this token from the server? '
                 'This cannot be undone."))return;'
-                'fetch("/inbox/delete",{method:"POST",headers:{"X-Upload-Token":'
-                + js_json(token) + '}}).then(function(){location.reload();});'
+                'fetch("/inbox/delete",{method:"POST",headers:{"X-Inbox-Key":'
+                + js_json(token) + '}}).then(function(){document.getElementById("rfrm").submit();});'
                 '});'
                 'document.querySelectorAll("button[data-job]").forEach('
                 'function(b){b.addEventListener("click",function(){'
                 'if(!confirm("Delete this upload from the server? '
                 'This cannot be undone."))return;'
                 'fetch("/inbox/delete-one",{method:"POST",headers:{'
-                '"X-Upload-Token":' + js_json(token)
+                '"X-Inbox-Key":' + js_json(token)
                 + ',"X-Job-Id":b.getAttribute("data-job")}})'
-                '.then(function(){location.reload();});'
+                '.then(function(){document.getElementById("rfrm").submit();});'
                 '});});</script>')
+        # The inbox is a POST page (the key travels in the body, never the
+        # URL), so refreshes re-submit this hidden form instead of
+        # location.reload(), which would pop the "resend form data?" dialog.
+        body += ('<form method="post" action="/inbox" id="rfrm" '
+                 'style="display:none"><input type="hidden" name="token" '
+                 f'value="{attr_escape(token)}"></form>')
         if busy:
             # Keep the page live while a collection runs, but only then — a
-            # failed entry must not reload the inbox forever. The inbox is a
-            # POST page (the token travels in the body, never the URL), so
-            # re-submit a hidden form instead of location.reload(), which
-            # would pop the browser's "resend form data?" dialog.
-            body += ('<form method="post" action="/inbox" id="rfrm" '
-                     'style="display:none"><input type="hidden" name="token" '
-                     f'value="{attr_escape(token)}"></form>'
-                     '<p class="muted">Refreshing every 30s while a device is '
+            # failed entry must not reload the inbox forever.
+            body += ('<p class="muted">Refreshing every 30s while a device is '
                      'collecting.</p>'
-                     '<script>setTimeout(function(){'
+                     + _SCRIPT_OPEN + 'setTimeout(function(){'
                      'document.getElementById("rfrm").submit();},30000);</script>')
     else:
         body = ('<p>No uploads found for this token yet. Deploy the collector '
@@ -7142,16 +7661,29 @@ async def inbox(request: Request) -> HTMLResponse:
         "css": PAGE_CSS, "nav": NAV, "footer": FOOTER, "body": body})
 
 
-@app.post("/inbox/delete")
-async def inbox_delete(request: Request) -> JSONResponse:
-    """Delete every drop-off package for a token (the inbox 'Delete all').
-    Token comes from the X-Upload-Token header only — never a URL query param."""
+def _inbox_key(request: Request) -> str:
+    """Inbox key from the X-Inbox-Key header (X-Upload-Token accepted for
+    older clients) — never from a URL query parameter."""
+    return (request.headers.get("X-Inbox-Key")
+            or request.headers.get("X-Upload-Token", "")).strip()
+
+
+@app.post("/inbox/upload-token")
+async def inbox_upload_token(request: Request) -> JSONResponse:
+    """Derive the device upload token for an inbox key (for the generator).
+    The key comes in a header; nothing is stored."""
     if not ENABLE_UPLOAD_API:
         return JSONResponse({"error": "inbox disabled"}, status_code=404)
-    token = request.headers.get("X-Upload-Token", "")
-    if not token or len(token) < UPLOAD_TOKEN_MIN_LEN:
-        return JSONResponse({"error": "missing or too-short token"}, status_code=401)
-    want = token_hash(token)
+    key = _inbox_key(request)
+    problem = token_problem(key, "inbox")
+    if problem:
+        return JSONResponse({"error": problem}, status_code=400)
+    return JSONResponse({"upload_token": upload_token_for(key),
+                         "legacy": is_legacy_token(key)})
+
+
+def _delete_inbox_jobs(inbox_key: str) -> int:
+    want = inbox_namespace(inbox_key)
     deleted = 0
     for child in iter_job_dirs():
         st = read_status(child.name)
@@ -7159,31 +7691,67 @@ async def inbox_delete(request: Request) -> JSONResponse:
                 and secrets.compare_digest(str(st.get("upload_token_hash", "")), want)
                 and delete_job(child.name)):
             deleted += 1
+    return deleted
+
+
+def _inbox_job_ids(inbox_key: str) -> List[str]:
+    want = inbox_namespace(inbox_key)
+    out = []
+    for child in iter_job_dirs():
+        st = read_status(child.name)
+        if (st and st.get("source") == "api"
+                and secrets.compare_digest(str(st.get("upload_token_hash", "")), want)):
+            out.append(child.name)
+    return out
+
+
+@app.post("/inbox/delete")
+async def inbox_delete(request: Request) -> JSONResponse:
+    """Delete every drop-off package of an inbox (the inbox 'Delete all').
+    The key comes from a header only — never a URL query param."""
+    if not ENABLE_UPLOAD_API:
+        return JSONResponse({"error": "inbox disabled"}, status_code=404)
+    key = _inbox_key(request)
+    problem = token_problem(key, "inbox")
+    if problem:
+        return JSONResponse({"error": problem}, status_code=401)
+    for job_id in await asyncio.to_thread(_inbox_job_ids, key):
+        cancel_job(job_id)
+    deleted = await asyncio.to_thread(_delete_inbox_jobs, key)
     # "Delete all" clears the collection-status pings too, otherwise a wiped
     # inbox would still show devices as collecting.
-    clear_all_pending(token)
+    await asyncio.to_thread(clear_all_pending, key)
     return JSONResponse({"deleted": deleted})
 
 
 @app.post("/inbox/delete-one")
 async def inbox_delete_one(request: Request) -> JSONResponse:
-    """Delete a single drop-off package, but only when it belongs to this token.
+    """Delete a single drop-off package, but only when it belongs to this inbox.
     The token hash on the job must match, so an inbox can only delete its own.
-    Token + job id come from headers only — never a URL query param."""
+    Key + job id come from headers only — never a URL query param."""
     if not ENABLE_UPLOAD_API:
         return JSONResponse({"error": "inbox disabled"}, status_code=404)
-    token = request.headers.get("X-Upload-Token", "")
+    key = _inbox_key(request)
     job = request.headers.get("X-Job-Id", "")
-    if not token or len(token) < UPLOAD_TOKEN_MIN_LEN:
-        return JSONResponse({"error": "missing or too-short token"}, status_code=401)
-    if not job.isalnum():
+    problem = token_problem(key, "inbox")
+    if problem:
+        return JSONResponse({"error": problem}, status_code=401)
+    if not _is_job_id(job):
         return JSONResponse({"error": "invalid job id"}, status_code=400)
     st = read_status(job)
-    want = token_hash(token)
+    want = inbox_namespace(key)
     if (not st or st.get("source") != "api"
             or not secrets.compare_digest(str(st.get("upload_token_hash", "")), want)):
         return JSONResponse({"error": "not found"}, status_code=404)
-    return JSONResponse({"deleted": bool(delete_job(job))})
+    cancel_job(job)
+    return JSONResponse({"deleted": bool(await asyncio.to_thread(delete_job, job))})
+
+
+_JOB_ID_RE = re.compile(r"^[0-9a-f]{32}$")
+
+
+def _is_job_id(job_id: str) -> bool:
+    return bool(_JOB_ID_RE.match(job_id or ""))
 
 
 def _clip(s: str, limit: int = 4000) -> str:
@@ -7609,7 +8177,14 @@ async def diag_timeline(job_id: str) -> Response:
     })
 
 
-_SANDBOX_HEADERS = {"Content-Security-Policy": "sandbox allow-scripts"}
+# Our own escaped viewers (CMTrace, text, evtx) in a sandboxed iframe: opaque
+# origin, and only our nonce'd scripts may run — `default-src 'none'` also
+# blocks outbound requests, so even a markup-injection bug can't exfiltrate
+# the displayed log.
+_SANDBOX_HEADERS = {"Content-Security-Policy": (
+    "sandbox allow-scripts; default-src 'none'; "
+    f"script-src 'nonce-{_CSP_NONCE_SENTINEL}'; style-src 'unsafe-inline'; "
+    "img-src data:; font-src data:")}
 
 # Fully untrusted HTML (the upstream report and any .html shipped inside a
 # diagnostics package). The sandbox already puts it in an opaque origin (no
@@ -7729,3 +8304,13 @@ async def diag_file_view(job_id: str, file: str) -> Response:
     records, truncated = await asyncio.to_thread(read_and_parse_cmtrace, path)
     return HTMLResponse(render_cmtrace_view(file, records, truncated),
                         headers=_SANDBOX_HEADERS)
+
+
+# --- CSP nonce wiring ----------------------------------------------------------
+# All page templates are module-level strings; give every inline <script> the
+# nonce sentinel (see _CSP_NONCE_SENTINEL). Function-built fragments use
+# _SCRIPT_OPEN directly. test_every_inline_script_has_a_nonce guards both.
+for _name, _val in list(globals().items()):
+    if isinstance(_val, str) and "<script>" in _val and not _name.startswith("__"):
+        globals()[_name] = _val.replace("<script>", _SCRIPT_OPEN)
+del _name, _val

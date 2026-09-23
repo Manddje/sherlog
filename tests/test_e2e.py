@@ -701,7 +701,7 @@ def test_dark_mode_toggle_on_every_page(client):
     for path in ("/", "/cmtrace", "/diagnostics"):
         page = client.get(path)
         assert "localStorage.getItem('sherlog.theme')" in page.text  # head init
-        assert 'onclick="sherlogTheme()"' in page.text               # nav toggle
+        assert 'data-act="theme"' in page.text                      # nav toggle
         assert 'href="/assets/app.css"' in page.text    # cacheable palette link
 
 
@@ -1913,7 +1913,7 @@ def test_inbox_anonymize_toggle(upload_client):
     assert "best-effort" in r.text                     # disclaimer text
     # Toggle on flips $CollectionMode to 'anon'; the wrapper derives -Anonymize
     # (and its throttle key) from that single variable.
-    assert "$CollectionMode = 'anon'" in r.text
+    assert "setVar(s, 'CollectionMode', 'anon')" in r.text
 
 
 def _ping(client, phase="start", token=_TOK, device="PC01", **body):
@@ -2052,13 +2052,26 @@ def test_inbox_autorefresh_only_while_collecting(upload_client):
     assert 'id="rfrm"' in live.text and "30000" in live.text
     _ping(upload_client, "failed", reason="boom")
     done = upload_client.post("/inbox", data={"token": _TOK})
-    assert 'id="rfrm"' not in done.text
+    # The hidden POST form stays (deletes re-submit it), but no timer.
+    assert "30000" not in done.text
 
 
-def test_collect_status_is_exempt_from_basic_auth():
+def test_collect_status_is_exempt_from_basic_auth(tmp_path, monkeypatch):
     """The collector runs as SYSTEM and cannot answer a Basic challenge."""
-    src = (REPO_ROOT / "app.py").read_text(encoding="utf-8")
-    assert '"/api/collect-status"' in src.split("class BasicAuthMiddleware")[1][:800]
+    monkeypatch.setenv("JOBS_DIR", str(tmp_path / "jobs"))
+    monkeypatch.setenv("ENABLE_UPLOAD_API", "1")
+    monkeypatch.setenv("APP_USER", "admin")
+    monkeypatch.setenv("APP_PASSWORD", "pw")
+    import importlib
+    import app as app_module
+    importlib.reload(app_module)
+    from fastapi.testclient import TestClient
+    with TestClient(app_module.app) as c:
+        assert c.get("/").status_code == 401
+        r = c.post("/api/collect-status", json={"phase": "start"},
+                   headers={"X-Upload-Token": _TOK})
+        assert r.status_code == 204
+    importlib.reload(app_module)
 
 
 def test_collector_pings_collection_status():
